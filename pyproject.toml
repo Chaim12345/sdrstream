@@ -19,8 +19,9 @@ classifiers = [
 dependencies = ["websockets>=11"]
 
 [project.optional-dependencies]
-test = ["websockets>=11"]
+test = ["websockets>=11", "sgp4>=2.20"]
 analysis = ["numpy"]
+satellites = ["sgp4>=2.20"]
 
 [project.scripts]
 sdrstream = "sdrstream.cli:main"

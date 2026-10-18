@@ -23,10 +23,14 @@ import argparse
 import asyncio
 import struct
 import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import List
 
+from . import catalogue, discovery, openwebrx_directory as directory, satellite, satnogs
 from .common import write_wav
 from .openwebrx import OpenWebRXClient
+from .satellites import SATELLITES, by_name
 from .websdr import WebSDRClient
 
 
@@ -119,6 +123,190 @@ async def _info_websdr(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_when(value: str) -> datetime:
+    """Accept an ISO timestamp or a relative delay such as ``+15m``."""
+    value = value.strip()
+    if value.startswith("+"):
+        text = value[1:]
+        scale = {"s": 1, "m": 60, "h": 3600}.get(text[-1].lower())
+        if scale is None:
+            raise argparse.ArgumentTypeError("delay must end in s, m or h")
+        return datetime.now(timezone.utc) + timedelta(seconds=float(text[:-1]) * scale)
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "expected ISO time or +delay (e.g. +15m): %s" % exc) from exc
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _catalogue_receiver(url: str, kind: str = "websdr"):
+    """Look a URL up in the catalogue, falling back to an ad-hoc receiver."""
+    for receiver in catalogue.RECEIVERS.values():
+        if url.rstrip("/") == receiver.url.rstrip("/"):
+            return receiver
+    return None
+
+
+async def _satellites(args: argparse.Namespace) -> int:
+    if args.satellite:
+        sat = by_name(args.satellite)
+        print("%s (NORAD %d)" % (sat.name, sat.norad_id))
+        print("  downlink : %.4f MHz  %s  band %s"
+              % (sat.downlink_hz / 1e6, sat.mode, sat.band))
+        if sat.uplink_hz:
+            tone = " tone %.1f Hz" % sat.tone_hz if sat.tone_hz else ""
+            print("  uplink   : %.4f MHz%s" % (sat.uplink_hz / 1e6, tone))
+        print("  status   : %s" % sat.status)
+        if sat.notes:
+            print("  notes    : %s" % sat.notes)
+        receivers = catalogue.for_frequency(sat.downlink_hz)
+        print("  receivers: %d in the catalogue can hear this downlink" % len(receivers))
+        for receiver in receivers[:8]:
+            print("    %-40s %.2f,%.2f"
+                  % (receiver.url, receiver.latitude, receiver.longitude))
+        return 0
+
+    for band in ("2m", "70cm", "23cm"):
+        sats = [s for s in SATELLITES.values() if s.band == band]
+        if not sats:
+            continue
+        print("%s (%d):" % (band, len(sats)))
+        for sat in sorted(sats, key=lambda s: s.name):
+            print("  %-9s %10.4f MHz  %-4s %s"
+                  % (sat.name, sat.downlink_hz / 1e6, sat.mode, sat.notes[:46]))
+    return 0
+
+
+def _resolve_observer(args: argparse.Namespace):
+    """Return (receiver, latitude, longitude) for a satellite subcommand."""
+    receiver = _catalogue_receiver(args.server) if args.server else None
+    if receiver is None and args.server:
+        receiver = catalogue.Receiver(url=args.server, kind=args.kind,
+                                      latitude=args.lat, longitude=args.lon)
+    latitude, longitude = args.lat, args.lon
+    if latitude is None or longitude is None:
+        if receiver is not None:
+            latitude, longitude = receiver.location
+        else:
+            raise SystemExit("give --lat/--lon, or --server with a catalogue URL")
+    return receiver, latitude, longitude
+
+
+async def _passes(args: argparse.Namespace) -> int:
+    sat = by_name(args.satellite)
+    receiver, latitude, longitude = _resolve_observer(args)
+    plan = satellite.plan_pass(
+        sat, receiver, latitude=latitude, longitude=longitude,
+        hours=args.hours, min_elevation=args.min_elevation,
+        start=_parse_when(args.when) if args.when else None,
+    )
+    print(plan.summary())
+    return 0
+
+
+async def _satrecord(args: argparse.Namespace) -> int:
+    sat = by_name(args.satellite)
+    receiver, latitude, longitude = _resolve_observer(args)
+    plan = satellite.plan_pass(
+        sat, receiver, latitude=latitude, longitude=longitude,
+        hours=args.hours, min_elevation=args.min_elevation,
+        start=_parse_when(args.when) if args.when else None,
+    )
+    print(plan.summary())
+    if args.dry_run:
+        return 0
+    await satellite.chase(plan, args.out, on_progress=print,
+                          offline_tle=args.offline_tle)
+    return 0
+
+
+async def _observations(args: argparse.Namespace) -> int:
+    """Show what SatNOGS ground stations have actually heard."""
+    sat = by_name(args.satellite)
+    print("%s (NORAD %d)" % (sat.name, sat.norad_id))
+    best = satnogs.best_downlink(sat.norad_id)
+    if best:
+        print("  SatNOGS best downlink: %s %.4f MHz %s"
+              % (best.get("description") or "(unnamed)",
+                 (best.get("downlink_low") or 0) / 1e6,
+                 best.get("mode") or "?"))
+    print("  table says           : %.4f MHz %s"
+          % (sat.downlink_hz / 1e6, sat.mode))
+
+    found = satnogs.cached_observations(sat.norad_id, limit=args.limit)
+    print("\n%d recent observations:" % len(found))
+    for observation in found[:args.limit]:
+        print("  " + observation.summary())
+
+    counts = satnogs.observed_frequencies(sat.norad_id, limit=args.limit)
+    if counts:
+        print("\nobserved downlinks:")
+        for frequency, count in counts.items():
+            print("  %9.4f MHz  %3d observations" % (frequency / 1e6, count))
+    return 0
+
+
+async def _fetch(args: argparse.Namespace) -> int:
+    """Download the data SatNOGS ground stations captured for a satellite."""
+    sat = by_name(args.satellite)
+    found = satnogs.cached_observations(sat.norad_id, limit=args.limit)
+    with_data = [o for o in found
+                 if (o.waterfall_url and args.waterfall)
+                 or (o.demod_url and args.demod)]
+    if not with_data:
+        print("no observations of %s with downloadable data" % sat.name)
+        return 1
+
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    saved = 0
+    for observation in with_data[:args.count]:
+        if args.waterfall and observation.waterfall_url:
+            target = out_dir / ("%d_waterfall.png" % observation.id)
+            satnogs.download(observation.waterfall_url, target)
+            print("wrote %s" % target)
+            saved += 1
+        if args.demod and observation.demod_url:
+            suffix = observation.demod_url.rsplit("/", 1)[-1]
+            target = out_dir / ("%d_%s.dat" % (observation.id, suffix))
+            satnogs.download(observation.demod_url, target)
+            print("wrote %s (%d bytes)"
+                  % (target, target.stat().st_size))
+            saved += 1
+    print("saved %d file(s) to %s" % (saved, out_dir))
+    return 0
+
+
+async def _discover(args: argparse.Namespace) -> int:
+    """Find OpenWebRX receivers that can hear a satellite downlink."""
+    frequency = args.frequency
+    if frequency is not None:
+        frequency *= 1000.0  # kHz on the command line, Hz internally
+
+    print("reading %s ..." % directory.DIRECTORY_URL)
+    receivers = directory.discover(timeout=args.timeout, limit=args.limit)
+    print("probed receivers that answered: %d" % len(receivers))
+
+    if frequency is not None:
+        receivers = directory.for_frequency(frequency, receivers, band=args.band)
+        print("able to hear %.4f MHz: %d" % (frequency / 1e6, len(receivers)))
+    elif args.band:
+        receivers = [r for r in receivers if args.band in r.satellite_bands]
+
+    for receiver in sorted(receivers, key=lambda r: r.url):
+        print("  %-46s (%8.4f,%9.4f) %s"
+              % (receiver.url, receiver.latitude, receiver.longitude,
+                 ",".join(receiver.satellite_bands) or "-"))
+    return 0
+
+
+async def _undocumented(args: argparse.Namespace) -> int:
+    """List satellites heard by the network but missing from our table."""
+    print(discovery.report(limit=args.limit, status=args.status))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sdrstream",
@@ -150,6 +338,73 @@ def build_parser() -> argparse.ArgumentParser:
     inf = sub.add_parser("info", help="show server capabilities")
     add_common(inf)
 
+    def add_satellite(p: argparse.ArgumentParser) -> None:
+        p.add_argument("satellite", help="satellite name, e.g. SO-50 or ISS")
+        p.add_argument("--lat", type=float, default=None, help="observer latitude")
+        p.add_argument("--lon", type=float, default=None, help="observer longitude")
+        p.add_argument("--hours", type=float, default=12.0,
+                       help="how far ahead to search (default: 12)")
+        p.add_argument("--min-elevation", type=float, default=10.0,
+                       help="minimum peak elevation in degrees (default: 10)")
+        p.add_argument("--when", default=None,
+                       help="start time: ISO 8601 or a delay like +15m")
+        p.add_argument("--server", default=None,
+                       help="receiver URL, looked up in the catalogue")
+        p.add_argument("--kind", choices=("openwebrx", "websdr"), default="websdr")
+
+    fet = sub.add_parser("fetch",
+                         help="download SatNOGS captures for a satellite")
+    fet.add_argument("satellite", help="satellite name, e.g. ISS")
+    fet.add_argument("--out", default="satnogs", help="output directory")
+    fet.add_argument("--limit", type=int, default=25,
+                     help="how many observations to look through (default: 25)")
+    fet.add_argument("--count", type=int, default=1,
+                     help="how many observations to download (default: 1)")
+    fet.add_argument("--no-waterfall", dest="waterfall", action="store_false",
+                     help="skip the waterfall images")
+    fet.add_argument("--no-demod", dest="demod", action="store_false",
+                     help="skip the demodulated data files")
+
+    obs = sub.add_parser("observations",
+                         help="show real SatNOGS receptions of a satellite")
+    obs.add_argument("satellite", help="satellite name, e.g. SO-50")
+    obs.add_argument("--limit", type=int, default=15,
+                     help="how many observations to show (default: 15)")
+
+    sats = sub.add_parser("satellites", help="list amateur satellites")
+    sats.add_argument("satellite", nargs="?", default=None,
+                      help="show details and receivers for one satellite")
+
+    passes = sub.add_parser("passes", help="predict satellite passes")
+    add_satellite(passes)
+
+    srec = sub.add_parser("satrecord", help="record a pass, tracking Doppler")
+    add_satellite(srec)
+    srec.add_argument("--out", default="satellite.wav", help="output file")
+    srec.add_argument("--dry-run", action="store_true",
+                      help="show the plan without recording")
+    srec.add_argument("--offline-tle", action="store_true",
+                      help="use the cached TLE set even if stale")
+
+    disc = sub.add_parser("discover",
+                          help="find OpenWebRX receivers for a downlink")
+    disc.add_argument("--frequency", type=float, default=None,
+                      help="downlink in kHz, e.g. 145800")
+    disc.add_argument("--band", default=None,
+                      choices=("6m", "2m", "70cm", "23cm"),
+                      help="keep only receivers covering this amateur band")
+    disc.add_argument("--limit", type=int, default=None,
+                      help="probe only the first N servers")
+    disc.add_argument("--timeout", type=float, default=30.0,
+                      help="directory fetch timeout in seconds (default: 30)")
+
+    undoc = sub.add_parser("undocumented",
+                           help="satellites heard recently but not in our table")
+    undoc.add_argument("--limit", type=int, default=100,
+                       help="how many observations to scan (default: 100)")
+    undoc.add_argument("--status", default="good",
+                       help="observation status to scan (default: good)")
+
     return parser
 
 
@@ -157,12 +412,31 @@ def main(argv: List[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "record":
         coro = _record_websdr(args) if args.kind == "websdr" else _record_openwebrx(args)
-    else:
+    elif args.command == "info":
         coro = _info_websdr(args) if args.kind == "websdr" else _info_openwebrx(args)
+    elif args.command == "satellites":
+        coro = _satellites(args)
+    elif args.command == "observations":
+        coro = _observations(args)
+    elif args.command == "fetch":
+        coro = _fetch(args)
+    elif args.command == "passes":
+        coro = _passes(args)
+    elif args.command == "satrecord":
+        coro = _satrecord(args)
+    elif args.command == "discover":
+        coro = _discover(args)
+    elif args.command == "undocumented":
+        coro = _undocumented(args)
+    else:
+        raise SystemExit("unknown command %r" % args.command)
     try:
         return asyncio.run(coro)
     except KeyboardInterrupt:
         return 130
+    except (ValueError, KeyError, FileNotFoundError, RuntimeError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

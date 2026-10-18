@@ -9,3 +9,4 @@ venv/
 *.raw
 .pytest_cache/
 .mypy_cache/
+.openhands/
