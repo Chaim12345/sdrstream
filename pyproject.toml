@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sdrstream"
+version = "0.1.0"
+description = "Stream and decode audio from public WebSDR and OpenWebRX servers"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["sdr", "websdr", "openwebrx", "kiwisdr", "radio", "adpcm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Communications :: Ham Radio",
+]
+dependencies = ["websockets>=11"]
+
+[project.optional-dependencies]
+test = ["websockets>=11"]
+analysis = ["numpy"]
+
+[project.scripts]
+sdrstream = "sdrstream.cli:main"
+
+[tool.setuptools]
+packages = ["sdrstream"]
