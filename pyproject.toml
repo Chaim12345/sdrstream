@@ -5,11 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sdrstream"
 version = "0.1.0"
-description = "Stream and decode audio from public WebSDR and OpenWebRX servers"
+description = "Stream, record and decode audio from public WebSDR and OpenWebRX servers, track satellites, and browse it all in a web UI"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-keywords = ["sdr", "websdr", "openwebrx", "kiwisdr", "radio", "adpcm"]
+keywords = ["sdr", "websdr", "openwebrx", "kiwisdr", "radio", "adpcm",
+            "satellite", "satnogs", "tle", "sgp4", "tftp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

@@ -27,7 +27,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
-from . import catalogue, discovery, openwebrx_directory as directory, satellite, satnogs
+from . import (catalogue, discovery, military,
+                 openwebrx_directory as directory, satellite, satnogs)
 from .common import write_wav
 from .openwebrx import OpenWebRXClient
 from .satellites import SATELLITES, by_name
@@ -307,6 +308,17 @@ async def _undocumented(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _military(args: argparse.Namespace) -> int:
+    """Show government and military downlinks a public receiver can reach."""
+    if args.live:
+        print("probing the public directory, this takes about 20s ...")
+        receivers = directory.discover(timeout=args.timeout)
+    else:
+        receivers = list(catalogue.RECEIVERS.values())
+    print(military.report(receivers))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sdrstream",
@@ -405,11 +417,30 @@ def build_parser() -> argparse.ArgumentParser:
     undoc.add_argument("--status", default="good",
                        help="observation status to scan (default: good)")
 
+    mil = sub.add_parser("military",
+                         help="government and military downlinks in reach")
+    mil.add_argument("--live", action="store_true",
+                     help="check against a live directory sweep, not the "
+                          "bundled catalogue")
+    mil.add_argument("--timeout", type=float, default=30.0,
+                     help="directory fetch timeout in seconds (default: 30)")
+
+    web = sub.add_parser("web", help="serve the browser UI")
+    web.add_argument("--host", default="127.0.0.1",
+                     help="address to bind (default: 127.0.0.1)")
+    web.add_argument("--port", type=int, default=8000,
+                     help="port to bind (default: 8000)")
+
     return parser
 
 
 def main(argv: List[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "web":
+        from .web import serve
+
+        serve(host=args.host, port=args.port)
+        return 0
     if args.command == "record":
         coro = _record_websdr(args) if args.kind == "websdr" else _record_openwebrx(args)
     elif args.command == "info":
@@ -428,6 +459,8 @@ def main(argv: List[str] | None = None) -> int:
         coro = _discover(args)
     elif args.command == "undocumented":
         coro = _undocumented(args)
+    elif args.command == "military":
+        coro = _military(args)
     else:
         raise SystemExit("unknown command %r" % args.command)
     try:

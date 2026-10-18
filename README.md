@@ -92,7 +92,99 @@ python -m sdrstream record --kind websdr --server websdr.example.org:8901 \
 
 # Show what a server offers without recording
 python -m sdrstream info --server wss://sdr.example.org/ws/
+
+# Open the browser UI
+python -m sdrstream web --port 8000
 ```
+
+## Web UI
+
+`python -m sdrstream web` serves a single page over the same modules the
+command line uses. There is no build step, no template engine and no JavaScript
+framework: the page is one string in `sdrstream/web.py` and the endpoints
+return JSON, so the server needs nothing beyond the standard library.
+
+The tabs are the tasks that are awkward from a shell:
+
+* **Receivers** — find receivers covering a frequency, either from the bundled
+  catalogue or a live sweep of the public OpenWebRX directory.
+* **Satellites** — the amateur table with downlinks and bands.
+* **Passes** — predict passes over a chosen latitude and longitude.
+* **Government & military** — the table described below, with a live
+  reachability count against real receivers.
+* **Record** — record to a WAV and play it back in the page.
+* **Undocumented** — satellites the network has heard that the table lacks.
+
+Recording is asynchronous. The browser posts to `/api/record`, gets a job id
+immediately, and polls `/api/record/<id>`; the WAV is fetched from
+`/api/record/<id>/audio` once the job is done. Jobs live in memory and do not
+survive a restart.
+
+The server binds to `127.0.0.1` by default and has **no authentication**, and
+the record endpoint will connect to whatever URL it is given. Do not expose it
+to a network you do not control.
+
+## Government and military downlinks
+
+`sdrstream.military` lists government and military spacecraft whose downlinks a
+public receiver can reach, and it is careful about what "reach" means. Each
+entry carries an `encryption` field:
+
+* `open` — the downlink carries unencrypted traffic. This is rare and usually
+  means a legacy system built before encryption was practical.
+* `encrypted` — the downlink is receivable but its payload is encrypted. You
+  can see that the satellite is transmitting, measure its frequency, watch the
+  Doppler curve and time the passes. You cannot read the content.
+* `beacon` — only a carrier or unmodulated beacon is receivable.
+
+```bash
+python -m sdrstream military           # against the bundled catalogue
+python -m sdrstream military --live    # against a live directory sweep
+```
+
+The most interesting entries are the UHF SATCOM repeaters in 240–270 MHz.
+FLTSATCOM, UFO and Skynet were built in the 1970s and 1980s, before practical
+encryption, so their transponders still relay whatever reaches them — in
+practice, usually unlicensed third-party traffic. They are the most widely
+heard military downlinks in the world. Against a live sweep, 25 of the roughly
+440 public OpenWebRX receivers reach that band.
+
+The rest of the table is mostly `encrypted`: DMSP at 400.032 MHz, DSP/SBIRS
+SGLS carriers near 2237.5 MHz, Molniya's spread-spectrum links near 1000 MHz.
+A public receiver can confirm a pass and nothing more. Systems that are out of
+reach entirely — Milstar/AEHF at EHF, Lacrosse at X-band, KH-11 — are listed in
+`OUT_OF_REACH` with the reason, so the gap is stated rather than implied.
+
+Nothing here decrypts anything, and there is no key material or cryptanalysis
+anywhere in the package. Receiving a signal broadcast over the air is generally
+lawful to listen to; what is not lawful in most places is decrypting a
+protected service or using what you hear.
+
+## Non-text protocols
+
+`sdrstream.dvbs2` handles the binary framing underneath the text protocols: the
+two custom IP-over-satellite layouts documented by the
+[Don't Look Up](https://github.com/ucsdsysnet/dontlookup) project. Both turn out
+to be plain TFTP DATA packets (RFC 1350) with a fixed block size — a `00 03`
+opcode, a 16-bit block number, then 512 or 1024 bytes of payload.
+
+```python
+from sdrstream import dvbs2
+
+found = dvbs2.carve(data)          # find every frame, record the gaps
+found.payload()                    # payloads in capture order
+found.ordered_payload()            # reassembled by block number
+found.missing()                    # holes in the reassembled stream
+dvbs2.reassemble(data)             # the common case, one call
+```
+
+Carving works by scanning every byte offset for the opcode, because the capture
+does not say where frames begin. A frame is only accepted when it fits, so a
+stray opcode near the end cannot produce a truncated frame. The 16-bit block
+counter wraps, so ordering is derived from the largest circular gap between
+block numbers rather than by sorting, which would put the tail of a long
+transfer first. `best_carve` runs both layouts and keeps whichever recovers
+more payload, which is how the reference tool resolves the ambiguity.
 
 ## Satellites
 
@@ -265,7 +357,7 @@ handled deliberately:
 python -m unittest discover -s tests -t .
 ```
 
-The suite has 48 tests and needs no network:
+The suite has 233 tests and needs no network:
 
 * **Decoder tests** compare against fixtures generated by the reference
   JavaScript decoders, including captured frames from a live WebSDR server.
@@ -293,6 +385,15 @@ that anyone can listen to in a browser. Use it accordingly:
 * Do not use it to intercept private communications.
 * Public WebSDR/OpenWebRX receivers are operated by volunteers; keep request
   rates modest.
+
+On the government and military table, the same rule applies with more force.
+Every entry is a downlink that is broadcast over the air and documented in
+public sources, and the table states for each one whether the payload is
+readable or encrypted. The package contains no decryption, no key material and
+no cryptanalysis, and it does not attempt to break a protected service.
+Reception of an unencrypted broadcast is a listening activity; decrypting a
+protected service, or acting on what you hear, may not be lawful where you are.
+That is your call to make, not this library's.
 
 ## License
 
