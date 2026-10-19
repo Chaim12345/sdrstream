@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 try:  # pragma: no cover - exercised only when the extra is installed
     from sgp4.api import Satrec, jday
@@ -55,6 +55,9 @@ def gmst(dt: datetime) -> float:
     """
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
+    cached = _GMST_CACHE.get(dt)
+    if cached is not None:
+        return cached
     jd = _julian_date(dt)
     t = (jd - 2451545.0) / 36525.0
     theta = (
@@ -63,7 +66,17 @@ def gmst(dt: datetime) -> float:
         + 0.000387933 * t * t
         - t * t * t / 38710000.0
     )
-    return (theta % 360.0) * DEG
+    value = (theta % 360.0) * DEG
+    if len(_GMST_CACHE) >= _GMST_CACHE_LIMIT:
+        _GMST_CACHE.clear()
+    _GMST_CACHE[dt] = value
+    return value
+
+
+#: Sidereal time is a pure function of the instant, and a pass scan revisits the
+#: same instants once per receiver, so caching it is worth the small dict.
+_GMST_CACHE: Dict[datetime, float] = {}
+_GMST_CACHE_LIMIT = 65536
 
 
 def _julian_date(dt: datetime) -> float:
@@ -165,6 +178,12 @@ class Tracker:
         self.satellite = Satrec.twoline2rv(tle_line1, tle_line2)
         self.tle_line1 = tle_line1
         self.tle_line2 = tle_line2
+        # SGP4 propagation depends only on the orbit, not the observer, so the
+        # same times recur for every receiver a pass is predicted for. Caching
+        # the ECI position collapses that repeated work; the cap keeps a long
+        # scan from growing without bound.
+        self._position_cache: Dict[Tuple[float, float], Tuple[float, float, float]] = {}
+        self._position_cache_limit = 8192
 
     @classmethod
     def from_tle_text(cls, text: str, name: str) -> "Tracker":
@@ -187,9 +206,16 @@ class Tracker:
             dt.year, dt.month, dt.day, dt.hour, dt.minute,
             dt.second + dt.microsecond / 1e6,
         )
+        key = (jd, fr)
+        cached = self._position_cache.get(key)
+        if cached is not None:
+            return cached
         error, position, _velocity = self.satellite.sgp4(jd, fr)
         if error != 0:
             raise RuntimeError("SGP4 propagation failed with code %d" % error)
+        if len(self._position_cache) >= self._position_cache_limit:
+            self._position_cache.clear()
+        self._position_cache[key] = position
         return position
 
     def look_angle(self, dt: datetime, observer_lat: float,
@@ -197,12 +223,22 @@ class Tracker:
                    ) -> LookAngle:
         """Azimuth, elevation, range and range rate at *dt*."""
         position = self.propagate(dt)
-        lat, lon, alt = eci_to_geodetic(position[0], position[1], position[2], dt)
+        sat_geodetic = eci_to_geodetic(position[0], position[1], position[2], dt)
+        return self._look_from(position, sat_geodetic, dt, observer_lat,
+                               observer_lon, observer_alt_km)
+
+    def _look_from(self, position, sat_geodetic, dt, observer_lat,
+                   observer_lon, observer_alt_km) -> LookAngle:
+        """Look angle from an already-propagated ECI position.
+
+        Split out so a caller with the position in hand skips re-propagating
+        it, which is what makes a multi-receiver sweep cheap.
+        """
         obs = geodetic_to_eci(observer_lat, observer_lon, observer_alt_km, dt)
         topocentric = [position[i] - obs[i] for i in range(3)]
         return self._topocentric_to_look(
             topocentric, dt, observer_lat, observer_lon, observer_alt_km,
-            (lat, lon, alt),
+            sat_geodetic,
         )
 
     def _topocentric_to_look(self, topocentric, dt, obs_lat, obs_lon, obs_alt,
@@ -252,43 +288,63 @@ class Tracker:
         The scan uses a coarse time step and then refines the rise, peak and set
         times, which keeps a full day of prediction to a few hundred SGP4 calls.
         """
+        return self.find_passes_multi(
+            [(observer_lat, observer_lon, observer_alt_km)],
+            start=start, hours=hours, min_elevation=min_elevation,
+            step_seconds=step_seconds,
+        )[0]
+
+    def find_passes_multi(self, observers, start: Optional[datetime] = None,
+                          hours: float = 24.0, min_elevation: float = 5.0,
+                          step_seconds: float = 30.0
+                          ) -> List[List["Pass"]]:
+        """Passes for many observers in one sweep, one list per observer.
+
+        *observers* is a sequence of ``(lat, lon)`` or ``(lat, lon, alt_km)``.
+        The orbit does not depend on the observer, so propagating once per time
+        step and reusing that position for every observer turns an N-receiver
+        scan from N SGP4 runs per step into one. Each result list is in the
+        same order as *observers*.
+        """
         start = start or datetime.now(timezone.utc)
         if start.tzinfo is None:
             start = start.replace(tzinfo=timezone.utc)
         end = start + timedelta(hours=hours)
 
-        passes: List[Pass] = []
+        obs = [tuple(o) if len(o) == 3 else (o[0], o[1], 0.0) for o in observers]
+        results: List[List[Pass]] = [[] for _ in obs]
+        rise_times: List[Optional[datetime]] = [None] * len(obs)
+        sample_sets: List[List[LookAngle]] = [[] for _ in obs]
+
         t = start
-        rise_time = None
-        samples: List[LookAngle] = []
         while t <= end:
-            current = self.look_angle(t, observer_lat, observer_lon, observer_alt_km)
-            if current.visible and rise_time is None:
-                rise_time = self._refine_crossing(
-                    observer_lat, observer_lon, observer_alt_km,
-                    t - timedelta(seconds=step_seconds), t, rising=True,
-                )
-                samples = []
-            if current.visible:
-                samples.append(current)
-            elif rise_time is not None:
-                set_time = self._refine_crossing(
-                    observer_lat, observer_lon, observer_alt_km,
-                    t - timedelta(seconds=step_seconds), t, rising=False,
-                )
-                peak = self._refine_peak(
-                    observer_lat, observer_lon, observer_alt_km, samples)
-                if peak.elevation >= min_elevation:
-                    passes.append(Pass(
-                        rise=rise_time,
-                        peak=peak,
-                        set_time=set_time,
-                        duration=(set_time - rise_time).total_seconds(),
-                    ))
-                rise_time = None
-                samples = []
+            position = self.propagate(t)
+            sat_geodetic = eci_to_geodetic(position[0], position[1],
+                                           position[2], t)
+            previous = t - timedelta(seconds=step_seconds)
+            for i, (lat, lon, alt) in enumerate(obs):
+                current = self._look_from(position, sat_geodetic, t, lat, lon, alt)
+                if current.visible and rise_times[i] is None:
+                    rise_times[i] = self._refine_crossing(
+                        lat, lon, alt, previous, t, rising=True)
+                    sample_sets[i] = []
+                if current.visible:
+                    sample_sets[i].append(current)
+                elif rise_times[i] is not None:
+                    set_time = self._refine_crossing(
+                        lat, lon, alt, previous, t, rising=False)
+                    peak = self._refine_peak(lat, lon, alt, sample_sets[i])
+                    if peak.elevation >= min_elevation:
+                        results[i].append(Pass(
+                            rise=rise_times[i],
+                            peak=peak,
+                            set_time=set_time,
+                            duration=(set_time - rise_times[i]).total_seconds(),
+                        ))
+                    rise_times[i] = None
+                    sample_sets[i] = []
             t += timedelta(seconds=step_seconds)
-        return passes
+        return results
 
     def _refine_peak(self, lat, lon, alt, samples: List[LookAngle],
                      iterations: int = 25) -> LookAngle:

@@ -44,6 +44,10 @@ class ChasePlan:
     end: datetime
     start_frequency_hz: float
     doppler_range_hz: tuple
+    #: The TLE block this plan was built from, so a later re-lookup by the
+    #: satellite's table name (which may differ from the catalogue name, as
+    #: PO-101 does from DIWATA-2B) cannot lose the orbit.
+    tle_text: Optional[str] = None
 
     def summary(self) -> str:
         lines = [
@@ -139,6 +143,7 @@ def plan_pass(
         end=end,
         start_frequency_hz=satellite.downlink_hz + (shifts[0] if shifts else 0.0),
         doppler_range_hz=(int(min(shifts)), int(max(shifts))) if shifts else (0, 0),
+        tle_text=text,
     )
 
 
@@ -188,7 +193,7 @@ async def chase(
     from . import tle as tle_module
 
     say = on_progress or (lambda message: None)
-    text = tle_module.load("amateur", offline=offline_tle)
+    text = plan.tle_text or tle_module.load("amateur", offline=offline_tle)
     tracker = Tracker.from_tle_text(text, plan.satellite.name)
     latitude, longitude = plan.receiver.location
     nominal = plan.satellite.downlink_hz

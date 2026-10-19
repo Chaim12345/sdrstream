@@ -27,6 +27,10 @@ DEFAULT_CACHE = Path(
     os.environ.get("SDRSTREAM_CACHE", Path.home() / ".cache" / "sdrstream")
 )
 
+#: Celestrak can return a single object by catalogue number. Used for the few
+#: birds that are not in any group we download, so the table still tracks them.
+CATNR_URL = ("https://celestrak.org/NORAD/elements/gp.php?CATNR=%d&FORMAT=tle")
+
 
 def cache_path(group: str, cache_dir: Optional[Path] = None) -> Path:
     return (cache_dir or DEFAULT_CACHE) / ("tle_%s.txt" % group)
@@ -79,6 +83,15 @@ def load(group: str = "amateur", max_age_hours: float = 24.0,
         raise
 
 
+def catnr(line1: str) -> int:
+    """The catalogue number from TLE line 1, as an integer.
+
+    Celestrak zero-pads it to five columns, so "07530" and "7530" are the same
+    object; comparing the raw text would treat them as different.
+    """
+    return int(line1[2:7])
+
+
 def parse(text: str) -> Dict[str, Dict[str, str]]:
     """Parse a TLE file into ``{name: {"line1": ..., "line2": ...}}``.
 
@@ -114,3 +127,46 @@ def lookup(name: str, group: str = "amateur", **kwargs) -> Dict[str, str]:
             return value
     raise KeyError("no TLE for %r in group %r (%d satellites)"
                    % (name, group, len(elements)))
+
+
+def fetch_catnr(norad_id: int, timeout: float = 30.0,
+                cache_dir: Optional[Path] = None) -> str:
+    """Download one object's TLE by catalogue number, and cache it.
+
+    Celestrak answers a miss with a short ``No GP data found`` body rather than
+    an error, so a real TLE is recognised by its ``1 `` element line.
+    """
+    url = CATNR_URL % norad_id
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "sdrstream/0.1 (+satellite)"}
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        text = response.read().decode("utf-8", "replace")
+    path = (cache_dir or DEFAULT_CACHE) / ("tle_catnr_%d.txt" % norad_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return text
+
+
+def load_catnr(norad_id: int, max_age_hours: float = 24.0,
+               cache_dir: Optional[Path] = None,
+               offline: bool = False) -> Optional[str]:
+    """A single object's TLE text, cached, or ``None`` if Celestrak has none.
+
+    This is the fallback for a satellite in our table that no downloaded group
+    carries, such as the older AO-7 and CAS-4 birds.
+    """
+    path = (cache_dir or DEFAULT_CACHE) / ("tle_catnr_%d.txt" % norad_id)
+    age = None
+    if path.exists():
+        age = time.time() - path.stat().st_mtime
+    if age is not None and (offline or age < max_age_hours * 3600.0):
+        text = path.read_text()
+    elif offline:
+        return None
+    else:
+        try:
+            text = fetch_catnr(norad_id, cache_dir=cache_dir)
+        except Exception:
+            return path.read_text() if path.exists() else None
+    return text if "1 " in text else None

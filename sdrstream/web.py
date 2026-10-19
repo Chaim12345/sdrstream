@@ -25,12 +25,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -104,6 +106,7 @@ PAGE = """<!doctype html>
   <button data-tab="passes">Passes</button>
   <button data-tab="military">Government &amp; military</button>
   <button data-tab="record">Record</button>
+  <button data-tab="captures">Live captures</button>
   <button data-tab="undocumented">Undocumented</button>
 </nav>
 
@@ -198,6 +201,22 @@ PAGE = """<!doctype html>
   <div id="c-out"></div>
 </section>
 
+<section id="captures">
+  <p class="hint">Live view of a recording campaign. Reads the plan and the
+  captures the recorder has written so far, refreshing every few seconds.
+  Start a campaign with <code>python tools/record_sky.py --live</code>; set
+  <code>SDRSTREAM_CAPTURES</code> if it writes somewhere other than
+  <code>/tmp/captures</code>.</p>
+  <fieldset>
+    <div class="row">
+      <label for="k-auto">Auto-refresh</label>
+      <input id="k-auto" type="checkbox" checked>
+      <button class="go" id="k-go">Refresh now</button>
+    </div>
+  </fieldset>
+  <div id="k-out"></div>
+</section>
+
 <section id="undocumented">
   <p class="hint">Satellites heard by the SatNOGS network that the curated
   table does not list. Temporary 99xxx NORAD ids mark unidentified objects.
@@ -237,9 +256,14 @@ async function api(path, options) {
 function table(headers, rows) {
   if (!rows.length) return "<p class='hint'>nothing found</p>";
   const head = headers.map((h) => "<th>" + esc(h) + "</th>").join("");
-  const body = rows.map((cells) => "<tr>" + cells.map((c, i) =>
-    "<td" + (i && typeof c === "number" ? " class='num'" : "") + ">" +
-    esc(c) + "</td>").join("") + "</tr>").join("");
+  const body = rows.map((cells) => "<tr>" + cells.map((c, i) => {
+    // A {raw: ...} cell is trusted markup (we build it ourselves); everything
+    // else is escaped, since it can come from a remote receiver.
+    const raw = c && typeof c === "object" && "raw" in c;
+    const value = raw ? c.raw : esc(c);
+    return "<td" + (i && typeof c === "number" ? " class='num'" : "") + ">" +
+           value + "</td>";
+  }).join("") + "</tr>").join("");
   return "<table><thead><tr>" + head + "</tr></thead><tbody>" + body +
          "</tbody></table>";
 }
@@ -360,6 +384,47 @@ fetch("/api/satellites").then((r) => r.json()).then((data) => {
   $("p-sat").innerHTML = data.satellites.map((s) =>
     "<option value='" + esc(s.name) + "'>" + esc(s.name) + "</option>").join("");
 }).catch(() => {});
+
+function captureRows(data) {
+  return data.captures.map((c) => {
+    const cell = c.available
+      ? { raw: "<audio controls preload='none' src='/api/captures/" +
+          encodeURIComponent(c.name) + "'></audio>" }
+      : "<span class='err'>" + esc(c.error || "no audio") + "</span>";
+    return [c.satellite, c.receiver, c.samples, c.samplerate, c.peak, cell];
+  });
+}
+
+async function refreshCaptures() {
+  const out = $("k-out");
+  try {
+    const data = await api("/api/captures");
+    const plan = data.plan.length
+      ? table(["Satellite", "Band", "MHz", "Rise (UTC)", "Max el", "Candidates"],
+          data.plan.map((p) => [p.satellite, p.band, p.downlink_mhz,
+            p.rise_utc, Math.round(p.max_elevation),
+            p.candidates.length]))
+      : "<p class='hint'>no plan yet; the recorder writes plan.json at start.</p>";
+    const got = data.captures.length
+      ? table(["Satellite", "Receiver", "Samples", "Hz", "Peak", "Audio"],
+          captureRows(data))
+      : "<p class='hint'>no captures yet.</p>";
+    out.innerHTML = "<p class='hint'>reading " + esc(data.directory) +
+      "</p><h3>Queued</h3>" + plan + "<h3>Captured</h3>" + got;
+  } catch (error) {
+    out.innerHTML = "<p class='err'>" + esc(error.message) + "</p>";
+  }
+}
+
+let captureTimer = null;
+function armCaptures() {
+  clearInterval(captureTimer);
+  if ($("k-auto").checked) captureTimer = setInterval(refreshCaptures, 5000);
+}
+$("k-go").addEventListener("click", refreshCaptures);
+$("k-auto").addEventListener("change", armCaptures);
+armCaptures();
+refreshCaptures();
 </script>
 </body>
 </html>
@@ -499,6 +564,58 @@ def _undocumented_payload(query: Dict[str, List[str]]) -> Dict[str, Any]:
                 for entry in found]}
 
 
+def _captures_dir() -> Path:
+    """Where a running recorder writes its plan, captures and sidecar.
+
+    Set ``SDRSTREAM_CAPTURES`` to point at the recorder's ``--outdir``; the
+    default matches the tool's own default so the two agree out of the box.
+    """
+    return Path(os.environ.get("SDRSTREAM_CAPTURES", "/tmp/captures"))
+
+
+def _captures_payload() -> Dict[str, Any]:
+    """The recorder's plan and results, read from its output directory.
+
+    The recorder writes ``plan.json`` up front and rewrites ``captures.json``
+    after every pass, so reading both gives a live view of what is queued and
+    what has landed without the server having to own the campaign.
+    """
+    directory_ = _captures_dir()
+    plan: List[Dict[str, Any]] = []
+    captures: List[Dict[str, Any]] = []
+    plan_path = directory_ / "plan.json"
+    capture_path = directory_ / "captures.json"
+    if plan_path.exists():
+        try:
+            plan = json.loads(plan_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            plan = []
+    if capture_path.exists():
+        try:
+            captures = json.loads(capture_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            captures = []
+    for record in captures:
+        wav = record.get("file")
+        record["available"] = bool(
+            record.get("samples") and wav and Path(wav).exists())
+        record["name"] = Path(wav).name if wav else None
+    return {"directory": str(directory_), "plan": plan, "captures": captures}
+
+
+def _capture_file(name: str) -> Optional[Path]:
+    """Resolve a capture name to a path, refusing anything outside the dir."""
+    if not name or "/" in name or "\\" in name or name.startswith("."):
+        return None
+    directory_ = _captures_dir()
+    for record in _captures_payload()["captures"]:
+        if record.get("name") == name:
+            path = Path(record.get("file") or "")
+            if path.exists() and path.parent == directory_:
+                return path
+    return None
+
+
 def _run_recording(job: RecordJob, request: Dict[str, Any]) -> None:
     """Record in a worker thread and fill in the job when it finishes."""
     try:
@@ -589,6 +706,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, _passes_payload(query))
             elif path == "/api/undocumented":
                 self._json(200, _undocumented_payload(query))
+            elif path == "/api/captures":
+                self._json(200, _captures_payload())
+            elif path.startswith("/api/captures/"):
+                self._get_capture(path)
             elif path.startswith("/api/record/"):
                 self._get_record(path)
             else:
@@ -597,6 +718,15 @@ class Handler(BaseHTTPRequestHandler):
             self._error(400, str(exc))
         except Exception as exc:
             self._error(502, "%s: %s" % (type(exc).__name__, exc))
+
+    def _get_capture(self, path: str) -> None:
+        # /api/captures/<name> serves the WAV itself.
+        name = path[len("/api/captures/"):]
+        resolved = _capture_file(name)
+        if resolved is None:
+            self._error(404, "no such capture")
+            return
+        self._send(200, resolved.read_bytes(), "audio/wav")
 
     def _get_record(self, path: str) -> None:
         parts = path.split("/")
