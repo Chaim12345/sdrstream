@@ -691,7 +691,7 @@ func cmdObservations(args []string) error {
 
 func cmdWeb(args []string) error {
 	fs := flag.NewFlagSet("web", flag.ExitOnError)
-	host := fs.String("host", "127.00.1", "address to bind")
+	host := fs.String("host", "127.0.0.1", "address to bind")
 	port := fs.Int("port", 8000, "port to bind")
 	fs.Parse(args)
 	server := web.New()
