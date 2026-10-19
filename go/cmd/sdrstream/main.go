@@ -693,8 +693,9 @@ func cmdWeb(args []string) error {
 	fs := flag.NewFlagSet("web", flag.ExitOnError)
 	host := fs.String("host", "127.0.0.1", "address to bind")
 	port := fs.Int("port", 8000, "port to bind")
+	capturesDir := fs.String("captures-dir", "../captures", "directory of saved WAV captures to list and serve")
 	fs.Parse(args)
-	server := web.New()
+	server := web.New(*capturesDir)
 	return server.Serve(fmt.Sprintf("%s:%d", *host, *port))
 }
 

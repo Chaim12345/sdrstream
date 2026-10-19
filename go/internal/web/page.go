@@ -90,7 +90,14 @@ async function refreshStatus() {
     const capturesBody = el('captures').querySelector('tbody');
     capturesBody.textContent = '';
     status.captures.slice(-15).reverse().forEach(c => {
-      capturesBody.appendChild(row([c.satellite, shortURL(c.receiver), fmtDate(c.start), c.samples, c.rate + ' Hz', c.path]));
+      const tr = row([c.satellite, shortURL(c.receiver), fmtDate(c.start), c.samples, c.rate + ' Hz', c.path]);
+      if (c.url) {
+        tr.lastChild.textContent = '';
+        const a = document.createElement('a');
+        a.href = c.url; a.textContent = c.path; a.target = '_blank';
+        tr.lastChild.appendChild(a);
+      }
+      capturesBody.appendChild(tr);
     });
     if (!status.captures.length) capturesBody.appendChild(row(['none yet — run a capture', '', '', '', '', '']));
     el('msg').textContent = 'updated ' + fmtTime(status.updated_at) + ' — ' + status.receivers + ' receivers in catalogue';
