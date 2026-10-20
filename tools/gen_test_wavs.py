@@ -353,6 +353,86 @@ def make_eas(header="ZCZC-WXR-TOR-039173+0045-1421800-KCLE/NWS-", eom=True):
     return [s + random.gauss(0, 0.02) for s in samples]
 
 
+CCIR476 = {
+    'A': 0x47, 'B': 0x72, 'C': 0x1D, 'D': 0x53, 'E': 0x56, 'F': 0x1B,
+    'G': 0x35, 'H': 0x69, 'I': 0x4D, 'J': 0x17, 'K': 0x1E, 'L': 0x65,
+    'M': 0x39, 'N': 0x59, 'O': 0x71, 'P': 0x2D, 'Q': 0x2E, 'R': 0x55,
+    'S': 0x4B, 'T': 0x74, 'U': 0x4E, 'V': 0x3C, 'W': 0x27, 'X': 0x3A,
+    'Y': 0x2B, 'Z': 0x63,
+    '0': 0x2D, '1': 0x2E, '2': 0x27, '3': 0x56, '4': 0x55, '5': 0x74,
+    '6': 0x2B, '7': 0x4E, '8': 0x4D, '9': 0x71,
+    ' ': 0x5C, '\n': 0x6C, '\r': 0x78, '-': 0x47, '.': 0x39, '/': 0x3A,
+    '+': 0x63, '?': 0x72, ':': 0x1D, '=': 0x3C, '!': 0x1B, '(': 0x1E,
+    ')': 0x65, ',': 0x59, '$': 0x53, "'": 0x17, '&': 0x35, '#': 0x69,
+}
+CCIR_LTRS = 0x5A
+CCIR_FIGS = 0x36
+CCIR_REP = 0x66
+CCIR_ALPHA = 0x0F
+CCIR_BETA = 0x33
+CCIR_LETTERS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ ")
+
+
+def make_navtex(message="ZCZC SA00\nTEST NAVTEX MESSAGE 123\nNNNN",
+                center=1700.0, shift=170.0):
+    """Render a SITOR-B (NAVTEX) transmission: 100 baud FSK, CCIR 476 code.
+
+    Each character is sent twice, the repeat five characters (35 bits) later,
+    with the phasing signals (alpha/beta) at the start and rep at the end.
+    """
+    mark = center + shift / 2
+    space = center - shift / 2
+    baud = 100.0
+
+    def bits_of(code):
+        # CCIR 476 is sent most-significant bit first.
+        return [(code >> (6 - i)) & 1 for i in range(7)]
+
+    symbols = []
+    # Phasing: two alpha/beta pairs precede the message.
+    symbols += [CCIR_ALPHA, CCIR_BETA, CCIR_ALPHA, CCIR_BETA]
+    figs = False
+    for ch in message.upper():
+        if ch == '\n':
+            continue
+        want_figs = ch not in CCIR_LETTERS
+        if want_figs != figs:
+            symbols.append(CCIR_FIGS if want_figs else CCIR_LTRS)
+            figs = want_figs
+        code = CCIR476.get(ch)
+        if code is None:
+            continue
+        symbols.append(code)
+    # End-of-message phasing: three rep characters.
+    symbols += [CCIR_REP, CCIR_REP, CCIR_REP]
+
+    # Interleave: the transmitter sends each logical symbol paired with the
+    # symbol from three steps earlier, so every character's repeat lands five
+    # characters (35 bits) after the original.
+    stream = []
+    for k, sym in enumerate(symbols):
+        delayed = symbols[k - 3] if k >= 3 else CCIR_REP
+        stream.append(delayed)
+        stream.append(sym)
+
+    bits = []
+    for sym in stream:
+        bits += bits_of(sym)
+
+    samples = []
+    phase = 0.0
+    spb = RATE / baud
+    idx = 0
+    for bit in bits:
+        f = mark if bit else space
+        n = int(round((idx + 1) * spb)) - int(round(idx * spb))
+        for _ in range(n):
+            samples.append(0.6 * math.sin(phase))
+            phase += 2 * math.pi * f / RATE
+        idx += 1
+    return [s + random.gauss(0, 0.02) for s in samples]
+
+
 def make_sstv_vis(vis, mode_name="test"):
     """Render an SSTV VIS header: leader, break, start, 7 data bits, parity."""
     def tone(f, sec):
@@ -517,4 +597,5 @@ if __name__ == "__main__":
     write_wav("/tmp/test_psk31.wav", make_psk31("CQ DE RS44 PSK31 TEST"))
     write_wav("/tmp/test_pocsag.wav", make_pocsag(1234567, "HELLO PAGER TEST 123"))
     write_wav("/tmp/test_eas.wav", make_eas())
+    write_wav("/tmp/test_navtex.wav", make_navtex())
     print(f"wrote test WAVs at {RATE} Hz")

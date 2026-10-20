@@ -1017,10 +1017,12 @@ func cmdWeb(args []string) error {
 }
 
 // cmdDecode extracts data from a recorded pass: APRS packets via
-// AFSK/HDLC/AX.25, and Morse text from CW beacons.
+// AFSK/HDLC/AX.25, Morse text from CW beacons, DTMF digits, RTTY, PSK31,
+// SSTV image headers, POCSAG pager pages, EAS/SAME alert headers and NAVTEX
+// maritime broadcasts.
 func cmdDecode(args []string) error {
 	fs := flag.NewFlagSet("decode", flag.ExitOnError)
-	mode := fs.String("mode", "auto", "auto | aprs | morse | dtmf | rtty | psk31 | sstv | pocsag | eas | all")
+	mode := fs.String("mode", "auto", "auto | aprs | morse | dtmf | rtty | psk31 | sstv | pocsag | eas | navtex | all")
 	offset := fs.Float64("offset", 0, "audio centre frequency in Hz for psk31/rtty (0 = auto)")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
@@ -1081,6 +1083,18 @@ func cmdDecode(args []string) error {
 			}
 			for _, a := range alerts {
 				fmt.Printf("   eas:    %s\n", a.String())
+			}
+		}
+		if *mode == "navtex" || wantAll {
+			msgs := decode.NAVTEXDecode(samples, rate, *offset)
+			if len(msgs) == 0 && *mode == "navtex" {
+				fmt.Println("   navtex: no messages")
+			}
+			for _, m := range msgs {
+				fmt.Printf("   navtex: %s%s %s\n", m.Station, m.Subject, m.Serial)
+				for _, line := range strings.Split(strings.TrimRight(m.Text, "\n"), "\n") {
+					fmt.Printf("           %s\n", line)
+				}
 			}
 		}
 

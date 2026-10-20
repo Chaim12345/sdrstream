@@ -186,6 +186,36 @@ block numbers rather than by sorting, which would put the tail of a long
 transfer first. `best_carve` runs both layouts and keeps whichever recovers
 more payload, which is how the reference tool resolves the ambiguity.
 
+## Audio decoders
+
+The Go build carries a growing set of demodulators that turn recorded audio
+back into data. They all run offline over a WAV file, so a capture from any
+receiver can be decoded later:
+
+```bash
+cd go
+go run ./cmd/sdrstream decode capture.wav              # every mode
+go run ./cmd/sdrstream decode -mode aprs capture.wav   # one mode
+```
+
+| Mode | What it reads | Modulation |
+| --- | --- | --- |
+| `aprs` | APRS/AX.25 packets | 1200 baud AFSK, HDLC |
+| `morse` | CW text | on/off keying |
+| `dtmf` | telephone digits | two-tone pairs |
+| `rtty` | Baudot teletype | 45.45 baud FSK |
+| `psk31` | PSK31 text | BPSK, varicode |
+| `sstv` | image mode headers | VIS tone code |
+| `pocsag` | pager pages (numeric and alphanumeric) | 1200/2400 baud FSK, BCH |
+| `eas` | US Emergency Alert System headers | 520.83 baud AFSK, 8N1 |
+| `navtex` | maritime navigational warnings | SITOR-B FEC, CCIR 476 |
+
+Each decoder has a reference test built from a generated fixture, so the suite
+catches regressions in the bit-level work. The EAS decoder uses the sixteen
+`0xAB` preamble bytes to find the byte boundary before reading the 8N1 stream;
+the NAVTEX decoder picks the bit alignment that maximises valid CCIR 476
+characters, then drops the FEC repeat characters.
+
 ## Satellites
 
 The satellite side answers three questions: what is up there, when will it be
