@@ -174,8 +174,8 @@ SATELLITES: Dict[str, Satellite] = {
             downlink_hz=435_800_000,
             uplink_hz=145_950_000,
             mode="USB",
-            notes="JAS-2. Linear transponder, inverting; long-lived.",
-            beacons=(435_800_000,),
+            notes="JAS-2. Linear transponder, inverting; long-lived. CW beacon 435.795.",
+            beacons=(435_795_000,),
         ),
         Satellite(
             "AO-85",

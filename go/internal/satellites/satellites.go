@@ -34,7 +34,7 @@ var Table = []Sat{
 	{Name: "PO-101", NoradID: 43678, DownlinkHz: 145900000, Mode: "FM", UplinkHz: int64Ptr(437500000), ToneHz: nil, Status: "active", Notes: "Diwata-2; FM voice repeater, scheduling varies.", Beacons: []int64{145900000}},
 	{Name: "AO-7", NoradID: 7530, DownlinkHz: 145975000, Mode: "USB", UplinkHz: int64Ptr(432150000), ToneHz: nil, Status: "active", Notes: "Launched 1974, still working in sunlight. Mode B.", Beacons: []int64{145975000}},
 	{Name: "AO-27", NoradID: 22825, DownlinkHz: 436795000, Mode: "FM", UplinkHz: int64Ptr(145850000), ToneHz: nil, Status: "active", Notes: "EYESAT A. FM repeater; intermittently active.", Beacons: []int64{436795000}},
-	{Name: "FO-29", NoradID: 24278, DownlinkHz: 435800000, Mode: "USB", UplinkHz: int64Ptr(145950000), ToneHz: nil, Status: "active", Notes: "JAS-2. Linear transponder, inverting; long-lived.", Beacons: []int64{435800000}},
+	{Name: "FO-29", NoradID: 24278, DownlinkHz: 435800000, Mode: "USB", UplinkHz: int64Ptr(145950000), ToneHz: nil, Status: "active", Notes: "JAS-2. Linear transponder, inverting; long-lived. CW beacon 435.795.", Beacons: []int64{435795000}},
 	{Name: "AO-85", NoradID: 40967, DownlinkHz: 145980000, Mode: "FM", UplinkHz: int64Ptr(435170000), ToneHz: float64Ptr(67.0), Status: "active", Notes: "Fox-1A. FM repeater, intermittent.", Beacons: []int64{145980000}},
 	{Name: "AO-95", NoradID: 43770, DownlinkHz: 145915000, Mode: "FM", UplinkHz: int64Ptr(435300000), ToneHz: nil, Status: "active", Notes: "Fox-1Cliff. FM repeater.", Beacons: []int64{145915000}},
 	{Name: "JO-97", NoradID: 43803, DownlinkHz: 145840000, Mode: "USB", UplinkHz: int64Ptr(435110000), ToneHz: nil, Status: "active", Notes: "JY1SAT. Linear transponder, inverting; also telemetry.", Beacons: []int64{145840000}},

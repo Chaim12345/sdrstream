@@ -124,10 +124,10 @@ func PlanPass(sat satellites.Sat, receiver *catalogue.Receiver,
 		if err != nil {
 			continue
 		}
-		shift := look.DopplerShift(float64(sat.DownlinkHz))
+		shift := look.DopplerShift(chaseFrequencyHz(sat))
 		if first {
 			low, high = shift, shift
-			startFreq = dialFrequency(float64(sat.DownlinkHz), shift, sat.Mode)
+			startFreq = dialFrequency(chaseFrequencyHz(sat), shift, sat.Mode)
 			first = false
 		}
 		low = math.Min(low, shift)
@@ -151,6 +151,17 @@ func bandNames(bands []catalogue.Band) string {
 		return "none"
 	}
 	return strings.Join(names, ",")
+}
+
+// chaseFrequencyHz is the RF frequency the chase actually listens on: the
+// first published beacon when one exists (a transponder's DownlinkHz is the
+// passband centre, which usually carries nothing by itself), otherwise the
+// downlink itself.
+func chaseFrequencyHz(sat satellites.Sat) float64 {
+	if len(sat.Beacons) > 0 && sat.Beacons[0] > 0 {
+		return float64(sat.Beacons[0])
+	}
+	return float64(sat.DownlinkHz)
 }
 
 // toneOffsetHz is the audio offset the chase aims a beacon at in SSB modes.
@@ -253,7 +264,7 @@ func Chase(ctx context.Context, plan ChasePlan, outPath string,
 		return 0, err
 	}
 	latitude, longitude := plan.Receiver.Latitude, plan.Receiver.Longitude
-	nominal := float64(plan.Satellite.DownlinkHz)
+	nominal := chaseFrequencyHz(plan.Satellite)
 
 	wait := time.Until(plan.Start)
 	if wait > 0 {

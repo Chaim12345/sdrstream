@@ -14,13 +14,24 @@ import urllib.request
 from pathlib import Path
 from typing import Dict, Optional
 
-#: Celestrak groups useful for listening. "amateur" holds the FM and linear
-#: satellites; "weather" and "noaa" hold the 137 MHz APT birds.
-GROUPS: Dict[str, str] = {
-    "amateur": "https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=tle",
-    "weather": "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle",
-    "stations": "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle",
-    "cubesat": "https://celestrak.org/NORAD/elements/gp.php?GROUP=cubesat&FORMAT=tle",
+#: TLE groups useful for listening. "amateur" holds the FM and linear
+#: satellites; "weather" and "noaa" hold the 137 MHz APT birds. Each group
+#: lists its download URLs in fallback order: AMSAT publishes the same
+#: amateur set as Celestrak and covers Celestrak outages.
+GROUPS: Dict[str, tuple] = {
+    "amateur": (
+        "https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=tle",
+        "https://www.amsat.org/tle/current/nasa.all",
+    ),
+    "weather": (
+        "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle",
+    ),
+    "stations": (
+        "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle",
+    ),
+    "cubesat": (
+        "https://celestrak.org/NORAD/elements/gp.php?GROUP=cubesat&FORMAT=tle",
+    ),
 }
 
 DEFAULT_CACHE = Path(
@@ -44,21 +55,42 @@ def age_seconds(group: str, cache_dir: Optional[Path] = None) -> Optional[float]
     return time.time() - path.stat().st_mtime
 
 
+def _looks_like_tle(text: str) -> bool:
+    """AMSAT's nasa.all carries a bulletin header before the TLEs, so the
+    test is 'contains a line starting with 1 ' rather than a magic prefix."""
+    return any(line.startswith("1 ") for line in text.splitlines())
+
+
 def fetch(group: str = "amateur", timeout: float = 30.0,
           cache_dir: Optional[Path] = None) -> str:
-    """Download a TLE set and cache it. Returns the raw text."""
+    """Download a TLE set and cache it. Returns the raw text.
+
+    Each source URL is tried in turn until one returns something that
+    plausibly contains element sets."""
     if group not in GROUPS:
         raise KeyError("unknown group %r; known: %s"
                        % (group, ", ".join(sorted(GROUPS))))
-    request = urllib.request.Request(
-        GROUPS[group], headers={"User-Agent": "sdrstream/0.1 (+satellite)"}
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        text = response.read().decode("utf-8", "replace")
-    path = cache_path(group, cache_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
-    return text
+    last_error: Optional[Exception] = None
+    for url in GROUPS[group]:
+        request = urllib.request.Request(
+            url, headers={"User-Agent": "sdrstream/0.1 (+satellite)"}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                text = response.read().decode("utf-8", "replace")
+        except Exception as error:  # noqa: BLE001 - try the next source
+            last_error = error
+            continue
+        if not _looks_like_tle(text):
+            last_error = ValueError("no element lines found at %s" % url)
+            continue
+        path = cache_path(group, cache_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return text
+    if last_error is not None:
+        raise last_error
+    raise KeyError("group %r has no sources" % group)
 
 
 def load(group: str = "amateur", max_age_hours: float = 24.0,

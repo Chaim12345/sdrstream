@@ -15,14 +15,25 @@ import (
 	"time"
 )
 
-// Groups maps the Celestrak groups useful for listening to their URLs. The
-// "amateur" group holds the FM and linear satellites; "weather" and "noaa"
-// hold the 137 MHz APT birds.
-var Groups = map[string]string{
-	"amateur":  "https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=tle",
-	"weather": "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle",
-	"stations": "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle",
-	"cubesat":  "https://celestrak.org/NORAD/elements/gp.php?GROUP=cubesat&FORMAT=tle",
+// Groups maps each TLE group name to its download sources, in fallback
+// order. The "amateur" group holds the FM and linear satellites; "weather"
+// and "noaa" hold the 137 MHz APT birds. AMSAT publishes the same amateur
+// set at a different URL and is the fallback when Celestrak is unreachable
+// (it rate-limits and, from some networks, times out entirely).
+var Groups = map[string][]string{
+	"amateur": {
+		"https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=tle",
+		"https://www.amsat.org/tle/current/nasa.all",
+	},
+	"weather": {
+		"https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle",
+	},
+	"stations": {
+		"https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle",
+	},
+	"cubesat": {
+		"https://celestrak.org/NORAD/elements/gp.php?GROUP=cubesat&FORMAT=tle",
+	},
 }
 
 // catnrURLTemplate fetches a single object by catalogue number, used for the
@@ -79,9 +90,22 @@ func AgeSeconds(group string) float64 {
 	return time.Since(info.ModTime()).Seconds()
 }
 
-// Fetch downloads a group's TLE set and caches it.
+// looksLikeTLE reports whether a download plausibly contains element sets.
+// AMSAT's nasa.all file carries a bulletin header before the TLEs, so the
+// test is "contains a line starting with '1 '" rather than a magic prefix.
+func looksLikeTLE(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "1 ") {
+			return true
+		}
+	}
+	return false
+}
+
+// Fetch downloads a group's TLE set and caches it, trying each source URL in
+// turn until one returns something that looks like element sets.
 func Fetch(group string, timeout time.Duration) (string, error) {
-	URL, ok := Groups[group]
+	urls, ok := Groups[group]
 	if !ok {
 		keys := make([]string, 0, len(Groups))
 		for key := range Groups {
@@ -90,15 +114,18 @@ func Fetch(group string, timeout time.Duration) (string, error) {
 		sortStrings(keys)
 		return "", fmt.Errorf("unknown group %q; known: %s", group, strings.Join(keys, ", "))
 	}
-	text, err := httpGet(URL, timeout)
-	if err != nil {
-		return "", err
+	var err error
+	for _, URL := range urls {
+		var text string
+		text, err = httpGet(URL, timeout)
+		if err == nil && looksLikeTLE(text) {
+			if mkdirErr := os.MkdirAll(DefaultCacheDir, 0o755); mkdirErr == nil {
+				_ = os.WriteFile(CachePath(group), []byte(text), 0o644)
+			}
+			return text, nil
+		}
 	}
-	if err := os.MkdirAll(DefaultCacheDir, 0o755); err != nil {
-		return text, nil
-	}
-	_ = os.WriteFile(CachePath(group), []byte(text), 0o644)
-	return text, nil
+	return "", fmt.Errorf("all %d sources for TLE group %q failed: %w", len(urls), group, err)
 }
 
 // Load returns a group's TLE set, downloading it only when the cache is
