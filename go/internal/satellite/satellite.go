@@ -47,8 +47,10 @@ func (p ChasePlan) Summary() string {
 	lines := []string{
 		fmt.Sprintf("%s via %s (%.2f, %.2f)", p.Satellite.Name, p.Receiver.URL,
 			p.Receiver.Latitude, p.Receiver.Longitude),
-		fmt.Sprintf("  nominal downlink %.4f MHz, mode %s",
-			float64(p.Satellite.DownlinkHz)/1e6, p.Satellite.Mode),
+		fmt.Sprintf("  chasing %.4f MHz%s, mode %s",
+			chaseFrequencyHz(p.Satellite)/1e6,
+			chaseSuffix(p.Satellite),
+			p.Satellite.Mode),
 		fmt.Sprintf("  recording %s to %s UTC (%.1f min)",
 			p.Start.Format("15:04:05"), p.End.Format("15:04:05"),
 			p.End.Sub(p.Start).Minutes()),
@@ -162,6 +164,15 @@ func chaseFrequencyHz(sat satellites.Sat) float64 {
 		return float64(sat.Beacons[0])
 	}
 	return float64(sat.DownlinkHz)
+}
+
+// chaseSuffix marks whether the chase frequency is a beacon, so plan logs
+// state what will actually be recorded rather than the transponder centre.
+func chaseSuffix(sat satellites.Sat) string {
+	if chaseFrequencyHz(sat) != float64(sat.DownlinkHz) {
+		return " (beacon)"
+	}
+	return ""
 }
 
 // toneOffsetHz is the audio offset the chase aims a beacon at in SSB modes.
