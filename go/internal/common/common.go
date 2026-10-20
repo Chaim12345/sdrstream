@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 )
@@ -152,4 +153,15 @@ func WAVBytes(samples []int16, samplerate, channels int) ([]byte, error) {
 		return nil, err
 	}
 	return buffer.Bytes(), nil
+}
+
+// WriteWAVFile writes 16-bit PCM samples to a WAV file on disk.
+func WriteWAVFile(path string, samples []int16, samplerate int) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = WriteWAV(file, samples, samplerate, 1)
+	return err
 }

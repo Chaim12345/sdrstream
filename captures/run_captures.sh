@@ -1,6 +1,6 @@
 #!/bin/bash
-# Sequential overnight pass captures via the Go sdrstream binary.
-# satrecord --hours 6 finds the NEXT pass with peak elevation >= min-el and
+# Sequential pass captures via the Go sdrstream binary.
+# satrecord --hours 30 finds the NEXT pass with peak elevation >= min-el and
 # records it fully; a 3 h timeout covers the longest wait+pass windows.
 set -u
 cd /workspace/project/sdrstream/go
@@ -13,7 +13,7 @@ capture() {
     timeout 10800 ./bin/sdrstream satrecord \
         --satellite "$sat" --lat "$lat" --lon "$lon" \
         --server "$server" --kind websdr \
-        --hours 6 --min-elevation "$minel" \
+        --hours 30 --min-elevation "$minel" \
         --out "/tmp/${sat}_pass.wav"
     if [ -f "/tmp/${sat}_pass.wav" ]; then
         mv "/tmp/${sat}_pass.wav" "$OUT/${sat}_$(date -u +%Y-%m-%d_%H%M)_via_sdrge.wav"
@@ -23,8 +23,10 @@ capture() {
     fi
 }
 
-# RS-44 CW beacon 435.620 MHz over sdr.ge (41.7292, 44.7917): pass at 00:55 UTC, 28.6 deg
+# RS-44 CW beacon 435.610 MHz over sdr.ge (41.7292, 44.7917): pass at 11:38 UTC, 49.4 deg
 capture RS-44 41.7292 44.7917 http://sdr.ge:8901 10
-# FO-29 CW beacon 435.800 MHz over sdr.ge: near-overhead pass at 02:43 UTC, 87.7 deg
+# FO-29 CW beacon 435.795 MHz over sdr.ge: pass at 15:38 UTC, 73.5 deg
 capture FO-29 41.7292 44.7917 http://sdr.ge:8901 10
+# RS-44 again: high pass at 23:35 UTC, 84.8 deg
+capture RS-44 41.7292 44.7917 http://sdr.ge:8901 10
 echo "=== $(date -u +%H:%M:%S) all captures done ==="

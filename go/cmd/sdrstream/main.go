@@ -15,6 +15,7 @@ import (
 
 	"github.com/Chaim12345/sdrstream/go/internal/catalogue"
 	"github.com/Chaim12345/sdrstream/go/internal/common"
+	"github.com/Chaim12345/sdrstream/go/internal/decode"
 	"github.com/Chaim12345/sdrstream/go/internal/directory"
 	"github.com/Chaim12345/sdrstream/go/internal/discovery"
 	"github.com/Chaim12345/sdrstream/go/internal/military"
@@ -41,6 +42,10 @@ commands:
   military     government downlinks a public receiver can reach
   fetch        download SatNOGS captures for a satellite
   observations show real SatNOGS receptions of a satellite
+  decode       demodulate recorded WAV files (AFSK/APRS, Morse)
+  scan         scan a WAV for transmissions (voice, data, CW)
+  bands        sweep receiver bands and report live traffic
+  spectrum     identify activity from an OpenWebRX server's own FFT
   web          serve the browser UI
 `
 
@@ -75,6 +80,14 @@ func main() {
 		err = cmdObservations(args)
 	case "web":
 		err = cmdWeb(args)
+	case "decode":
+		err = cmdDecode(args)
+	case "scan":
+		err = cmdScan(args)
+	case "bands":
+		err = cmdBands(args)
+	case "spectrum":
+		err = cmdSpectrum(args)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", command, usage)
 		os.Exit(2)
@@ -689,6 +702,210 @@ func cmdObservations(args []string) error {
 	return nil
 }
 
+// defaultBands are the standard amateur satellite bands used when a
+// receiver is not in the catalogue.
+var defaultBands = []catalogue.Band{
+	{Name: "6m", CenterKHz: 50250, SampleRateKHz: 2048},
+	{Name: "2m", CenterKHz: 145000, SampleRateKHz: 2048},
+	{Name: "70cm", CenterKHz: 433000, SampleRateKHz: 2048},
+}
+
+// lookupReceiver finds a catalogue entry whose URL matches, tolerating a
+// missing or extra port.
+func lookupReceiver(url string) (catalogue.Receiver, bool) {
+	norm := func(s string) string {
+		s = strings.TrimPrefix(s, "http://")
+		s = strings.TrimPrefix(s, "https://")
+		s = strings.TrimSuffix(s, "/")
+		if i := strings.Index(s, ":"); i >= 0 {
+			s = s[:i]
+		}
+		return s
+	}
+	for _, r := range catalogue.Table {
+		if r.URL == url || norm(r.URL) == norm(url) {
+			if r.URL != url {
+				r.URL = url
+			}
+			return r, true
+		}
+	}
+	return catalogue.Receiver{}, false
+}
+
+// cmdBands sweeps the amateur bands of one or more receivers, listening
+// briefly at each step, and reports every frequency where traffic was
+// heard. Hits can be saved as WAV and decoded.
+func cmdBands(args []string) error {
+	fs := flag.NewFlagSet("bands", flag.ExitOnError)
+	server := fs.String("server", "", "receiver URL (default: sweep every catalogue receiver)")
+	kind := fs.String("kind", "websdr", "websdr | openwebrx")
+	bandName := fs.String("band", "", "restrict to one band name (2m, 70cm, 6m, ...)")
+	stepKHz := fs.Float64("step", 25, "dial step in kHz")
+	dwell := fs.Float64("dwell", 1.2, "seconds to listen at each step")
+	minLevel := fs.Float64("min-level", -55, "minimum RMS level in dB to report")
+	outDir := fs.String("out-dir", "", "if set, save each hit as a WAV here")
+	limit := fs.Int("limit", 0, "maximum receivers to sweep (0 = all)")
+	fs.Parse(args)
+
+	var receivers []catalogue.Receiver
+	if *server != "" {
+		if known, ok := lookupReceiver(*server); ok {
+			receivers = []catalogue.Receiver{known}
+		} else {
+			receivers = []catalogue.Receiver{{URL: *server, Kind: *kind, Bands: defaultBands}}
+		}
+	} else {
+		receivers = catalogue.Table
+	}
+	if *limit > 0 && len(receivers) > *limit {
+		receivers = receivers[:*limit]
+	}
+
+	fmt.Printf("scanning %d receiver(s), step %.0f kHz, dwell %.1fs\n", len(receivers), *stepKHz, *dwell)
+	total := 0
+	for _, receiver := range receivers {
+		if len(receiver.Bands) == 0 {
+			fmt.Printf("== %s: no band list, skipping\n", receiver.URL)
+			continue
+		}
+		for _, band := range receiver.Bands {
+			if *bandName != "" && band.Name != *bandName {
+				continue
+			}
+			lowKHz := band.CenterKHz - band.SampleRateKHz/2
+			highKHz := band.CenterKHz + band.SampleRateKHz/2
+			fmt.Printf("== %s band %s  %.3f-%.3f MHz\n", receiver.URL, band.Name, lowKHz/1e3, highKHz/1e3)
+			hits, err := sweepBand(receiver, lowKHz, highKHz, *stepKHz, *dwell, *minLevel, *outDir)
+			if err != nil {
+				fmt.Printf("   error: %v\n", err)
+				continue
+			}
+			if len(hits) == 0 {
+				fmt.Println("   nothing above threshold")
+				continue
+			}
+			fmt.Print(decode.Report(hits))
+			total += len(hits)
+		}
+	}
+	fmt.Printf("\n%d hits total\n", total)
+	return nil
+}
+
+// sweepBand tunes one receiver across a band, capturing and classifying at
+// each step, optionally saving hits to disk.
+func sweepBand(receiver catalogue.Receiver, lowKHz, highKHz, stepKHz, dwell, minLevel float64, outDir string) ([]decode.BandHit, error) {
+	ctx := context.Background()
+	client, err := websdr.New(receiver.URL, websdr.Options{Reconnect: true})
+	if err != nil {
+		return nil, err
+	}
+	if err := client.Connect(ctx); err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	var hits []decode.BandHit
+	for kHz := lowKHz; kHz <= highKHz; kHz += stepKHz {
+		if err := client.Tune(ctx, kHz, "fm", nil); err != nil {
+			continue
+		}
+		samples, rate, err := client.Record(ctx, time.Duration(dwell*float64(time.Second)))
+		if err != nil || len(samples) < rate/10 {
+			continue
+		}
+		floats := make([]float64, len(samples))
+		for i, s := range samples {
+			floats[i] = float64(s) / 32768.0
+		}
+		hit := decode.Classify(floats, rate)
+		hit.FrequencyHz = kHz * 1000
+		hit.Mode = "fm"
+		if hit.LevelDB < minLevel {
+			continue
+		}
+		hits = append(hits, hit)
+		if outDir != "" {
+			name := fmt.Sprintf("%s/band_%.4fMHz_%s.wav", outDir, kHz/1e3, hit.Kind)
+			_ = common.WriteWAVFile(name, samples, rate)
+		}
+	}
+	return hits, nil
+}
+
+// cmdSpectrum identifies activity on an OpenWebRX receiver by reading its
+// server-side FFT frames. This is far more reliable than listening to
+// demodulated audio, which AGC flattens: the server computes and calibrates
+// the spectrum, so a peak is real energy above the local noise floor.
+func cmdSpectrum(args []string) error {
+	fs := flag.NewFlagSet("spectrum", flag.ExitOnError)
+	server := fs.String("server", "", "OpenWebRX receiver URL (required)")
+	frames := fs.Int("frames", 40, "FFT frames to average")
+	threshold := fs.Float64("threshold", 8, "report peaks this many dB above the noise floor")
+	top := fs.Int("top", 25, "maximum peaks to print")
+	fs.Parse(args)
+	if *server == "" {
+		return fmt.Errorf("spectrum: -server is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	client, err := openwebrx.New(*server, openwebrx.DefaultOptions())
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	cfg, err := client.Connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	var spectra [][]float64
+collect:
+	for len(spectra) < *frames {
+		select {
+		case e := <-client.Events():
+			if e.Type == "fft" && !e.Secondary {
+				if vals, ok := e.Value.([]float64); ok && len(vals) > 0 {
+					spectra = append(spectra, vals)
+				}
+			}
+		case <-ctx.Done():
+			break collect
+		}
+	}
+	if len(spectra) == 0 {
+		return fmt.Errorf("spectrum: no FFT frames received")
+	}
+	avg := openwebrx.AverageSpectra(spectra)
+	centre, span := 0.0, 0.0
+	if cfg.CenterFreq != nil {
+		centre = float64(*cfg.CenterFreq)
+	}
+	if cfg.SampRate != nil {
+		span = *cfg.SampRate
+	}
+	fmt.Printf("== %s\n", *server)
+	fmt.Printf("   %d FFT frames averaged, %d bins, centre %.4f MHz, span %.0f kHz\n",
+		len(spectra), len(avg), centre/1e6, span/1e3)
+
+	peaks := openwebrx.FindSpectrumPeaks(avg, centre, span, *threshold)
+	if len(peaks) == 0 {
+		fmt.Printf("   no peaks above noise+%.0f dB\n", *threshold)
+		return nil
+	}
+	sort.Slice(peaks, func(i, j int) bool { return peaks[i].LevelDB > peaks[j].LevelDB })
+	fmt.Printf("   %d peaks above noise+%.0f dB:\n", len(peaks), *threshold)
+	for i, p := range peaks {
+		if i >= *top {
+			break
+		}
+		fmt.Printf("     %11.1f kHz  %6.1f dB\n", p.FreqHz/1000, p.LevelDB)
+	}
+	return nil
+}
+
 func cmdWeb(args []string) error {
 	fs := flag.NewFlagSet("web", flag.ExitOnError)
 	host := fs.String("host", "127.0.0.1", "address to bind")
@@ -699,3 +916,84 @@ func cmdWeb(args []string) error {
 	return server.Serve(fmt.Sprintf("%s:%d", *host, *port))
 }
 
+// cmdDecode extracts data from a recorded pass: APRS packets via
+// AFSK/HDLC/AX.25, and Morse text from CW beacons.
+func cmdDecode(args []string) error {
+	fs := flag.NewFlagSet("decode", flag.ExitOnError)
+	mode := fs.String("mode", "auto", "auto | aprs | morse")
+	fs.Parse(args)
+	if fs.NArg() < 1 {
+		return fmt.Errorf("decode: pass one or more WAV files")
+	}
+	for _, path := range fs.Args() {
+		fmt.Printf("== %s\n", path)
+		// Prefer multimon-ng (the reference decoder) when installed.
+		if decode.MultimonAvailable() && *mode != "morse" {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			lines, err := decode.MultimonDecode(ctx, path, "AFSK1200")
+			cancel()
+			if err != nil {
+				fmt.Printf("   multimon: %v\n", err)
+			} else if len(lines) == 0 {
+				fmt.Println("   multimon: no packets")
+			} else {
+				for _, l := range lines {
+					fmt.Printf("   packet: %s\n", l)
+				}
+			}
+			continue
+		}
+		if *mode == "auto" || *mode == "aprs" {
+			packets, err := decode.AFSKFrames(path)
+			if err != nil {
+				fmt.Printf("   aprs: %v\n", err)
+			} else if len(packets) == 0 {
+				fmt.Println("   aprs: no packets")
+			} else {
+				for _, p := range packets {
+					fmt.Printf("   packet: %s\n", p.String())
+				}
+			}
+		}
+		if *mode == "auto" || *mode == "morse" {
+			res, err := decode.MorseDecode(path)
+			if err != nil {
+				fmt.Printf("   morse: %v\n", err)
+			} else {
+				fmt.Printf("   morse: tone %.0f Hz (SNR %.0f dB, %d key-downs)\n",
+					res.ToneHz, res.SnrdB, res.DotsFound)
+				if res.Text != "" {
+					fmt.Printf("   text:  %s\n", res.Text)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// cmdScan lists every transmission event found in a recording, classified
+// as packet data, CW, voice or carrier, with timing and strength.
+func cmdScan(args []string) error {
+	fs := flag.NewFlagSet("scan", flag.ExitOnError)
+	fs.Parse(args)
+	if fs.NArg() < 1 {
+		return fmt.Errorf("scan: pass one or more WAV files")
+	}
+	for _, path := range fs.Args() {
+		fmt.Printf("== %s\n", path)
+		events, err := decode.ScanTransmissions(path)
+		if err != nil {
+			return err
+		}
+		if len(events) == 0 {
+			fmt.Println("   no transmissions detected")
+			continue
+		}
+		for _, e := range events {
+			fmt.Printf("   %7.1f-%7.1f s  %5.1f s  peak %5.1f dB  %s\n",
+				e.StartSec, e.StartSec+e.DurationSec, e.DurationSec,
+				e.PeakDB, e.Description)
+		}
+	}
+	return nil
+}

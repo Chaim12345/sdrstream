@@ -23,23 +23,29 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Chaim12345/sdrstream/go/internal/adpcm"
 	"github.com/Chaim12345/sdrstream/go/internal/common"
-	"net/http"
 	"github.com/gorilla/websocket"
+	"net/http"
 )
 
 // Opcode meanings for binary frames.
 const (
-	OpcodeFFT         = 0x01
-	OpcodeAudio       = 0x02
+	OpcodeFFT          = 0x01
+	OpcodeAudio        = 0x02
 	OpcodeSecondaryFFT = 0x03
-	OpcodeHDAudio     = 0x04
+	OpcodeHDAudio      = 0x04
 )
+
+// fftPadN is the number of codec padding samples that precede the spectrum
+// in every FFT frame (COMPRESS_FFT_PAD_N in upstream openwebrx.js).
+const fftPadN = 10
 
 // DefaultOutputRate is the audio rate most servers deliver.
 const DefaultOutputRate = 12000
@@ -58,47 +64,47 @@ type AudioChunk struct {
 
 // Config is the server configuration advertised in the config message.
 type Config struct {
-	CenterFreq        *int64   `json:"center_freq"`
-	SampRate          *float64 `json:"samp_rate"`
-	StartMod          *string  `json:"start_mod"`
-	StartFreq         *int64   `json:"start_freq"`
-	AudioCompression  *string  `json:"audio_compression"`
-	FFTCompression    *string  `json:"fft_compression"`
-	AudioRates        []int    `json:"audio_rates"`
-	HDAudioRates      []int    `json:"hd_audio_rates"`
-	HDAudioCompression *string `json:"hd_audio_compression"`
-	MaxClients        *int     `json:"max_clients"`
+	CenterFreq         *int64   `json:"center_freq"`
+	SampRate           *float64 `json:"samp_rate"`
+	StartMod           *string  `json:"start_mod"`
+	StartFreq          *int64   `json:"start_freq"`
+	AudioCompression   *string  `json:"audio_compression"`
+	FFTCompression     *string  `json:"fft_compression"`
+	AudioRates         []int    `json:"audio_rates"`
+	HDAudioRates       []int    `json:"hd_audio_rates"`
+	HDAudioCompression *string  `json:"hd_audio_compression"`
+	MaxClients         *int     `json:"max_clients"`
 }
 
 // Event is one message pushed to the caller.
 type Event struct {
-	Type     string      // "audio", "fft", "config", "profiles", "modes", "smeter", "text", "error", "reconnecting"
-	Value    interface{}
-	Secondary bool      // fft only
+	Type      string // "audio", "fft", "config", "profiles", "modes", "smeter", "text", "error", "reconnecting"
+	Value     interface{}
+	Secondary bool // fft only
 }
 
 // Client streams demodulated audio from an OpenWebRX server.
 type Client struct {
-	URL      string
+	URL        string
 	ClientName string
 
-	Config   Config
-	Profiles []map[string]interface{}
-	Modes    []map[string]interface{}
-	Smeter   *float64
-	Clients  int
+	Config    Config
+	Profiles  []map[string]interface{}
+	Modes     []map[string]interface{}
+	Smeter    *float64
+	Clients   int
 	LastError error
 
-	events   chan Event
-	quit     chan struct{}
-	conn     *websocket.Conn
-	mu       sync.Mutex
-	audio    *adpcm.Decoder
-	hd       *adpcm.Decoder
-	fft      *adpcm.Decoder
-	sequence int
-	tuning   map[string]interface{}
-	closeOnce sync.Once
+	events     chan Event
+	quit       chan struct{}
+	conn       *websocket.Conn
+	mu         sync.Mutex
+	audio      *adpcm.Decoder
+	hd         *adpcm.Decoder
+	fft        *adpcm.Decoder
+	sequence   int
+	tuning     map[string]interface{}
+	closeOnce  sync.Once
 	outputRate int
 	hdRate     int
 }
@@ -136,10 +142,10 @@ func New(rawURL string, options Options) (*Client, error) {
 	}
 	return &Client{
 		URL: streamURL, ClientName: "sdrstream",
-		events:  make(chan Event, 256),
-		quit:    make(chan struct{}),
-		audio:   adpcm.New(), hd: adpcm.New(), fft: adpcm.New(),
-		tuning: map[string]interface{}{},
+		events: make(chan Event, 256),
+		quit:   make(chan struct{}),
+		audio:  adpcm.New(), hd: adpcm.New(), fft: adpcm.New(),
+		tuning:     map[string]interface{}{},
 		outputRate: options.OutputRate,
 		hdRate:     options.HDOutputRate,
 	}, nil
@@ -160,7 +166,10 @@ func (c *Client) Connect(ctx context.Context) (Config, error) {
 	c.conn = conn
 	c.mu.Unlock()
 
-	c.audio.Reset(); c.hd.Reset(); c.fft.Reset(); c.sequence = 0
+	c.audio.Reset()
+	c.hd.Reset()
+	c.fft.Reset()
+	c.sequence = 0
 	if err := c.handshake(ctx, conn); err != nil {
 		conn.Close()
 		return Config{}, err
@@ -304,17 +313,101 @@ func (c *Client) handleBinary(data []byte) {
 			c.publishAudio(samples, c.hdRate, compressed, "hd_audio")
 		}
 	case OpcodeFFT, OpcodeSecondaryFFT:
+		// The FFT payload is always dB values. When compression is off it
+		// arrives as raw float32 (one value per bin); when it is on the
+		// server sends ADPCM int16 that must be scaled by 100. Upstream
+		// openwebrx.js: Float32Array directly, or codec output / 100.
 		compressed := c.Config.FFTCompression != nil && *c.Config.FFTCompression == "adpcm"
-		var samples []int16
+		var db []float64
 		if compressed {
-			samples = c.fft.Decode(payload)
+			// Each FFT frame carries a fresh ADPCM state, so reset first.
+			c.fft.Reset()
+			s := c.fft.Decode(payload)
+			if len(s) > fftPadN {
+				s = s[fftPadN:]
+			}
+			db = make([]float64, len(s))
+			for i, v := range s {
+				db[i] = float64(v) / 100
+			}
 		} else {
-			samples = decodePCM(payload)
+			db = decodeFloat32(payload)
 		}
-		if len(samples) > 0 {
-			c.publish(Event{Type: "fft", Value: samples, Secondary: opcode == OpcodeSecondaryFFT})
+		if len(db) > 0 {
+			c.publish(Event{Type: "fft", Value: db, Secondary: opcode == OpcodeSecondaryFFT})
 		}
 	}
+}
+
+// decodeFloat32 reads a little-endian float32 array, the raw form of an
+// uncompressed FFT frame.
+func decodeFloat32(payload []byte) []float64 {
+	n := len(payload) / 4
+	out := make([]float64, n)
+	for i := 0; i < n; i++ {
+		out[i] = float64(math.Float32frombits(binary.LittleEndian.Uint32(payload[i*4:])))
+	}
+	return out
+}
+
+// SpectrumPeak is one peak in a server-side FFT frame.
+type SpectrumPeak struct {
+	Bin     int
+	FreqHz  float64
+	LevelDB float64
+}
+
+// AverageSpectra element-wise averages FFT frames to reduce noise. Frames
+// of differing length are ignored beyond the shortest.
+func AverageSpectra(frames [][]float64) []float64 {
+	if len(frames) == 0 {
+		return nil
+	}
+	n := len(frames[0])
+	for _, f := range frames {
+		if len(f) < n {
+			n = len(f)
+		}
+	}
+	out := make([]float64, n)
+	for _, f := range frames {
+		for i := 0; i < n; i++ {
+			out[i] += f[i]
+		}
+	}
+	for i := range out {
+		out[i] /= float64(len(frames))
+	}
+	return out
+}
+
+// FindSpectrumPeaks locates narrow peaks in a dB spectrum. Because the
+// server computes and calibrates the FFT, a peak here is real energy above
+// the local noise, not an AGC artefact. Bin i maps to
+// centreHz - spanHz/2 + i*spanHz/len(bins).
+func FindSpectrumPeaks(bins []float64, centreHz, spanHz, thresholdDB float64) []SpectrumPeak {
+	if len(bins) < 8 {
+		return nil
+	}
+	sorted := append([]float64(nil), bins...)
+	sort.Float64s(sorted)
+	floor := sorted[len(sorted)/2] // median, noise-dominated
+	limit := floor + thresholdDB
+	binHz := spanHz / float64(len(bins))
+	var peaks []SpectrumPeak
+	for i := 1; i < len(bins)-1; i++ {
+		if bins[i] <= limit {
+			continue
+		}
+		if bins[i] >= bins[i-1] && bins[i] > bins[i+1] {
+			peaks = append(peaks, SpectrumPeak{
+				Bin:     i,
+				FreqHz:  centreHz - spanHz/2 + (float64(i)+0.5)*binHz,
+				LevelDB: bins[i],
+			})
+		}
+	}
+	return peaks
 }
 
 func (c *Client) decode(payload []byte, compressed bool, decoder *adpcm.Decoder, sync bool) []int16 {

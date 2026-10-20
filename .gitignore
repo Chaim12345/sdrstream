@@ -6,6 +6,7 @@ dist/
 .venv/
 venv/
 *.wav
+!tests/data/*.wav
 *.raw
 .pytest_cache/
 .mypy_cache/
