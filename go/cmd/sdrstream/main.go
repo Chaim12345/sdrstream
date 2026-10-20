@@ -1020,50 +1020,98 @@ func cmdWeb(args []string) error {
 // AFSK/HDLC/AX.25, and Morse text from CW beacons.
 func cmdDecode(args []string) error {
 	fs := flag.NewFlagSet("decode", flag.ExitOnError)
-	mode := fs.String("mode", "auto", "auto | aprs | morse")
+	mode := fs.String("mode", "auto", "auto | aprs | morse | dtmf | rtty | psk31 | sstv | pocsag | all")
+	offset := fs.Float64("offset", 0, "audio centre frequency in Hz for psk31/rtty (0 = auto)")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
 		return fmt.Errorf("decode: pass one or more WAV files")
 	}
 	for _, path := range fs.Args() {
 		fmt.Printf("== %s\n", path)
-		// Prefer multimon-ng (the reference decoder) when installed.
-		if decode.MultimonAvailable() && *mode != "morse" {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-			lines, err := decode.MultimonDecode(ctx, path, "AFSK1200")
-			cancel()
-			if err != nil {
-				fmt.Printf("   multimon: %v\n", err)
-			} else if len(lines) == 0 {
-				fmt.Println("   multimon: no packets")
-			} else {
-				for _, l := range lines {
-					fmt.Printf("   packet: %s\n", l)
-				}
-			}
+		samples, rate, err := decode.ReadWAV(path)
+		if err != nil {
+			fmt.Printf("   read: %v\n", err)
 			continue
 		}
-		if *mode == "auto" || *mode == "aprs" {
-			packets, err := decode.AFSKFrames(path)
-			if err != nil {
-				fmt.Printf("   aprs: %v\n", err)
-			} else if len(packets) == 0 {
-				fmt.Println("   aprs: no packets")
-			} else {
-				for _, p := range packets {
-					fmt.Printf("   packet: %s\n", p.String())
-				}
+		wantAll := *mode == "all"
+
+		if *mode == "dtmf" || wantAll {
+			if s := decode.DTMFDecode(samples, rate); s != "" {
+				fmt.Printf("   dtmf:   %s\n", s)
+			} else if *mode == "dtmf" {
+				fmt.Println("   dtmf:   no tones")
 			}
 		}
-		if *mode == "auto" || *mode == "morse" {
-			res, err := decode.MorseDecode(path)
-			if err != nil {
-				fmt.Printf("   morse: %v\n", err)
-			} else {
-				fmt.Printf("   morse: tone %.0f Hz (SNR %.0f dB, %d key-downs)\n",
-					res.ToneHz, res.SnrdB, res.DotsFound)
-				if res.Text != "" {
-					fmt.Printf("   text:  %s\n", res.Text)
+		if *mode == "rtty" || wantAll {
+			if s := decode.RTTYDecode(samples, rate, 0, 0, 0); s != "" {
+				fmt.Printf("   rtty:   %s\n", strings.TrimSpace(s))
+			} else if *mode == "rtty" {
+				fmt.Println("   rtty:   nothing")
+			}
+		}
+		if *mode == "psk31" || wantAll {
+			if s := decode.PSK31Decode(samples, rate, *offset); s != "" {
+				fmt.Printf("   psk31:  %s\n", s)
+			} else if *mode == "psk31" {
+				fmt.Println("   psk31:  nothing")
+			}
+		}
+		if *mode == "sstv" || wantAll {
+			hits := decode.SSTVDetect(samples, rate)
+			if len(hits) == 0 && *mode == "sstv" {
+				fmt.Println("   sstv:   no VIS header")
+			}
+			for _, h := range hits {
+				fmt.Printf("   sstv:   %s (VIS 0x%02X) at %.1f s\n", h.Mode, h.VIS, h.StartSec)
+			}
+		}
+		if *mode == "pocsag" || wantAll {
+			msgs := decode.POCSAGDecode(samples, rate, 0)
+			if len(msgs) == 0 && *mode == "pocsag" {
+				fmt.Println("   pocsag: no pages")
+			}
+			for _, m := range msgs {
+				fmt.Printf("   pocsag: %s\n", m.String())
+			}
+		}
+
+		if *mode == "aprs" || *mode == "morse" || *mode == "auto" {
+			// Prefer multimon-ng (the reference decoder) when installed.
+			if decode.MultimonAvailable() && *mode != "morse" {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				lines, err := decode.MultimonDecode(ctx, path, "AFSK1200")
+				cancel()
+				if err != nil {
+					fmt.Printf("   multimon: %v\n", err)
+				} else if len(lines) == 0 {
+					fmt.Println("   multimon: no packets")
+				} else {
+					for _, l := range lines {
+						fmt.Printf("   packet: %s\n", l)
+					}
+				}
+			} else if *mode == "auto" || *mode == "aprs" {
+				packets, err := decode.AFSKFrames(path)
+				if err != nil {
+					fmt.Printf("   aprs: %v\n", err)
+				} else if len(packets) == 0 {
+					fmt.Println("   aprs: no packets")
+				} else {
+					for _, p := range packets {
+						fmt.Printf("   packet: %s\n", p.String())
+					}
+				}
+			}
+			if *mode == "auto" || *mode == "morse" {
+				res, err := decode.MorseDecode(path)
+				if err != nil {
+					fmt.Printf("   morse: %v\n", err)
+				} else {
+					fmt.Printf("   morse: tone %.0f Hz (SNR %.0f dB, %d key-downs)\n",
+						res.ToneHz, res.SnrdB, res.DotsFound)
+					if res.Text != "" {
+						fmt.Printf("   text:  %s\n", res.Text)
+					}
 				}
 			}
 		}
