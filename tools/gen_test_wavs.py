@@ -317,6 +317,42 @@ def make_rtty(text, mark=2125.0, shift=170.0, baud=45.45):
     return [s + random.gauss(0, 0.02) for s in samples]
 
 
+def make_eas(header="ZCZC-WXR-TOR-039173+0045-1421800-KCLE/NWS-", eom=True):
+    """Render an EAS/SAME burst: 0xAB preamble then 8N1 ASCII at 520.83 baud."""
+    mark, space = 2083.3, 1562.5
+    baud = 520.83333
+
+    def byte(b):
+        out = [0]  # start bit (space)
+        for i in range(8):
+            out.append((b >> i) & 1)  # data bits LSB first
+        out.append(1)  # stop bit (mark)
+        return out
+
+    bits = []
+    for _ in range(16):
+        bits += byte(0xAB)
+    for ch in header:
+        bits += byte(ord(ch) & 0xFF)
+    if eom:
+        for _ in range(16):
+            bits += byte(0xAB)
+        for ch in "NNNN":
+            bits += byte(ord(ch) & 0xFF)
+    samples = []
+    phase = 0.0
+    spb = RATE / baud
+    idx = 0
+    for bit in bits:
+        f = mark if bit else space
+        n = int(round((idx + 1) * spb)) - int(round(idx * spb))
+        for _ in range(n):
+            samples.append(0.6 * math.sin(phase))
+            phase += 2 * math.pi * f / RATE
+        idx += 1
+    return [s + random.gauss(0, 0.02) for s in samples]
+
+
 def make_sstv_vis(vis, mode_name="test"):
     """Render an SSTV VIS header: leader, break, start, 7 data bits, parity."""
     def tone(f, sec):
@@ -480,4 +516,5 @@ if __name__ == "__main__":
     write_wav("/tmp/test_sstv.wav", make_sstv_vis(0x3C))  # Martin M2
     write_wav("/tmp/test_psk31.wav", make_psk31("CQ DE RS44 PSK31 TEST"))
     write_wav("/tmp/test_pocsag.wav", make_pocsag(1234567, "HELLO PAGER TEST 123"))
+    write_wav("/tmp/test_eas.wav", make_eas())
     print(f"wrote test WAVs at {RATE} Hz")

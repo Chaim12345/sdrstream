@@ -1020,7 +1020,7 @@ func cmdWeb(args []string) error {
 // AFSK/HDLC/AX.25, and Morse text from CW beacons.
 func cmdDecode(args []string) error {
 	fs := flag.NewFlagSet("decode", flag.ExitOnError)
-	mode := fs.String("mode", "auto", "auto | aprs | morse | dtmf | rtty | psk31 | sstv | pocsag | all")
+	mode := fs.String("mode", "auto", "auto | aprs | morse | dtmf | rtty | psk31 | sstv | pocsag | eas | all")
 	offset := fs.Float64("offset", 0, "audio centre frequency in Hz for psk31/rtty (0 = auto)")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
@@ -1072,6 +1072,15 @@ func cmdDecode(args []string) error {
 			}
 			for _, m := range msgs {
 				fmt.Printf("   pocsag: %s\n", m.String())
+			}
+		}
+		if *mode == "eas" || wantAll {
+			alerts := decode.EASDecode(samples, rate)
+			if len(alerts) == 0 && *mode == "eas" {
+				fmt.Println("   eas:    no SAME headers")
+			}
+			for _, a := range alerts {
+				fmt.Printf("   eas:    %s\n", a.String())
 			}
 		}
 
