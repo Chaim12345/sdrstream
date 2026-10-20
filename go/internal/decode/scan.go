@@ -32,11 +32,9 @@ func ScanTransmissions(path string) ([]Transmission, error) {
 		step = 64
 	}
 	var flats []float64
-	var centers []int
 	for start := 0; start+step <= len(samples); start += step {
 		f, _, _ := spectrum(samples[start:start+step], rate)
 		flats = append(flats, f)
-		centers = append(centers, start)
 	}
 	if len(flats) == 0 {
 		return nil, nil
@@ -53,20 +51,20 @@ func ScanTransmissions(path string) ([]Transmission, error) {
 				start = i
 			}
 		} else if start >= 0 {
-			out = append(out, describe(samples, rate, centers[start], centers[i]+step))
+			out = append(out, describe(samples, rate, step, start, i))
 			start = -1
 		}
 	}
 	if start >= 0 {
-		out = append(out, describe(samples, rate, centers[start], len(samples)))
+		out = append(out, describe(samples, rate, step, start, len(flats)))
 	}
 	return out, nil
 }
 
-// describe classifies one detected burst.
-func describe(samples []float64, rate, from, to int) Transmission {
-	// Window back into the sample domain (envDB steps are rate/10).
-	unit := rate / 10
+// describe classifies one detected burst, given window indices [from, to)
+// into the step-sample envelope.
+func describe(samples []float64, rate, step, from, to int) Transmission {
+	unit := step
 	lo := from * unit
 	hi := to * unit
 	if hi > len(samples) {
