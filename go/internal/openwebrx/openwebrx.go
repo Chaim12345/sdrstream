@@ -187,9 +187,11 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
 		return err
 	}
 	// The configuration arrives as several config messages and only the last
-	// one carries the centre frequency, so reading stops once that field is
-	// known. A short grace period covers servers that never report it.
-	deadline := time.Now().Add(2 * time.Second)
+	// one carries the centre frequency. The profiles list follows it, so keep
+	// reading a short grace period after the config so callers can enumerate
+	// profiles right after Connect.
+	configured := false
+	var graceDeadline time.Time
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 		messageType, data, err := conn.ReadMessage()
@@ -211,11 +213,14 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
 			}
 			continue
 		}
-		if c.handleText(text) {
-			return c.startDSP(ctx, conn)
+		if c.handleText(text) && !configured {
+			configured = true
+			graceDeadline = time.Now().Add(2 * time.Second)
 		}
-		if time.Now().After(deadline) {
-			return c.startDSP(ctx, conn)
+		if configured {
+			if len(c.Profiles) > 0 || time.Now().After(graceDeadline) {
+				return c.startDSP(ctx, conn)
+			}
 		}
 	}
 }
@@ -516,6 +521,44 @@ func (c *Client) Tune(ctx context.Context, frequency *int64, modulation string, 
 	}
 	payload, _ := json.Marshal(message)
 	return conn.WriteMessage(websocket.TextMessage, payload)
+}
+
+// SelectProfile switches the receiver to another SDR profile, identified by
+// its "sdr_id|profile_id" key as listed by /status.json.
+func (c *Client) SelectProfile(ctx context.Context, profile string) error {
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+	if conn == nil {
+		return nil
+	}
+	message := map[string]interface{}{
+		"type":   "selectprofile",
+		"params": map[string]interface{}{"profile": profile},
+	}
+	payload, _ := json.Marshal(message)
+	return conn.WriteMessage(websocket.TextMessage, payload)
+}
+
+// Profile is one tunable SDR profile a server advertises over the socket.
+type Profile struct {
+	Key  string // "sdr_id|profile_id", as selectprofile expects
+	Name string
+}
+
+// ProfileList returns the profiles the server sent after connecting.
+func (c *Client) ProfileList() []Profile {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []Profile
+	for _, entry := range c.Profiles {
+		key, _ := entry["id"].(string)
+		name, _ := entry["name"].(string)
+		if key != "" {
+			out = append(out, Profile{Key: key, Name: name})
+		}
+	}
+	return out
 }
 
 // Record collects audio for duration and returns the chunks received.

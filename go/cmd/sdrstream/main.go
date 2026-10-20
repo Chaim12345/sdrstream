@@ -46,6 +46,7 @@ commands:
   scan         scan a WAV for transmissions (voice, data, CW)
   bands        sweep receiver bands and report live traffic
   spectrum     identify activity from an OpenWebRX server's own FFT
+               (-server URL [-all-profiles] [-frames N] [-threshold dB])
   web          serve the browser UI
 `
 
@@ -837,46 +838,107 @@ func sweepBand(receiver catalogue.Receiver, lowKHz, highKHz, stepKHz, dwell, min
 // cmdSpectrum identifies activity on an OpenWebRX receiver by reading its
 // server-side FFT frames. This is far more reliable than listening to
 // demodulated audio, which AGC flattens: the server computes and calibrates
-// the spectrum, so a peak is real energy above the local noise floor.
+// the spectrum, so a peak is real energy above the local noise floor. With
+// -all-profiles it switches through every SDR profile the server offers.
 func cmdSpectrum(args []string) error {
 	fs := flag.NewFlagSet("spectrum", flag.ExitOnError)
 	server := fs.String("server", "", "OpenWebRX receiver URL (required)")
 	frames := fs.Int("frames", 40, "FFT frames to average")
 	threshold := fs.Float64("threshold", 8, "report peaks this many dB above the noise floor")
 	top := fs.Int("top", 25, "maximum peaks to print")
+	allProfiles := fs.Bool("all-profiles", false, "switch through every SDR profile the server offers")
 	fs.Parse(args)
 	if *server == "" {
 		return fmt.Errorf("spectrum: -server is required")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
-	client, err := openwebrx.New(*server, openwebrx.DefaultOptions())
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-	cfg, err := client.Connect(ctx)
-	if err != nil {
-		return err
-	}
 
-	var spectra [][]float64
-collect:
-	for len(spectra) < *frames {
-		select {
-		case e := <-client.Events():
-			if e.Type == "fft" && !e.Secondary {
-				if vals, ok := e.Value.([]float64); ok && len(vals) > 0 {
-					spectra = append(spectra, vals)
-				}
-			}
-		case <-ctx.Done():
-			break collect
+	// One connection to learn the profile list, then a fresh connection per
+	// profile: some servers close the socket when the SDR is restarted for a
+	// profile switch, and a fresh client also clears stale FFT frames.
+	probe, _, err := connectWithRetry(ctx, *server, 4)
+	if err != nil {
+		return err
+	}
+	profiles := probe.ProfileList()
+	probe.Close()
+	fmt.Printf("== %s\n", *server)
+
+	type target struct {
+		key  string
+		name string
+	}
+	targets := []target{{"", "current profile"}}
+	if *allProfiles {
+		targets = nil
+		for _, p := range profiles {
+			targets = append(targets, target{p.Key, p.Name})
+		}
+		if len(targets) == 0 {
+			fmt.Println("   no profiles advertised; scanning the current one")
+			targets = []target{{"", "current profile"}}
 		}
 	}
+
+	for _, t := range targets {
+		scanProfile(ctx, *server, t.key, t.name, *frames, *threshold, *top)
+		time.Sleep(2 * time.Second) // be polite between reconnects
+	}
+	return nil
+}
+
+// connectWithRetry dials and handshakes, retrying a few times with backoff
+// because some servers reject rapid successive connections.
+func connectWithRetry(ctx context.Context, server string, attempts int) (*openwebrx.Client, openwebrx.Config, error) {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		client, err := openwebrx.New(server, openwebrx.DefaultOptions())
+		if err != nil {
+			return nil, openwebrx.Config{}, err
+		}
+		cfg, err := client.Connect(ctx)
+		if err == nil {
+			return client, cfg, nil
+		}
+		client.Close()
+		lastErr = err
+		select {
+		case <-time.After(time.Duration(i+1) * 2 * time.Second):
+		case <-ctx.Done():
+			return nil, openwebrx.Config{}, ctx.Err()
+		}
+	}
+	return nil, openwebrx.Config{}, lastErr
+}
+
+// scanProfile connects, optionally switches to one SDR profile, and prints
+// the peaks in its averaged spectrum.
+func scanProfile(ctx context.Context, server, key, name string, frames int, threshold float64, top int) {
+	client, cfg, err := connectWithRetry(ctx, server, 3)
+	if err != nil {
+		fmt.Printf("-- %s: connect: %v\n", name, err)
+		return
+	}
+	defer client.Close()
+	if key != "" {
+		if err := client.SelectProfile(ctx, key); err != nil {
+			fmt.Printf("-- %s: selectprofile: %v\n", name, err)
+			return
+		}
+		if next, ok := awaitConfig(ctx, client, 15*time.Second); ok {
+			cfg = next
+		} else {
+			fmt.Printf("-- %s: no config after switch\n", name)
+			return
+		}
+		time.Sleep(1500 * time.Millisecond) // let the old profile's frames drain
+	}
+	spectra := collectFrames(ctx, client, frames, 20*time.Second)
 	if len(spectra) == 0 {
-		return fmt.Errorf("spectrum: no FFT frames received")
+		fmt.Printf("-- %s: no FFT frames\n", name)
+		return
 	}
 	avg := openwebrx.AverageSpectra(spectra)
 	centre, span := 0.0, 0.0
@@ -886,24 +948,62 @@ collect:
 	if cfg.SampRate != nil {
 		span = *cfg.SampRate
 	}
-	fmt.Printf("== %s\n", *server)
-	fmt.Printf("   %d FFT frames averaged, %d bins, centre %.4f MHz, span %.0f kHz\n",
-		len(spectra), len(avg), centre/1e6, span/1e3)
-
-	peaks := openwebrx.FindSpectrumPeaks(avg, centre, span, *threshold)
+	fmt.Printf("-- %s: %d frames, %.4f MHz +/- %.0f kHz\n",
+		name, len(spectra), centre/1e6, span/2e3)
+	peaks := openwebrx.FindSpectrumPeaks(avg, centre, span, threshold)
 	if len(peaks) == 0 {
-		fmt.Printf("   no peaks above noise+%.0f dB\n", *threshold)
-		return nil
+		fmt.Printf("   no peaks above noise+%.0f dB\n", threshold)
+		return
 	}
 	sort.Slice(peaks, func(i, j int) bool { return peaks[i].LevelDB > peaks[j].LevelDB })
-	fmt.Printf("   %d peaks above noise+%.0f dB:\n", len(peaks), *threshold)
 	for i, p := range peaks {
-		if i >= *top {
+		if i >= top {
 			break
 		}
 		fmt.Printf("     %11.1f kHz  %6.1f dB\n", p.FreqHz/1000, p.LevelDB)
 	}
-	return nil
+}
+
+// collectFrames gathers up to n FFT frames from the client, stopping early
+// on timeout.
+func collectFrames(ctx context.Context, client *openwebrx.Client, n int, timeout time.Duration) [][]float64 {
+	var spectra [][]float64
+	deadline := time.After(timeout)
+	for len(spectra) < n {
+		select {
+		case e := <-client.Events():
+			if e.Type == "fft" && !e.Secondary {
+				if vals, ok := e.Value.([]float64); ok && len(vals) > 0 {
+					spectra = append(spectra, vals)
+				}
+			}
+		case <-deadline:
+			return spectra
+		case <-ctx.Done():
+			return spectra
+		}
+	}
+	return spectra
+}
+
+// awaitConfig waits for the next config event that carries a centre
+// frequency, which is how a profile switch reports the new tuning.
+func awaitConfig(ctx context.Context, client *openwebrx.Client, timeout time.Duration) (openwebrx.Config, bool) {
+	deadline := time.After(timeout)
+	for {
+		select {
+		case e := <-client.Events():
+			if e.Type == "config" {
+				if cfg, ok := e.Value.(openwebrx.Config); ok && cfg.CenterFreq != nil {
+					return cfg, true
+				}
+			}
+		case <-deadline:
+			return openwebrx.Config{}, false
+		case <-ctx.Done():
+			return openwebrx.Config{}, false
+		}
+	}
 }
 
 func cmdWeb(args []string) error {
