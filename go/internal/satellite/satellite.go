@@ -127,7 +127,7 @@ func PlanPass(sat satellites.Sat, receiver *catalogue.Receiver,
 		shift := look.DopplerShift(float64(sat.DownlinkHz))
 		if first {
 			low, high = shift, shift
-			startFreq = float64(sat.DownlinkHz) + shift
+			startFreq = dialFrequency(float64(sat.DownlinkHz), shift, sat.Mode)
 			first = false
 		}
 		low = math.Min(low, shift)
@@ -151,6 +151,30 @@ func bandNames(bands []catalogue.Band) string {
 		return "none"
 	}
 	return strings.Join(names, ",")
+}
+
+// toneOffsetHz is the audio offset the chase aims a beacon at in SSB modes.
+// A WebSDR/OpenWebRX dial frequency is the LO, i.e. where 0 Hz audio sits.
+// Tuning the LO to nominal+Doppler parks a USB beacon right at 0 Hz where
+// the demodulator filter removes it, so for sideband modes the dial is
+// offset to place the beacon at a comfortable audible tone instead. FM is
+// unaffected: the dial is the carrier centre and the demodulator has capture
+// range, so no offset applies there.
+const toneOffsetHz = 700.0
+
+// dialFrequency is the receiver LO to command for a signal at rfHz given the
+// current Doppler shift, so the signal lands at +toneOffsetHz (SSB) or at the
+// centre of the channel (FM).
+func dialFrequency(rfHz float64, dopplerHz float64, mode string) float64 {
+	received := rfHz + dopplerHz
+	switch strings.ToUpper(mode) {
+	case "USB", "CW":
+		return received - toneOffsetHz
+	case "LSB":
+		return received + toneOffsetHz
+	default: // FM: centre the channel on the dial
+		return received
+	}
 }
 
 // modeFor translates a satellite mode into the receiver's own vocabulary.
@@ -255,7 +279,7 @@ func Chase(ctx context.Context, plan ChasePlan, outPath string,
 		}
 		wanted := nominal
 		if err == nil {
-			wanted = nominal + look.DopplerShift(nominal)
+			wanted = dialFrequency(nominal, look.DopplerShift(nominal), plan.Satellite.Mode)
 		}
 		if math.Abs(wanted-current) >= retuneThresholdHz && time.Since(lastRetune) >= minRetuneInterval {
 			say(fmt.Sprintf("  el %5.1f deg  Doppler %+6d Hz  tune %.4f MHz",
