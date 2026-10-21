@@ -13,7 +13,12 @@ with :mod:`sdrstream.tracking` before trusting a recording.
 
 from __future__ import annotations
 
+import json
+import os
+import time
+import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
@@ -65,6 +70,24 @@ class Receiver:
 
 #: Public receivers with satellite-band coverage, keyed by base URL.
 RECEIVERS: Dict[str, Receiver] = {}
+
+#: The WebSDR project's own machine-readable server list — the same source
+#: ``tools/build_catalogue.py`` generates the bundled snapshot from.
+LIST_URL = "http://websdr.ewi.utwente.nl/~~websdrlistk?v=1&fmt=2&chseq=2"
+
+#: Amateur satellite bands in MHz; a receiver is kept when a published band
+#: overlaps one of these, because that is where a satellite downlink lands.
+SAT_BAND_MHZ = {
+    "6m": (50.0, 54.0),
+    "2m": (144.0, 148.0),
+    "70cm": (430.0, 440.0),
+    "23cm": (1240.0, 1300.0),
+}
+
+_CATALOGUE_CACHE = Path(
+    os.environ.get("SDRSTREAM_CACHE",
+                   str(Path.home() / ".cache" / "sdrstream"))
+) / "websdr_catalogue.json"
 
 
 def _add(url, kind, lat, lon, bands, satellite_bands):
@@ -160,3 +183,99 @@ def nearest(latitude: float, longitude: float, frequency_hz: float,
 
     candidates = [r for r in RECEIVERS.values() if r.can_hear(frequency_hz)]
     return sorted(candidates, key=distance)[:limit]
+
+
+def _parse_server_list(text: str) -> List[dict]:
+    """Read the JSON array out of the WebSDR list response.
+
+    The response has a short preamble before the array, so the text is cut
+    at the first bracket rather than parsed whole.
+    """
+    start = text.find("[")
+    if start < 0:
+        raise ValueError("no JSON array in the server list response")
+    return json.loads(text[start:])
+
+
+def _bands_from_entry(entry: dict) -> List[Band]:
+    """Convert one server's band list into Band records.
+
+    The server publishes low and high edges in MHz, which are turned back
+    into the centre/sample-rate pair the rest of the library uses.
+    """
+    bands = []
+    for raw in entry.get("bands") or []:
+        low = raw.get("l")
+        high = raw.get("h")
+        if low is None or high is None or high <= low:
+            continue
+        bands.append(Band(name=raw.get("c") or "band",
+                         center_khz=(low + high) / 2.0 * 1000.0,
+                         samplerate_khz=(high - low) * 1000.0))
+    return bands
+
+
+def _satellite_bands(bands: List[Band]) -> List[str]:
+    """Which amateur satellite bands a set of bands reaches."""
+    hits = []
+    for name, (low_mhz, high_mhz) in SAT_BAND_MHZ.items():
+        low_hz, high_hz = low_mhz * 1e6, high_mhz * 1e6
+        if any(band.low_hz <= high_hz and band.high_hz >= low_hz
+               for band in bands):
+            hits.append(name)
+    return sorted(hits)
+
+
+def _receivers_from_list(text: str) -> List[Receiver]:
+    """Build the receiver set from the live WebSDR server list."""
+    receivers = []
+    for entry in _parse_server_list(text):
+        bands = _bands_from_entry(entry)
+        if not bands:
+            continue  # no published coverage at all
+        receivers.append(Receiver(
+            url=str(entry.get("url") or ""),
+            kind="websdr",
+            latitude=float(entry.get("lat") or 0.0),
+            longitude=float(entry.get("lon") or 0.0),
+            bands=tuple(bands),
+            satellite_bands=tuple(_satellite_bands(bands)),
+        ))
+    return [r for r in receivers if r.url]
+
+
+def refresh(timeout: float = 30.0, cache: bool = True) -> int:
+    """Reload :data:`RECEIVERS` from the WebSDR project's live server list.
+
+    The bundled catalogue is a snapshot taken at build time; this fetches the
+    same machine-readable list the generator uses and swaps it in at runtime,
+    so new receivers appear and dead ones disappear without a new release.
+    The package source is never rewritten — with *cache* the fetched list is
+    stored under the sdrstream cache directory, and a later refresh that
+    cannot reach the list falls back to that copy instead of the snapshot.
+
+    Returns the number of receivers now in the catalogue. Raises if neither
+    the network nor a cached copy is available.
+    """
+    request = urllib.request.Request(
+        LIST_URL, headers={"User-Agent": "sdrstream-catalogue/0.1"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8", "replace")
+    except Exception:
+        if not cache or not _CATALOGUE_CACHE.exists():
+            raise
+        # Fall back to the previously fetched list, in its original format,
+        # so the offline path parses exactly what the network path parses.
+        text = _CATALOGUE_CACHE.read_text()
+    receivers = _receivers_from_list(text)
+    if not receivers:
+        raise ValueError("server list carried no usable receivers")
+
+    RECEIVERS.clear()
+    for receiver in receivers:
+        RECEIVERS[receiver.url] = receiver
+    if cache:
+        _CATALOGUE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        _CATALOGUE_CACHE.write_text(text)
+    return len(RECEIVERS)

@@ -344,6 +344,25 @@ async def _schedule(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _catalogue(args: argparse.Namespace) -> int:
+    """Show the receiver catalogue, optionally refreshing it first."""
+    if args.refresh:
+        count = catalogue.refresh()
+        print("refreshed the catalogue: %d receivers" % count)
+    else:
+        print("%d bundled receivers (use --refresh for the live list)"
+              % len(catalogue.RECEIVERS))
+    receivers = (catalogue.for_band(args.band) if args.band
+                 else sorted(catalogue.RECEIVERS.values(),
+                             key=lambda r: r.url))
+    for receiver in receivers:
+        tags = ",".join(receiver.satellite_bands) or "-"
+        print("  %-45s %-8s %7.3f, %7.3f  %s"
+              % (receiver.url, receiver.kind,
+                 receiver.latitude, receiver.longitude, tags))
+    return 0
+
+
 async def _discover(args: argparse.Namespace) -> int:
     """Find OpenWebRX receivers that can hear a satellite downlink."""
     frequency = args.frequency
@@ -477,6 +496,13 @@ def build_parser() -> argparse.ArgumentParser:
     sch.add_argument("--poll", type=float, default=60.0,
                     help="seconds between checks in --run (default: 60)")
 
+    cat = sub.add_parser("catalogue",
+                         help="show or refresh the receiver catalogue")
+    cat.add_argument("--refresh", action="store_true",
+                     help="reload receivers from the live WebSDR list")
+    cat.add_argument("--band", default=None,
+                     help="list receivers tagged for this band (2m, 70cm, ...)")
+
     sats = sub.add_parser("satellites", help="list amateur satellites")
     sats.add_argument("satellite", nargs="?", default=None,
                       help="show details and receivers for one satellite")
@@ -547,6 +573,8 @@ def main(argv: List[str] | None = None) -> int:
         coro = _frames(args)
     elif args.command == "schedule":
         coro = _schedule(args)
+    elif args.command == "catalogue":
+        coro = _catalogue(args)
     elif args.command == "fetch":
         coro = _fetch(args)
     elif args.command == "passes":
