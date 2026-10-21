@@ -67,6 +67,9 @@ type Options struct {
 	ThresholdDB float64
 	// DwellTime is how long a peak must persist before it is reported.
 	DwellTime time.Duration
+	// Cooldown is how long a frequency is not reported again after it
+	// has been seen.
+	Cooldown time.Duration
 	// Listen is how much audio to record per transmission; 0 skips it.
 	Listen time.Duration
 	// Mode is the modulation used when listening ("auto" picks per signal).
@@ -105,6 +108,7 @@ type Monitor struct {
 	activities []Activity
 	nextID     int
 	active     map[string]*candidate
+	reported   map[string]time.Time
 	spectrum   []float64
 	centreHz   float64
 	spanHz     float64
@@ -131,6 +135,9 @@ func New(options Options) *Monitor {
 	if options.DwellTime <= 0 {
 		options.DwellTime = 1500 * time.Millisecond
 	}
+	if options.Cooldown <= 0 {
+		options.Cooldown = 60 * time.Second
+	}
 	if options.Dwell <= 0 {
 		options.Dwell = 400 * time.Millisecond
 	}
@@ -146,7 +153,8 @@ func New(options Options) *Monitor {
 	if options.Logf == nil {
 		options.Logf = func(string, ...interface{}) {}
 	}
-	return &Monitor{opts: options, active: map[string]*candidate{}, jobs: make(chan job, 16)}
+	return &Monitor{opts: options, active: map[string]*candidate{},
+		reported: map[string]time.Time{}, jobs: make(chan job, 16)}
 }
 
 // Activities returns the activity log, newest first.
@@ -431,10 +439,22 @@ func (m *Monitor) step(ctx context.Context) {
 			existing.levelDB = peak.levelDB
 		}
 		existing.lastSeen = now
-		if !existing.reported && now.Sub(existing.firstSeen) >= m.opts.Dwell {
-			existing.reported = true
-			m.report(ctx, existing)
+		if existing.reported || now.Sub(existing.firstSeen) < m.opts.DwellTime {
+			continue
 		}
+		// One transmission, one entry: a transmitter that stays on the
+		// air is reported again only after the cooldown.
+		m.mu.Lock()
+		last := m.reported[key]
+		m.mu.Unlock()
+		if !last.IsZero() && now.Sub(last) < m.opts.Cooldown {
+			continue
+		}
+		existing.reported = true
+		m.mu.Lock()
+		m.reported[key] = now
+		m.mu.Unlock()
+		m.report(ctx, existing)
 	}
 	// Retire peaks that are gone.
 	m.mu.Lock()
