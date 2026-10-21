@@ -493,15 +493,33 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 	if len(bins) < 8 || span <= 0 {
 		return nil
 	}
-	sorted := append([]float64(nil), bins...)
-	sort.Float64s(sorted)
-	floor := sorted[len(sorted)/2]
-	limit := floor + m.opts.ThresholdDB
+	// The noise floor is local: a receiver's spectrum rolls off towards
+	// the edges of the profile, so one median for the whole band would
+	// make the edges look like traffic. Each bin is compared with the
+	// median of the bins around it.
+	const window = 24
 	binHz := span / float64(len(bins))
+	floors := make([]float64, len(bins))
+	for i := range bins {
+		low := i - window
+		if low < 0 {
+			low = 0
+		}
+		high := i + window
+		if high > len(bins) {
+			high = len(bins)
+		}
+		around := append([]float64(nil), bins[low:high]...)
+		sort.Float64s(around)
+		floors[i] = around[len(around)/2]
+	}
 	var peaks []peak
 	start := -1
 	for i := 0; i <= len(bins); i++ {
-		above := i < len(bins) && bins[i] > limit
+		above := false
+		if i < len(bins) {
+			above = bins[i] > floors[i]+m.opts.ThresholdDB
+		}
 		if above && start < 0 {
 			start = i
 		}
@@ -530,7 +548,7 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 			peaks = append(peaks, peak{
 				frequency: centre - span/2 + (float64(centroid)+0.5)*binHz,
 				bandwidth: float64(end-start+1) * binHz,
-				levelDB:   bestLevel - floor,
+				levelDB:   bestLevel - floors[best],
 			})
 			start = -1
 		}
@@ -582,6 +600,13 @@ func peakKey(frequency float64) string {
 // report records a new activity and hands it to the worker, which does the
 // recording and the decoding.
 func (m *Monitor) report(ctx context.Context, candidate *candidate) {
+	// Recording and decoding take much longer than spotting a signal, so
+	// when the worker is behind the new detection is dropped rather than
+	// queued: a queue of noise would keep the worker busy for minutes.
+	if len(m.jobs) >= cap(m.jobs) {
+		m.opts.Logf("worker is busy, skipping %.4f MHz", candidate.frequency/1e6)
+		return
+	}
 	activity := Activity{
 		Started:     candidate.firstSeen,
 		FrequencyHz: candidate.frequency,

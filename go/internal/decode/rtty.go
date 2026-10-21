@@ -114,9 +114,22 @@ func ita2Frame(level []byte, over int) string {
 		i += 7 * over
 	}
 	text := out.String()
-	// A real RTTY message is a run of characters; noise can produce a
-	// handful of stray ones, so short output is treated as nothing.
-	if len(text) < 6 {
+	// A real RTTY message is a run of readable characters. Noise can
+	// produce a handful of stray ones, and the letters it invents are
+	// not evenly spread over the text, so both are checked.
+	printable, letters := 0, 0
+	for _, r := range text {
+		if r >= 0x20 && r < 0x7f {
+			printable++
+			if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+				letters++
+			}
+		}
+	}
+	if printable < 6 {
+		return ""
+	}
+	if letters*2 < printable {
 		return ""
 	}
 	return text
