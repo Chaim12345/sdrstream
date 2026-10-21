@@ -37,18 +37,18 @@ type Source interface {
 
 // Activity is one detected transmission.
 type Activity struct {
-	ID          int       `json:"id"`
-	Started     time.Time `json:"started"`
-	Ended       time.Time `json:"ended,omitempty"`
-	FrequencyHz float64   `json:"frequency_hz"`
-	BandwidthHz float64   `json:"bandwidth_hz"`
-	LevelDB     float64   `json:"level_db"`
-	Kind        string    `json:"kind"`   // voice, data, cw, carrier, noise, unknown
-	Mode        string    `json:"mode"`   // decoder or modulation that produced the detail
-	Detail      string    `json:"detail"` // decoded payload or transcript
-	Source      string    `json:"source"`
-	DurationSec float64   `json:"duration_sec"`
-	AudioPath   string    `json:"audio_path,omitempty"`
+	ID          int        `json:"id"`
+	Started     time.Time  `json:"started"`
+	Ended       *time.Time `json:"ended,omitempty"` // nil when the transmission was not recorded
+	FrequencyHz float64    `json:"frequency_hz"`
+	BandwidthHz float64    `json:"bandwidth_hz"`
+	LevelDB     float64    `json:"level_db"`
+	Kind        string     `json:"kind"`             // voice, data, cw, carrier, noise, unknown
+	Mode        string     `json:"mode,omitempty"`   // decoder or modulation that produced the detail
+	Detail      string     `json:"detail,omitempty"` // decoded payload or transcript
+	Source      string     `json:"source"`
+	DurationSec float64    `json:"duration_sec"`
+	AudioPath   string     `json:"audio_path,omitempty"`
 }
 
 // Options configures a monitor.
@@ -553,11 +553,22 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 			start = -1
 		}
 	}
-	// The bin at the centre of the profile holds the server's own
-	// demodulated channel, which shows up as a permanent spike.
-	if len(peaks) == 1 && math.Abs(peaks[0].frequency-centre) < binHz*1.5 {
-		return nil
+	// The bins at the centre of the profile hold the server's own
+	// demodulated channel, which shows up as a permanent spike whose
+	// centroid can sit a few kHz off centre on a high-resolution FFT.
+	// Drop the whole neighbourhood, not only the exact bin: a quiet band
+	// with one real signal otherwise reports the demodulator forever.
+	// The guard is never narrower than 3 kHz, the width of the narrowest
+	// demodulator the server can run.
+	guard := math.Max(4*binHz, 3000)
+	kept := peaks[:0]
+	for _, p := range peaks {
+		if math.Abs(p.frequency-centre) < guard {
+			continue
+		}
+		kept = append(kept, p)
 	}
+	peaks = kept
 	// The first and last bins sit on the edge of the profile, where the
 	// server's filter rolls off and produces phantom peaks.
 	if len(peaks) > 0 && peaks[0].frequency-centre+span/2 < 2*binHz {
@@ -660,6 +671,10 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 	found := false
 	for _, mode := range modes {
 		samples, rate, err := m.opts.Source.Listen(ctx, work.frequency, mode, m.opts.Listen)
+		// The transmission ended when the receiver stopped hearing it,
+		// not when decoding finished: whisper can take a minute, and
+		// that time is not part of the transmission.
+		listenEnd := time.Now()
 		if err != nil || len(samples) == 0 {
 			if err != nil {
 				m.opts.Logf("listen at %.4f MHz failed: %v", work.frequency/1e6, err)
@@ -669,10 +684,16 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 			continue
 		}
 		kind, modeName, detail := m.classify(ctx, samples, rate, work.bandwidth)
+		// Mode is the modulation or decoder, never a verdict; when no
+		// decoder produced a name, the modulation that was listened to
+		// is the honest answer.
+		if modeName == "" {
+			modeName = mode
+		}
 		candidate := Activity{
-			ID: activity.ID, Started: activity.Started, FrequencyHz: work.frequency,
-			BandwidthHz: work.bandwidth, LevelDB: work.levelDB, Kind: kind, Mode: modeName,
-			Detail: detail, Source: m.opts.Name,
+			ID: activity.ID, Started: activity.Started, Ended: &listenEnd,
+			FrequencyHz: work.frequency, BandwidthHz: work.bandwidth, LevelDB: work.levelDB,
+			Kind: kind, Mode: modeName, Detail: detail, Source: m.opts.Name,
 			DurationSec: float64(len(samples)) / float64(rate),
 		}
 		if m.opts.OutDir != "" {
@@ -713,6 +734,12 @@ func (m *Monitor) publish(activity Activity) {
 // is proof that the signal was data, while a "voice" verdict from the
 // spectrum alone is only a guess.
 func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, bandwidthHz float64) (kind, mode, detail string) {
+	// The sweep path never measures the channel width, so the narrow
+	// decoders would otherwise fire on every loud signal. Measure the
+	// signal itself instead of trusting a zero that means "unknown".
+	if bandwidthHz <= 0 {
+		bandwidthHz = decode.OccupiedBandwidth(samples, rate)
+	}
 	hit := decode.Classify(samples, rate)
 	// Two shapes of real signal: a modulated one, whose level swings with
 	// the speech or the data, and a concentrated one, whose energy sits in
@@ -724,27 +751,27 @@ func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, ban
 		if hit.Kind == "silence" {
 			return "silence", "", ""
 		}
-		return "noise", "noise", "no signal above the noise floor"
+		return "noise", "", "no signal above the noise floor"
 	}
-	if mode, detail, ok := m.decodeData(samples, rate); ok {
+	if mode, detail, ok := m.decodeData(samples, rate, bandwidthHz); ok {
 		if mode == "morse" {
 			return "cw", mode, detail
 		}
 		return "data", mode, detail
 	}
 	if !modulated {
-		return "carrier", "carrier", "steady signal, no modulation"
+		return "carrier", "", "steady signal, no modulation"
 	}
 	// A very narrow signal is a carrier or a keyed tone, not a voice.
 	if bandwidthHz > 0 && bandwidthHz < 2500 && hit.Kind != "silence" {
-		return "carrier", "carrier", fmt.Sprintf("%.0f kHz wide", bandwidthHz/1e3)
+		return "carrier", "", fmt.Sprintf("%.0f kHz wide", bandwidthHz/1e3)
 	}
 	switch hit.Kind {
 	case "voice", "data", "cw":
 		segments := voice.SpeechActivity(samples, rate)
 		if len(segments) == 0 {
 			// No speech: transcribing would only make whisper guess.
-			return hit.Kind, "carrier", "no speech detected"
+			return hit.Kind, "", "no speech detected"
 		}
 		if m.opts.Voice && voice.Available(m.opts.VoiceOptions) {
 			transcript, err := voice.Transcribe(ctx, samples, rate, m.opts.VoiceOptions)
@@ -757,12 +784,22 @@ func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, ban
 	case "silence":
 		return "silence", "", ""
 	default:
-		return hit.Kind, hit.Kind, ""
+		return hit.Kind, "", ""
 	}
 }
 
 // decodeData tries every data decoder and returns the first result.
-func (m *Monitor) decodeData(samples []float64, rate int) (mode, detail string, ok bool) {
+//
+// bandwidthHz is the width of the channel the transmission was heard in, or
+// 0 when it is not known. The narrowband decoders (CW, RTTY, PSK31, NAVTEX,
+// SSTV) are only tried on a narrow channel: they will happily return
+// plausible-looking text from any loud narrowband-looking audio, and on an
+// AM aviation voice channel that turned every call into "RTTY" instead of
+// letting the speech detector and whisper look at it. A POCSAG pager
+// channel is 12.5 kHz wide and packet data is a few kHz, so those are not
+// gated.
+func (m *Monitor) decodeData(samples []float64, rate int, bandwidthHz float64) (mode, detail string, ok bool) {
+	narrowChannel := bandwidthHz <= 0 || bandwidthHz <= 4000
 	// APRS and Morse need a file, so the samples go to a temporary WAV.
 	path, err := writeTempWAV(samples, rate)
 	if err == nil {
@@ -774,8 +811,10 @@ func (m *Monitor) decodeData(samples []float64, rate int) (mode, detail string, 
 			}
 			return "aprs", strings.Join(lines, " | "), true
 		}
-		if result, err := decode.MorseDecode(path); err == nil && result.Text != "" {
-			return "morse", result.Text, true
+		if narrowChannel {
+			if result, err := decode.MorseDecode(path); err == nil && result.Text != "" {
+				return "morse", result.Text, true
+			}
 		}
 	}
 	if text := decode.DTMFDecode(samples, rate); text != "" {
@@ -801,21 +840,23 @@ func (m *Monitor) decodeData(samples []float64, rate int) (mode, detail string, 
 		}
 		return "eas", strings.Join(lines, " | "), true
 	}
-	if messages := decode.NAVTEXDecode(samples, rate, 0); len(messages) > 0 {
-		lines := make([]string, 0, len(messages))
-		for _, message := range messages {
-			lines = append(lines, message.Raw)
+	if narrowChannel {
+		if messages := decode.NAVTEXDecode(samples, rate, 0); len(messages) > 0 {
+			lines := make([]string, 0, len(messages))
+			for _, message := range messages {
+				lines = append(lines, message.Raw)
+			}
+			return "navtex", strings.Join(lines, " | "), true
 		}
-		return "navtex", strings.Join(lines, " | "), true
-	}
-	if text := decode.PSK31Decode(samples, rate, 0); text != "" {
-		return "psk31", text, true
-	}
-	if text := decode.RTTYDecode(samples, rate, 0, 0, 0); text != "" {
-		return "rtty", text, true
-	}
-	if headers := decode.SSTVDetect(samples, rate); len(headers) > 0 {
-		return "sstv", headers[0].Mode, true
+		if text := decode.PSK31Decode(samples, rate, 0); text != "" {
+			return "psk31", text, true
+		}
+		if text := decode.RTTYDecode(samples, rate, 0, 0, 0); text != "" {
+			return "rtty", text, true
+		}
+		if headers := decode.SSTVDetect(samples, rate); len(headers) > 0 {
+			return "sstv", headers[0].Mode, true
+		}
 	}
 	return "", "", false
 }

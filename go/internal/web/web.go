@@ -3,6 +3,7 @@
 package web
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -84,6 +85,9 @@ type Server struct {
 	monitor     *monitor.Monitor
 	stations    []directory.Station
 	stationsAt  time.Time
+	// fetchStations is directory.FetchStations in production and a seam
+	// for the tests, which cannot wait on the public directory.
+	fetchStations func(context.Context) ([]directory.Station, error)
 }
 
 // New builds a server with the bundled page. When capturesDir is non-empty
@@ -99,6 +103,7 @@ func New(capturesDir, galleryDir string) *Server {
 	s.loadGallery()
 	go s.galleryLoop()
 	s.loadPasses()
+	go s.passesLoop()
 	return s
 }
 
@@ -181,13 +186,14 @@ func (s *Server) loadGallery() {
 }
 
 // loadPasses predicts passes for the next 12 hours over a few good receivers
-// once at startup, so the UI has something to show without waiting for a sweep.
+// and swaps the table atomically, so a refresh never shows a half-built list.
 func (s *Server) loadPasses() {
 	text, err := tle.Load("amateur", 24, false, 60*time.Second)
 	if err != nil {
 		log.Printf("web: tle load: %v", err)
 		return
 	}
+	var passes []PassInfo
 	for _, sat := range satellites.Table {
 		if sat.Status != "active" {
 			continue
@@ -201,13 +207,13 @@ func (s *Server) loadPasses() {
 			continue
 		}
 		for _, receiver := range receivers[:2] {
-			passes, err := tracker.FindPasses(receiver.Latitude, receiver.Longitude,
+			passesForReceiver, err := tracker.FindPasses(receiver.Latitude, receiver.Longitude,
 				time.Now(), 12, 10)
 			if err != nil {
 				continue
 			}
-			for _, pass := range passes {
-				s.passes = append(s.passes, PassInfo{
+			for _, pass := range passesForReceiver {
+				passes = append(passes, PassInfo{
 					Satellite: sat.Name, NoradID: sat.NoradID, Receiver: receiver.URL,
 					Rise: pass.Rise, Peak: pass.Peak.Time, Set: pass.Set,
 					MaxElevation: pass.MaxElevation(),
@@ -216,7 +222,19 @@ func (s *Server) loadPasses() {
 			break
 		}
 	}
-	sort.Slice(s.passes, func(i, j int) bool { return s.passes[i].Rise.Before(s.passes[j].Rise) })
+	sort.Slice(passes, func(i, j int) bool { return passes[i].Rise.Before(passes[j].Rise) })
+	s.mu.Lock()
+	s.passes = passes
+	s.mu.Unlock()
+}
+
+// passesLoop refreshes the pass table while the server runs: a snapshot taken
+// at startup is stale within the hour, and the UI calls the next 12 hours
+// "upcoming".
+func (s *Server) passesLoop() {
+	for range time.Tick(30 * time.Minute) {
+		s.loadPasses()
+	}
 }
 
 // AddCapture records a completed capture for the UI.
@@ -359,11 +377,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	scanned := s.scanCaptures()
 	s.mu.Lock()
 	captures := append(append([]Capture{}, scanned...), s.captures...)
+	passes := append([]PassInfo(nil), s.passes...)
 	s.mu.Unlock()
 	sort.Slice(captures, func(i, j int) bool { return captures[i].Start.Before(captures[j].Start) })
 	writeJSON(w, Status{
 		UpdatedAt: time.Now(), Captures: captures,
-		Passes: s.passes, Receivers: len(catalogue.Table),
+		Passes: passes, Receivers: len(catalogue.Table),
 	})
 }
 
@@ -507,14 +526,23 @@ func (s *Server) handleSpectrum(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleStations lists the public receivers from the directory. The list is
-// cached for an hour because the directory page is large.
+// cached for an hour because the directory page is large. A failed refresh
+// with a cache to fall back on serves the cache and marks it stale; a failed
+// refresh without a cache is a 502, so the page can tell "nothing found"
+// apart from "the directory is unreachable".
 func (s *Server) handleStations(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	stations := s.stations
 	fresh := !s.stationsAt.IsZero() && time.Since(s.stationsAt) < time.Hour
+	fetch := s.fetchStations
 	s.mu.Unlock()
+	if fetch == nil {
+		fetch = func(ctx context.Context) ([]directory.Station, error) {
+			return directory.FetchStations(ctx, 30*time.Second)
+		}
+	}
 	if !fresh {
-		fetched, err := directory.FetchStations(r.Context(), 30*time.Second)
+		fetched, err := fetch(r.Context())
 		if err == nil {
 			s.mu.Lock()
 			s.stations = fetched
@@ -523,6 +551,11 @@ func (s *Server) handleStations(w http.ResponseWriter, r *http.Request) {
 			s.mu.Unlock()
 		} else {
 			log.Printf("web: station directory: %v", err)
+			if stations == nil {
+				http.Error(w, "station directory unavailable: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+			w.Header().Set("X-Stations-Stale", "true")
 		}
 	}
 	if stations == nil {

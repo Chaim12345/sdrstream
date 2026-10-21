@@ -2,10 +2,14 @@ package monitor
 
 import (
 	"context"
+	"encoding/json"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/chaim12345/sdrstream/go/internal/decode"
 )
 
 // fakeSource is a receiver the tests drive by hand.
@@ -51,6 +55,41 @@ func (f *fakeSource) Listen(ctx context.Context, hz float64, mode string, dur ti
 }
 
 func (f *fakeSource) Close() error { return nil }
+
+// wavSource replays a real recording committed under tests/data. The
+// decoders and the speech detector were calibrated against these captures,
+// so a test that checks what the monitor concludes uses real PCM rather than
+// a synthetic tone.
+type wavSource struct {
+	samples []float64
+	rate    int
+}
+
+func newWAVSource(t *testing.T, path string) *wavSource {
+	t.Helper()
+	samples, rate, err := decode.ReadWAV(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if len(samples) == 0 {
+		t.Fatalf("%s holds no audio", path)
+	}
+	return &wavSource{samples: samples, rate: rate}
+}
+
+func (w *wavSource) Spectrum() ([]float64, float64, float64, bool) {
+	return nil, 0, 0, false
+}
+
+func (w *wavSource) Listen(ctx context.Context, hz float64, mode string, dur time.Duration) ([]float64, int, error) {
+	n := int(dur.Seconds() * float64(w.rate))
+	if n <= 0 || n > len(w.samples) {
+		n = len(w.samples)
+	}
+	return w.samples[:n], w.rate, nil
+}
+
+func (w *wavSource) Close() error { return nil }
 
 // TestSurveyUsesRealModulation checks that the sweep never asks a receiver
 // for a modulation named "auto": no receiver knows that mode, so the
@@ -140,6 +179,33 @@ func TestSpectrumDetection(t *testing.T) {
 	}
 }
 
+// TestCentreSpikeIsNotTraffic checks the geometry of the centre filter: the
+// server's demodulator sits at the centre of every FFT frame and looks like
+// a strong carrier, with a skirt that can put the centroid a few kHz off on
+// a high-resolution FFT. It must be dropped even when other peaks are
+// present; before this was fixed it survived whenever the band had a second
+// signal, and the monitor reported a "noise" transmission at the centre for
+// ever.
+func TestCentreSpikeIsNotTraffic(t *testing.T) {
+	// 16k bins over 2.048 MHz is the resolution the real receiver sends.
+	frame := make([]float64, 16384)
+	for i := range frame {
+		frame[i] = -90
+	}
+	centreBin := len(frame) / 2
+	frame[centreBin] = -20   // server demodulator, at the exact centre
+	frame[centreBin+6] = -25 // its skirt, 750 Hz above centre
+	frame[12000] = -30       // a real signal elsewhere
+	instance := New(Options{ThresholdDB: 10})
+	peaks := instance.detect(frame, 145e6, 2.048e6)
+	if len(peaks) != 1 {
+		t.Fatalf("detected %d peaks, want only the real one: %+v", len(peaks), peaks)
+	}
+	if math.Abs(peaks[0].frequency-145e6) < 3e3 {
+		t.Errorf("kept a peak at %.0f Hz, next to the demodulator", peaks[0].frequency)
+	}
+}
+
 // TestActivitiesAreNewestFirst checks the order of the activity log.
 func TestActivitiesAreNewestFirst(t *testing.T) {
 	instance := New(Options{Source: &fakeSource{}})
@@ -173,5 +239,109 @@ func TestActivityLogIsCapped(t *testing.T) {
 	instance.mu.Unlock()
 	if got := len(instance.Activities()); got > 200 {
 		t.Errorf("activity log holds %d entries", got)
+	}
+}
+
+// TestHandleJobRealDTMF drives one job with the committed DTMF recording: a
+// transmission that was recorded gets an end time and a decoder name, and
+// Mode never repeats the verdict.
+func TestHandleJobRealDTMF(t *testing.T) {
+	source := newWAVSource(t, "../../../tests/data/ref_dtmf.wav")
+	instance := New(Options{Source: source, Listen: 10 * time.Second, Name: "test"})
+	var published Activity
+	instance.opts.OnActivity = func(activity Activity) { published = activity }
+
+	started := time.Now().Add(-time.Minute)
+	instance.mu.Lock()
+	instance.nextID = 1
+	instance.activities = []Activity{{ID: 1, Started: started}}
+	instance.mu.Unlock()
+
+	instance.handleJob(context.Background(), job{
+		frequency: 145_500_000, levelDB: 20, modes: []string{"usb"}, activityID: 1,
+	})
+
+	if published.ID != 1 {
+		t.Fatalf("published activity #%d, want #1", published.ID)
+	}
+	if published.Ended == nil {
+		t.Fatal("a recorded transmission has no end time")
+	}
+	if published.Ended.Before(published.Started) {
+		t.Errorf("ended %v before started %v", published.Ended, published.Started)
+	}
+	if published.DurationSec <= 0 {
+		t.Errorf("duration = %v, want the recorded length", published.DurationSec)
+	}
+	if published.Mode != "dtmf" {
+		t.Errorf("mode = %q, want the decoder that produced the detail", published.Mode)
+	}
+	if published.Mode == published.Kind {
+		t.Errorf("mode and kind are both %q: a verdict is not a mode", published.Mode)
+	}
+	if !strings.Contains(published.Detail, "0123456789") {
+		t.Errorf("detail = %q, want the decoded digits", published.Detail)
+	}
+}
+
+// TestNarrowbandDecodersNeedANarrowChannel uses the committed recordings:
+// CW and RTTY are narrowband modes and must not be attempted on a wide
+// channel. The PoC against an AM aviation band found the reason: every
+// controller call decoded as "RTTY" with invented text, so the recording
+// never reached the voice path.
+func TestNarrowbandDecodersNeedANarrowChannel(t *testing.T) {
+	instance := New(Options{})
+	cases := []struct {
+		file   string
+		narrow string // mode expected in a narrow channel
+		wide   string // mode expected in a wide channel
+		note   string
+	}{
+		{"ref_rtty.wav", "rtty", "", "RTTY is a 170 Hz shift mode"},
+		{"ref_morse.wav", "morse", "", "CW is a 700 Hz tone"},
+		{"ref_aprs.wav", "aprs", "aprs", "a packet fits a 25 kHz FM channel"},
+	}
+	for _, test := range cases {
+		samples, rate, err := decode.ReadWAV("../../../tests/data/" + test.file)
+		if err != nil {
+			t.Fatalf("read %s: %v", test.file, err)
+		}
+		mode, detail, ok := instance.decodeData(samples, rate, 3000)
+		if !ok || mode != test.narrow {
+			t.Errorf("%s in a 3 kHz channel: got %q/%q, want %q (%s)",
+				test.file, mode, detail, test.narrow, test.note)
+		}
+		mode, detail, ok = instance.decodeData(samples, rate, 25000)
+		if test.wide == "" {
+			if ok {
+				t.Errorf("%s in a 25 kHz channel: got %q/%q, want nothing: the voice is not RTTY",
+					test.file, mode, detail)
+			}
+		} else if !ok || mode != test.wide {
+			t.Errorf("%s in a 25 kHz channel: got %q/%q, want %q (%s)",
+				test.file, mode, detail, test.wide, test.note)
+		}
+	}
+}
+
+// TestActivityJSONOmitsUnsetEnded checks that an activity that was never
+// recorded carries no "ended" field at all. A time.Time with omitempty does
+// not do this: it encodes the zero year-1 timestamp instead.
+func TestActivityJSONOmitsUnsetEnded(t *testing.T) {
+	data, err := json.Marshal(Activity{ID: 1, Started: time.Unix(1_700_000_000, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"ended"`) {
+		t.Errorf("unset end time is in the JSON: %s", data)
+	}
+
+	ended := time.Unix(1_700_000_010, 0)
+	data, err = json.Marshal(Activity{ID: 2, Ended: &ended})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"ended"`) {
+		t.Errorf("set end time is missing from the JSON: %s", data)
 	}
 }

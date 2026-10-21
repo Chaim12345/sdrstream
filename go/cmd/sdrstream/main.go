@@ -1376,7 +1376,7 @@ func cmdWeb(args []string) error {
 // maritime broadcasts.
 func cmdDecode(args []string) error {
 	fs := flag.NewFlagSet("decode", flag.ExitOnError)
-	mode := fs.String("mode", "auto", "auto | aprs | morse | dtmf | rtty | psk31 | sstv | pocsag | eas | navtex | voice | all")
+	mode := fs.String("mode", "auto", "auto | aprs | morse | dtmf | rtty | psk31 | sstv | pocsag | eas | navtex | voice | all (every data mode, no speech)")
 	offset := fs.Float64("offset", 0, "audio centre frequency in Hz for psk31/rtty (0 = auto)")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
@@ -1452,7 +1452,11 @@ func cmdDecode(args []string) error {
 			}
 		}
 
-		if *mode == "voice" || *mode == "speech" || *mode == "all" {
+		// Speech recognition is deliberately not part of "all": whisper
+		// takes tens of seconds per file, and a scan of a directory of
+		// recordings would spend all its time transcribing noise. Asking
+		// for voice is explicit.
+		if *mode == "voice" || *mode == "speech" {
 			segments := voice.SpeechActivity(samples, rate)
 			if len(segments) == 0 {
 				fmt.Println("   voice: no speech detected")
@@ -1466,7 +1470,7 @@ func cmdDecode(args []string) error {
 			}
 		}
 
-		if *mode == "aprs" || *mode == "morse" || *mode == "auto" {
+		if *mode == "aprs" || *mode == "morse" || *mode == "auto" || wantAll {
 			// Prefer multimon-ng (the reference decoder) when installed.
 			if decode.MultimonAvailable() && *mode != "morse" {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -1481,7 +1485,7 @@ func cmdDecode(args []string) error {
 						fmt.Printf("   packet: %s\n", l)
 					}
 				}
-			} else if *mode == "auto" || *mode == "aprs" {
+			} else if *mode == "auto" || *mode == "aprs" || wantAll {
 				packets, err := decode.AFSKFrames(path)
 				if err != nil {
 					fmt.Printf("   aprs: %v\n", err)
@@ -1493,7 +1497,7 @@ func cmdDecode(args []string) error {
 					}
 				}
 			}
-			if *mode == "auto" || *mode == "morse" {
+			if *mode == "auto" || *mode == "morse" || wantAll {
 				res, err := decode.MorseDecode(path)
 				if err != nil {
 					fmt.Printf("   morse: %v\n", err)

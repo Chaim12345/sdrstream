@@ -100,6 +100,8 @@ const indexPage = `<!DOCTYPE html>
   .gcard pre { margin: 6px 0 0; font-size: 10px; color: var(--muted); white-space: pre-wrap; max-height: 90px; overflow: hidden; }
   audio { height: 30px; width: 260px; }
   .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+  button.pill { appearance: none; font: inherit; cursor: pointer; }
+  button.pill:hover { color: var(--text); border-color: var(--accent-dim); }
   input[type=search], input[type=text] {
     background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
     color: var(--text); font: inherit; font-size: 12px; padding: 6px 10px; min-width: 220px;
@@ -215,6 +217,7 @@ const indexPage = `<!DOCTYPE html>
       <label class="muted" for="station-filter">Filter</label>
       <input type="search" id="station-filter" placeholder="name, type or URL">
       <span class="muted" id="station-summary"></span>
+      <button id="station-more" class="pill" hidden>show more</button>
     </div>
     <div class="panel scroll">
       <table id="stations">
@@ -248,10 +251,14 @@ const shortURL = u => { try { return new URL(u).host; } catch { return u; } };
 
 document.querySelectorAll('nav button').forEach(button => {
   button.addEventListener('click', () => {
-    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('nav button').forEach(b => {
+      b.classList.remove('active');
+      b.setAttribute('aria-selected', 'false');
+    });
     document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
     button.classList.add('active');
-    el('tab-' + button.dataset.tab).classList.add('active');
+    button.setAttribute('aria-selected', 'true');
+    el('panel-' + button.dataset.tab).classList.add('active');
   });
 });
 
@@ -371,29 +378,55 @@ async function refreshGallery() {
 }
 
 let stationRows = [];
+let stationLimit = 400;
+let stationError = '';
 async function refreshStations() {
   try {
     const stations = await fetchJSON('/api/stations.json');
     stationRows = stations || [];
+    stationError = '';
     el('station-count').textContent = stationRows.length;
-    renderStations();
-  } catch (err) { /* directory offline */ }
+  } catch (err) {
+    // A failing directory is not an empty one: keep the last good list if
+    // there is one and say so instead of showing "no stations".
+    stationError = err.message || String(err);
+  }
+  renderStations();
 }
 function renderStations() {
   const needle = el('station-filter').value.toLowerCase();
+  const filtered = stationRows.filter(s => !needle || (s.name + ' ' + s.type + ' ' + s.url).toLowerCase().includes(needle));
+  const shown = filtered.slice(0, stationLimit);
   const counts = {};
   stationRows.forEach(s => counts[s.type] = (counts[s.type] || 0) + 1);
-  const shown = Math.min(400, stationRows.filter(s => !needle || (s.name + ' ' + s.type + ' ' + s.url).toLowerCase().includes(needle)).length);
   const summary = Object.keys(counts).sort().map(k => counts[k] + ' ' + k).join(' · ');
-  el('station-summary').textContent = summary + (shown < stationRows.length ? ' · showing ' + shown : '');
+  if (stationError) {
+    el('station-summary').textContent = 'directory unavailable — ' + stationError;
+  } else {
+    el('station-summary').textContent = summary +
+      (filtered.length > shown.length ? ' · showing ' + shown.length + ' of ' + filtered.length : '');
+  }
+  const more = el('station-more');
+  more.hidden = filtered.length <= shown.length;
+  if (!more.hidden) {
+    more.textContent = 'show ' + Math.min(400, filtered.length - shown.length) + ' more of ' + filtered.length;
+  }
   const body = el('stations').querySelector('tbody');
   body.textContent = '';
-  stationRows.filter(s => !needle || (s.name + ' ' + s.type + ' ' + s.url).toLowerCase().includes(needle))
-    .slice(0, 400).forEach(s => {
-      body.appendChild(row([s.type, s.name, link(s.url, shortURL(s.url)), s.latitude.toFixed(4), s.longitude.toFixed(4)]));
-    });
+  shown.forEach(s => {
+    body.appendChild(row([s.type, s.name, link(s.url, shortURL(s.url)), s.latitude.toFixed(4), s.longitude.toFixed(4)]));
+  });
+  if (!shown.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 5; td.className = 'empty';
+    td.textContent = stationError ? 'directory unavailable, retrying every five minutes'
+      : (needle ? 'no station matches the filter' : 'no stations in the directory');
+    tr.appendChild(td); body.appendChild(tr);
+  }
 }
-el('station-filter').addEventListener('input', renderStations);
+el('station-filter').addEventListener('input', () => { stationLimit = 400; renderStations(); });
+el('station-more').addEventListener('click', () => { stationLimit += 400; renderStations(); });
 
 function drawSpectrum(bins, centre, span) {
   const canvas = el('spectrum');

@@ -1,11 +1,15 @@
 package voice
 
 import (
+	"context"
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/chaim12345/sdrstream/go/internal/decode"
 )
 
 func TestWriteWAVRoundTrip(t *testing.T) {
@@ -127,4 +131,134 @@ func TestFindBinaryAndModel(t *testing.T) {
 	if FindBinary(options) != "" && FindModel(options) == "" {
 		t.Error("a binary was found but no model")
 	}
+}
+
+// TestWhisperArgs checks the command line built for whisper.cpp. The beam
+// size is the interesting one: greedy decoding (the upstream default) drops
+// words on narrowband radio audio, so anything above 1 must be passed on.
+func TestWhisperArgs(t *testing.T) {
+	args := whisperArgs("/models/ggml-large-v3.bin", "/tmp/clip.wav", Options{
+		BeamSize: 5, Threads: 4, Language: "en",
+	})
+	for _, want := range []string{"-m", "/models/ggml-large-v3.bin", "-f", "/tmp/clip.wav",
+		"-bs", "5", "-t", "4", "-l", "en", "-nt", "-np"} {
+		if !contains(args, want) {
+			t.Errorf("args %v do not contain %q", args, want)
+		}
+	}
+
+	plain := whisperArgs("m", "w", Options{})
+	for _, unwanted := range []string{"-bs", "-t", "-l", "--prompt"} {
+		if contains(plain, unwanted) {
+			t.Errorf("default args %v must not contain %q", plain, unwanted)
+		}
+	}
+
+	hinted := whisperArgs("m", "w", Options{Prompt: "aviation radio phraseology"})
+	if !containsString(hinted, "aviation radio phraseology") {
+		t.Errorf("args %v dropped the prompt", hinted)
+	}
+}
+
+// TestWhisperBeamDefaultsToFive checks the environment default: an unset
+// SDRSTREAM_WHISPER_BEAM means a beam of five, not whisper.cpp's greedy 1.
+func TestWhisperBeamDefaultsToFive(t *testing.T) {
+	if got := DefaultOptions().BeamSize; got != 5 {
+		t.Errorf("default beam size = %d, want 5", got)
+	}
+	value, found := os.LookupEnv("SDRSTREAM_WHISPER_BEAM")
+	if found {
+		if got := DefaultOptions().BeamSize; got != atoiOr(value) {
+			t.Errorf("beam size = %d, want the value from the environment (%s)", got, value)
+		}
+	}
+}
+
+// TestLargeModelIsPreferred checks that a large GGML model actually installed
+// in the cache is found: FindModel prefers the small English models for
+// speed, but a large model must never be missed.
+func TestLargeModelIsPreferred(t *testing.T) {
+	options := DefaultOptions()
+	if options.Model != "" {
+		t.Skip("SDRSTREAM_WHISPER_MODEL pins the model")
+	}
+	matches, _ := filepath.Glob(filepath.Join(CacheDir, "ggml-*.bin"))
+	if len(matches) == 0 {
+		t.Skip("no model installed")
+	}
+	model := FindModel(options)
+	if model == "" {
+		t.Fatal("models are installed in the cache but none was found")
+	}
+	if !strings.Contains(model, "large") {
+		t.Logf("note: the model in use is %s, not a large one", filepath.Base(model))
+	}
+}
+
+// TestTranscribeRealRadioClip takes the first recording the PoC monitor made
+// and transcribes it for real: this is the end-to-end proof that a
+// transmission found on the air can be turned into text. It needs a
+// whisper.cpp binary and a model, and a recording to work on, so it skips
+// when either is missing (set SDRSTREAM_WHISPER / SDRSTREAM_WHISPER_MODEL
+// and WHISPER_LIVE_CLIP to run it).
+func TestTranscribeRealRadioClip(t *testing.T) {
+	if FindBinary(DefaultOptions()) == "" || FindModel(DefaultOptions()) == "" {
+		t.Skip("no whisper.cpp binary or model installed")
+	}
+	candidates := []string{}
+	if clip := os.Getenv("WHISPER_LIVE_CLIP"); clip != "" {
+		candidates = []string{clip}
+	} else {
+		candidates, _ = filepath.Glob("../../../captures/poc/*.wav")
+		if len(candidates) == 0 {
+			candidates, _ = filepath.Glob("../../../captures/monitor/*.wav")
+		}
+	}
+	if len(candidates) == 0 {
+		t.Skip("no real recording to transcribe (run the monitor PoC first)")
+	}
+	samples, rate, err := decode.ReadWAV(candidates[0])
+	if err != nil {
+		t.Fatalf("read %s: %v", candidates[0], err)
+	}
+	options := DefaultOptions()
+	transcript, err := Transcribe(context.Background(), samples, rate, options)
+	if err != nil {
+		t.Fatalf("transcribe %s: %v", candidates[0], err)
+	}
+	t.Logf("%s (%.1fs, %d samples, %d Hz, beam %d, %s) -> %q",
+		filepath.Base(candidates[0]), transcript.Seconds, len(samples), rate,
+		options.BeamSize, filepath.Base(FindModel(options)), transcript.Text)
+	if transcript.Backend != "whisper.cpp" {
+		t.Errorf("backend = %q, want whisper.cpp", transcript.Backend)
+	}
+	if !transcript.Spoken {
+		t.Log("no text in this clip: the recording may hold no speech")
+	}
+}
+
+func contains(list []string, want string) bool {
+	for _, item := range list {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(list []string, want string) bool {
+	for _, item := range list {
+		if strings.Contains(item, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func atoiOr(value string) int {
+	number, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return number
 }

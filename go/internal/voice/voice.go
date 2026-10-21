@@ -51,6 +51,15 @@ type Options struct {
 	Language string
 	// Threads limits the inference threads; 0 lets whisper decide.
 	Threads int
+	// BeamSize is the beam-search width: 1 is greedy decoding, which is
+	// whisper.cpp's own default. Radio audio is narrowband and noisy, and
+	// greedy decoding routinely drops whole words there; a beam of five
+	// costs a few seconds per clip and measurably keeps them.
+	BeamSize int
+	// Prompt is a domain hint, printed into the model's context before
+	// decoding. It is where radio jargon ("callsign", "over", band names)
+	// gets spelled correctly; empty means no hint.
+	Prompt string
 }
 
 // CacheDir is where the whisper binary and models are kept.
@@ -71,7 +80,9 @@ func DefaultOptions() Options {
 		Binary:   os.Getenv("SDRSTREAM_WHISPER"),
 		Model:    os.Getenv("SDRSTREAM_WHISPER_MODEL"),
 		Language: envOr("SDRSTREAM_WHISPER_LANG", "auto"),
-		Threads:  0,
+		Threads:  envInt("SDRSTREAM_WHISPER_THREADS", 0),
+		BeamSize: envInt("SDRSTREAM_WHISPER_BEAM", 5),
+		Prompt:   os.Getenv("SDRSTREAM_WHISPER_PROMPT"),
 	}
 }
 
@@ -80,6 +91,34 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envInt(name string, fallback int) int {
+	value, err := strconv.Atoi(os.Getenv(name))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+// whisperArgs builds the whisper.cpp command line. Greedy decoding is the
+// upstream default and loses words on narrowband radio audio, so a beam
+// wider than one is requested whenever the caller asks for it.
+func whisperArgs(model, wav string, options Options) []string {
+	args := []string{"-m", model, "-f", wav, "-nt", "-np"}
+	if options.Language != "" && options.Language != "auto" {
+		args = append(args, "-l", options.Language)
+	}
+	if options.Threads > 0 {
+		args = append(args, "-t", strconv.Itoa(options.Threads))
+	}
+	if options.BeamSize > 1 {
+		args = append(args, "-bs", strconv.Itoa(options.BeamSize))
+	}
+	if options.Prompt != "" {
+		args = append(args, "--prompt", options.Prompt)
+	}
+	return args
 }
 
 // FindBinary locates the whisper.cpp command.
@@ -185,16 +224,9 @@ func Transcribe(ctx context.Context, samples []float64, rate int, options Option
 	}
 	file.Close()
 
-	args := []string{"-m", model, "-f", file.Name(), "-nt", "-np"}
-	if options.Language != "" && options.Language != "auto" {
-		args = append(args, "-l", options.Language)
-	}
-	if options.Threads > 0 {
-		args = append(args, "-t", strconv.Itoa(options.Threads))
-	}
 	runCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	command := exec.CommandContext(runCtx, binary, args...)
+	command := exec.CommandContext(runCtx, binary, whisperArgs(model, file.Name(), options)...)
 	// whisper.cpp writes the transcript to stdout and its progress log to
 	// stderr, so they are kept apart.
 	var stdout, stderr strings.Builder
