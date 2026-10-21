@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Chaim12345/sdrstream/go/internal/catalogue"
+	"github.com/chaim12345/sdrstream/go/internal/catalogue"
 )
 
 // DirectoryURL is the public receiver map.

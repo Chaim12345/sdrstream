@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Chaim12345/sdrstream/go/internal/catalogue"
+	"github.com/chaim12345/sdrstream/go/internal/catalogue"
 )
 
 // UHF SATCOM occupies 240-270 MHz. The amateur 70 cm band stops at 440 MHz,

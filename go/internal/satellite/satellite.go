@@ -15,13 +15,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Chaim12345/sdrstream/go/internal/catalogue"
-	"github.com/Chaim12345/sdrstream/go/internal/common"
-	"github.com/Chaim12345/sdrstream/go/internal/openwebrx"
-	"github.com/Chaim12345/sdrstream/go/internal/satellites"
-	"github.com/Chaim12345/sdrstream/go/internal/tle"
-	"github.com/Chaim12345/sdrstream/go/internal/tracking"
-	"github.com/Chaim12345/sdrstream/go/internal/websdr"
+	"github.com/chaim12345/sdrstream/go/internal/catalogue"
+	"github.com/chaim12345/sdrstream/go/internal/common"
+	"github.com/chaim12345/sdrstream/go/internal/openwebrx"
+	"github.com/chaim12345/sdrstream/go/internal/satellites"
+	"github.com/chaim12345/sdrstream/go/internal/tle"
+	"github.com/chaim12345/sdrstream/go/internal/tracking"
+	"github.com/chaim12345/sdrstream/go/internal/websdr"
 )
 
 // SegmentSeconds is how long one connection stays open before reconnecting

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Chaim12345/sdrstream/go/internal/satellites"
-	"github.com/Chaim12345/sdrstream/go/internal/satnogs"
+	"github.com/chaim12345/sdrstream/go/internal/satellites"
+	"github.com/chaim12345/sdrstream/go/internal/satnogs"
 )
 
 // SeenSatellite is a satellite observed by the network, with what was heard.

@@ -17,13 +17,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Chaim12345/sdrstream/go/internal/catalogue"
-	"github.com/Chaim12345/sdrstream/go/internal/gallery"
-	"github.com/Chaim12345/sdrstream/go/internal/relays"
-	"github.com/Chaim12345/sdrstream/go/internal/satellites"
-	"github.com/Chaim12345/sdrstream/go/internal/satnogs"
-	"github.com/Chaim12345/sdrstream/go/internal/tle"
-	"github.com/Chaim12345/sdrstream/go/internal/tracking"
+	"github.com/chaim12345/sdrstream/go/internal/catalogue"
+	"github.com/chaim12345/sdrstream/go/internal/gallery"
+	"github.com/chaim12345/sdrstream/go/internal/relays"
+	"github.com/chaim12345/sdrstream/go/internal/satellites"
+	"github.com/chaim12345/sdrstream/go/internal/satnogs"
+	"github.com/chaim12345/sdrstream/go/internal/tle"
+	"github.com/chaim12345/sdrstream/go/internal/tracking"
 )
 
 // Capture is one recording the UI can show.

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Chaim12345/sdrstream/go/internal/satellites"
+	"github.com/chaim12345/sdrstream/go/internal/satellites"
 )
 
 // Kind is how a satellite relays traffic.

@@ -1,5 +1,5 @@
 module github.com/chaim12345/sdrstream/gotools/sdrpass
 
-go 1.27.2
+go 1.23.4
 
-require github.com/Mohammed-Ashour/go-satellite-v2 v0.1.1
+require github.com/akhenakh/sgp4 v1.0.2

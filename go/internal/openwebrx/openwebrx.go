@@ -29,8 +29,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Chaim12345/sdrstream/go/internal/adpcm"
-	"github.com/Chaim12345/sdrstream/go/internal/common"
+	"github.com/chaim12345/sdrstream/go/internal/adpcm"
+	"github.com/chaim12345/sdrstream/go/internal/common"
 	"github.com/gorilla/websocket"
 	"net/http"
 )
