@@ -9,3 +9,4 @@ venv/
 go/bin/
 .run/
 gotools/sdrpass/sdrpass
+go/sdrstream

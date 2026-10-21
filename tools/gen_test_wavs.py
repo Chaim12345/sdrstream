@@ -564,6 +564,8 @@ def make_pocsag(address, message, function=3, baud=1200, numeric=False):
 def make_psk31(text, center=1000.0):
     """Render BPSK31: 31.25 baud DBPSK, raised-cosine, Varicode."""
     spb = RATE / 31.25
+    # Varicode characters are separated by a single "00" pair: no code
+    # contains two consecutive zero bits, so the pair marks the boundary.
     bits = []
     for ch in text:
         code = VARICODE.get(ch)

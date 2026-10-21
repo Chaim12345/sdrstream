@@ -18,7 +18,9 @@ import (
 	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/catalogue"
+	"github.com/chaim12345/sdrstream/go/internal/directory"
 	"github.com/chaim12345/sdrstream/go/internal/gallery"
+	"github.com/chaim12345/sdrstream/go/internal/monitor"
 	"github.com/chaim12345/sdrstream/go/internal/relays"
 	"github.com/chaim12345/sdrstream/go/internal/satellites"
 	"github.com/chaim12345/sdrstream/go/internal/satnogs"
@@ -79,6 +81,9 @@ type Server struct {
 	capturesDir string
 	galleryDir  string
 	galleryAt   time.Time
+	monitor     *monitor.Monitor
+	stations    []directory.Station
+	stationsAt  time.Time
 }
 
 // New builds a server with the bundled page. When capturesDir is non-empty
@@ -308,6 +313,22 @@ func wavInfo(path string) (rate int, dataBytes int64, err error) {
 	}
 }
 
+// securityHeaders sets the headers every response carries. The UI is a
+// single page with an inline script, so the policy allows inline code but
+// blocks framing and cross-origin access.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header := w.Header()
+		header.Set("X-Content-Type-Options", "nosniff")
+		header.Set("X-Frame-Options", "DENY")
+		header.Set("Referrer-Policy", "no-referrer")
+		header.Set("Content-Security-Policy",
+			"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "+
+				"img-src 'self' data:; media-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Handler returns the HTTP routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -317,9 +338,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/satellites.json", s.handleSatellites)
 	mux.HandleFunc("/api/observations.json", s.handleObservations)
 	mux.HandleFunc("/api/gallery.json", s.handleGallery)
+	mux.HandleFunc("/api/activity.json", s.handleActivity)
+	mux.HandleFunc("/api/spectrum.json", s.handleSpectrum)
+	mux.HandleFunc("/api/stations.json", s.handleStations)
 	mux.HandleFunc("/audio/", s.handleAudio)
 	mux.HandleFunc("/gallery/", s.handleGalleryFile)
-	return mux
+	return securityHeaders(mux)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -365,6 +389,13 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Only recordings are served; the directory may hold other files.
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".wav", ".mp3", ".ogg", ".flac":
+	default:
+		http.NotFound(w, r)
+		return
+	}
 	http.ServeFile(w, r, filepath.Join(s.capturesDir, name))
 }
 
@@ -404,6 +435,100 @@ func (s *Server) handleGalleryFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeFile(w, r, filepath.Join(s.galleryDir, name))
+}
+
+// SetMonitor attaches a live monitor to the server.
+func (s *Server) SetMonitor(instance *monitor.Monitor) {
+	s.mu.Lock()
+	s.monitor = instance
+	s.mu.Unlock()
+}
+
+// handleActivity returns the transmissions the monitor has seen.
+func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	instance := s.monitor
+	s.mu.Unlock()
+	if instance == nil {
+		writeJSON(w, []monitor.Activity{})
+		return
+	}
+	writeJSON(w, instance.Activities())
+}
+
+// handleSpectrum returns the latest spectrum frame from the monitored
+// receiver, downsampled to a size the browser can draw.
+func (s *Server) handleSpectrum(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	instance := s.monitor
+	s.mu.Unlock()
+	if instance == nil {
+		http.Error(w, "no monitor is running", http.StatusNotFound)
+		return
+	}
+	bins, centre, span, ok := instance.Spectrum()
+	if !ok || len(bins) == 0 {
+		// A receiver that sends no spectrum (WebSDR, KiwiSDR) or a
+		// monitor that has not seen a frame yet is not an error: the
+		// page asks for this every second and would log a failure.
+		writeJSON(w, map[string]interface{}{
+			"available":  false,
+			"bins":       []float64{},
+			"centre_hz":  centre,
+			"span_hz":    span,
+			"updated_at": time.Now(),
+		})
+		return
+	}
+	// Keep the strongest bin of every group: a narrow transmission is
+	// usually one or two bins wide and decimation would drop it.
+	const points = 256
+	step := len(bins) / points
+	if step < 1 {
+		step = 1
+	}
+	var out []float64
+	for i := 0; i < len(bins); i += step {
+		highest := bins[i]
+		for j := i + 1; j < i+step && j < len(bins); j++ {
+			if bins[j] > highest {
+				highest = bins[j]
+			}
+		}
+		out = append(out, highest)
+	}
+	writeJSON(w, map[string]interface{}{
+		"available":  true,
+		"bins":       out,
+		"centre_hz":  centre,
+		"span_hz":    span,
+		"updated_at": time.Now(),
+	})
+}
+
+// handleStations lists the public receivers from the directory. The list is
+// cached for an hour because the directory page is large.
+func (s *Server) handleStations(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	stations := s.stations
+	fresh := !s.stationsAt.IsZero() && time.Since(s.stationsAt) < time.Hour
+	s.mu.Unlock()
+	if !fresh {
+		fetched, err := directory.FetchStations(r.Context(), 30*time.Second)
+		if err == nil {
+			s.mu.Lock()
+			s.stations = fetched
+			s.stationsAt = time.Now()
+			stations = fetched
+			s.mu.Unlock()
+		} else {
+			log.Printf("web: station directory: %v", err)
+		}
+	}
+	if stations == nil {
+		stations = []directory.Station{}
+	}
+	writeJSON(w, stations)
 }
 
 func (s *Server) handleSatellites(w http.ResponseWriter, r *http.Request) {

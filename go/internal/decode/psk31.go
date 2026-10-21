@@ -2,6 +2,7 @@ package decode
 
 import (
 	"math"
+	"sort"
 	"strings"
 )
 
@@ -63,14 +64,28 @@ func psk31At(samples []float64, rate int, centerHz float64) string {
 	}
 	// Differential detection: a phase reversal (bit 0) makes the dot product
 	// of consecutive symbols negative; no reversal (bit 1) keeps it positive.
+	//
+	// The normalised dot product also says how clean the signal is. In a
+	// real PSK31 transmission every symbol sits at the same phase, so the
+	// correlation between neighbouring symbols is close to one; noise
+	// scatters the phase and the correlation collapses. That measurement
+	// keeps noise from being decoded into plausible-looking text.
+	correlations := make([]float64, 0, symbols)
 	var bits strings.Builder
 	for k := 1; k < symbols; k++ {
 		dot := is[k]*is[k-1] + qs[k]*qs[k-1]
+		magnitude := math.Hypot(is[k], qs[k]) * math.Hypot(is[k-1], qs[k-1])
+		if magnitude > 0 {
+			correlations = append(correlations, math.Abs(dot/magnitude))
+		}
 		if dot >= 0 {
 			bits.WriteByte('1')
 		} else {
 			bits.WriteByte('0')
 		}
+	}
+	if len(correlations) < 8 || medianAbs(correlations) < 0.9 {
+		return ""
 	}
 	raw := bits.String()
 	// Differential detection loses the very first symbol, so the recovered
@@ -78,13 +93,20 @@ func psk31At(samples []float64, rate int, centerHz float64) string {
 	// both alignments (and both polarities) and keep the most text-like.
 	best, bestScore := "", -1
 	for _, candidate := range []string{
-		decodeVaricode(raw),
-		decodeVaricode(invertBits(raw)),
-		decodeVaricode("1" + raw),
-		decodeVaricode(invertBits("1" + raw)),
+		raw,
+		invertBits(raw),
+		"1" + raw,
+		invertBits("1" + raw),
 	} {
-		if s := printableScore(candidate); s > bestScore {
-			best, bestScore = candidate, s
+		// A real PSK31 signal only ever contains varicode codes, so a
+		// stream with invalid segments is noise, however text-like the
+		// characters that did come out look.
+		text, invalid, idles := decodeVaricodeStrict(candidate)
+		if invalid > 0 || idles == 0 {
+			continue
+		}
+		if s := printableScore(text); s > bestScore {
+			best, bestScore = text, s
 		}
 	}
 	return best
@@ -136,4 +158,15 @@ func printableScore(s string) int {
 		}
 	}
 	return score
+}
+
+// medianAbs returns the middle value of the absolute values, which is
+// used to judge how cleanly a phase-modulated signal is locked.
+func medianAbs(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := append([]float64(nil), values...)
+	sort.Float64s(sorted)
+	return sorted[len(sorted)/2]
 }

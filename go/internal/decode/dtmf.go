@@ -76,5 +76,10 @@ func DTMFDecode(samples []float64, rate int) string {
 		}
 		lastKey, streak = key, 1
 	}
+	// A DTMF sequence is at least a couple of digits; one or two hits in
+	// noise are not a keypad.
+	if len(out.String()) < 3 {
+		return ""
+	}
 	return out.String()
 }

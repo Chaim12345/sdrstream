@@ -125,30 +125,32 @@ python -m sdrstream schedule --add ISS --run
 
 ## Web UI
 
-`python -m sdrstream web` serves a single page over the same modules the
-command line uses. There is no build step, no template engine and no JavaScript
-framework: the page is one string in `sdrstream/web.py` and the endpoints
-return JSON, so the server needs nothing beyond the standard library.
+`go run ./cmd/sdrstream web` serves a single page over the same modules the
+command line uses. There is no build step, no template engine and no
+JavaScript framework: the page is one string in `go/internal/web/page.go` and
+the endpoints return JSON.
 
 The tabs are the tasks that are awkward from a shell:
 
-* **Receivers** — find receivers covering a frequency, either from the bundled
-  catalogue or a live sweep of the public OpenWebRX directory.
-* **Satellites** — the amateur table with downlinks and bands.
-* **Passes** — predict passes over a chosen latitude and longitude.
-* **Government & military** — the table described below, with a live
-  reachability count against real receivers.
-* **Record** — record to a WAV and play it back in the page.
-* **Undocumented** — satellites the network has heard that the table lacks.
+* **Live** — the spectrum of the monitored receiver and a feed of the
+  transmissions that were found, each with what it turned out to be.
+* **Satellites** — the amateur table with downlinks, bands and the kind of
+  relay (FM voice, linear transponder, digipeater).
+* **Passes** — predicted passes over the receivers in the catalogue.
+* **Gallery** — images and text decoded by ground stations, from SatNOGS.
+* **Captures** — recordings with a player for each.
+* **Stations** — every public receiver in the directory, filterable.
 
-Recording is asynchronous. The browser posts to `/api/record`, gets a job id
-immediately, and polls `/api/record/<id>`; the WAV is fetched from
-`/api/record/<id>/audio` once the job is done. Jobs live in memory and do not
-survive a restart.
+With `-monitor-server` the page becomes a live monitor: the server watches a
+receiver, and every transmission that appears is recorded, classified and
+decoded or transcribed (see below). The endpoints are `/api/status.json`,
+`/api/activity.json`, `/api/spectrum.json`, `/api/satellites.json`,
+`/api/gallery.json`, `/api/captures.json` and `/api/stations.json`.
 
-The server binds to `127.0.0.1` by default and has **no authentication**, and
-the record endpoint will connect to whatever URL it is given. Do not expose it
-to a network you do not control.
+The server binds to `127.0.0.1` by default and has **no authentication**.
+`-host 0.0.0.0` makes it reachable from a phone on the same network, which
+also hands out the recordings and lets anyone make the server connect
+outwards. Do not expose it to a network you do not control.
 
 ## Government and military downlinks
 
@@ -242,6 +244,71 @@ catches regressions in the bit-level work. The EAS decoder uses the sixteen
 the NAVTEX decoder picks the bit alignment that maximises valid CCIR 476
 characters, then drops the FEC repeat characters.
 
+## Monitoring any traffic
+
+The satellite tools ask "is a bird overhead right now". The monitor asks the
+broader question: **what is on the air at all?** It watches a receiver,
+finds every transmission, decides what kind it is, and then does something
+useful with it.
+
+```bash
+cd go
+# sweep a band and report everything it hears
+go run ./cmd/sdrstream monitor --server http://sdr.example:8073/ \
+    --kind openwebrx --strategy sweep --start 145000000 --end 146000000
+
+# or use the receiver's own FFT to spot peaks and only listen where they are
+go run ./cmd/sdrstream monitor --server http://sdr.example:8073/ \
+    --kind openwebrx --strategy spectrum --threshold 12 --listen 8s
+```
+
+Two strategies, because no receiver gives everything:
+
+* **sweep** listens at every step of a range and compares the levels with the
+  median of the band. It works with every receiver, including the ones that
+  send no spectrum, but it is slow.
+* **spectrum** uses the receiver's own FFT to find peaks, then retunes to
+  each one. It is fast, but only OpenWebRX sends a usable spectrum.
+
+What the monitor does with a transmission:
+
+| What it is | How it is decided | What comes out |
+| --- | --- | --- |
+| voice | the level swings with the speech | a transcript, or the number of speech segments |
+| data | a decoder recognises the modulation | the decoded payload: an AX.25 frame, a POCSAG page, an EAS header, NAVTEX text, SSTV mode, Morse |
+| carrier | steady, narrow, no modulation | the frequency and width |
+| noise | neither modulated nor concentrated | nothing: it is not reported as traffic |
+
+The level alone cannot tell traffic from noise, because a receiver's AGC
+gives every capture the same loudness. Two other measurements do the work:
+the *envelope* (speech swings, a carrier does not) and the *spectral
+concentration* (a beacon or a packet burst is narrow, noise is spread). The
+decoders also refuse to invent traffic: the Morse decoder rejects anything
+whose dot length is not a plausible CW speed, and the PSK31 decoder needs a
+clean phase lock and a stream that only contains real varicode codes.
+
+### Transcription
+
+Voice is transcribed with [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
+which is run as an external program, the same way multimon-ng and direwolf
+are used. Put the binary and a model in `~/.cache/sdrstream/whisper`:
+
+```bash
+mkdir -p ~/.cache/sdrstream/whisper && cd ~/.cache/sdrstream/whisper
+curl -LO https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-ubuntu-arm64.tar.gz
+tar xzf whisper-bin-ubuntu-arm64.tar.gz
+curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
+```
+
+`SDRSTREAM_WHISPER`, `SDRSTREAM_WHISPER_MODEL` and `SDRSTREAM_WHISPER_DIR`
+override the paths. Without a model the monitor still reports that a
+transmission was voice, it just cannot say what was said. A recording can
+also be transcribed on its own:
+
+```bash
+go run ./cmd/sdrstream decode -mode voice capture.wav
+```
+
 ## Satellites
 
 The satellite side answers three questions: what is up there, when will it be
@@ -332,12 +399,6 @@ python -m sdrstream frames ISS --save frames/
   the ISS digipeater forwards. An APRS-IS filter on the login line narrows the
   firehose: `r/lat/lon/radius` for an area, `b/callsign` for one station,
   `t/w` for weather reports only. Listening needs no account.
-* **The KiwiSDR directory** (`sdrstream kiwisdr`) comes from the mirror the
-  KiwiSDR maintainer asks API clients to use (the origin list must not be
-  fetched per client). Receivers that did not opt in to API clients are
-  is passed. The web server refreshes the same gallery every 30 minutes and
-  serves the files itself, so the browser never depends on the S3 bucket.
-
 * **The KiwiSDR directory** (`sdrstream kiwisdr`) comes from the mirror the
   KiwiSDR maintainer asks API clients to use (the origin list must not be
   fetched per client). Receivers that did not opt in to API clients are

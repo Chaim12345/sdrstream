@@ -113,5 +113,11 @@ func ita2Frame(level []byte, over int) string {
 		}
 		i += 7 * over
 	}
-	return out.String()
+	text := out.String()
+	// A real RTTY message is a run of characters; noise can produce a
+	// handful of stray ones, so short output is treated as nothing.
+	if len(text) < 6 {
+		return ""
+	}
+	return text
 }

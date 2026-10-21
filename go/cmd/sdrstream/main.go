@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -22,11 +24,13 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/gallery"
 	"github.com/chaim12345/sdrstream/go/internal/kiwisdr"
 	"github.com/chaim12345/sdrstream/go/internal/military"
+	"github.com/chaim12345/sdrstream/go/internal/monitor"
 	"github.com/chaim12345/sdrstream/go/internal/openwebrx"
 	"github.com/chaim12345/sdrstream/go/internal/relays"
 	"github.com/chaim12345/sdrstream/go/internal/satellite"
 	"github.com/chaim12345/sdrstream/go/internal/satellites"
 	"github.com/chaim12345/sdrstream/go/internal/satnogs"
+	"github.com/chaim12345/sdrstream/go/internal/voice"
 	"github.com/chaim12345/sdrstream/go/internal/web"
 	"github.com/chaim12345/sdrstream/go/internal/websdr"
 )
@@ -43,6 +47,7 @@ commands:
   satrecord    record a pass, tracking Doppler
   discover     find OpenWebRX receivers for a downlink
   stations     list every public receiver in the directory
+  monitor      watch a receiver for any traffic and decode it
   undocumented satellites heard by SatNOGS but missing from the table
   military     government downlinks a public receiver can reach
   relays       list repeater/transponder satellites and frequencies
@@ -80,6 +85,8 @@ func main() {
 		err = cmdDiscover(args)
 	case "stations":
 		err = cmdStations(args)
+	case "monitor":
+		err = cmdMonitor(args)
 	case "undocumented":
 		err = cmdUndocumented(args)
 	case "military":
@@ -739,6 +746,93 @@ func cmdRelays(args []string) error {
 	return nil
 }
 
+// cmdMonitor watches a receiver for any traffic, not just satellites, and
+// decodes or transcribes whatever it finds.
+func cmdMonitor(args []string) error {
+	fs := flag.NewFlagSet("monitor", flag.ExitOnError)
+	server := fs.String("server", "", "receiver URL")
+	kind := fs.String("kind", "openwebrx", "receiver protocol: openwebrx, websdr or kiwi")
+	profile := fs.String("profile", "", "OpenWebRX profile to use (a wide one shows more)")
+	strategy := fs.String("strategy", "sweep", "sweep (listen across the band) or spectrum (use the receiver's FFT)")
+	startHz := fs.Float64("start", 144000000, "sweep start frequency in Hz")
+	endHz := fs.Float64("end", 146000000, "sweep end frequency in Hz")
+	stepHz := fs.Float64("step", 25000, "sweep step in Hz")
+	stepDwell := fs.Duration("dwell", 400*time.Millisecond, "how long to listen at each sweep step")
+	threshold := fs.Float64("threshold", 10, "dB above the noise floor to call a peak a transmission")
+	listen := fs.Duration("listen", 8*time.Second, "how much audio to record per transmission (0 = none)")
+	mode := fs.String("mode", "auto", "modulation used when listening (auto picks fm or usb)")
+	voiceOn := fs.Bool("voice", true, "transcribe voice traffic")
+	out := fs.String("out", "", "directory to save the recorded transmissions")
+	minutes := fs.Float64("minutes", 0, "stop after this many minutes (0 = run until interrupted)")
+	fs.Parse(args)
+	if *server == "" {
+		return fmt.Errorf("--server is required")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	signal.NotifyContext(ctx, os.Interrupt)
+
+	source, err := monitor.SourceFor(ctx, *kind, *server, *profile)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	instance := monitor.New(monitor.Options{
+		Source:       source,
+		Strategy:     *strategy,
+		StartHz:      *startHz,
+		EndHz:        *endHz,
+		StepHz:       *stepHz,
+		Dwell:        *stepDwell,
+		ThresholdDB:  *threshold,
+		Listen:       *listen,
+		Mode:         *mode,
+		Voice:        *voiceOn,
+		VoiceOptions: voice.DefaultOptions(),
+		OutDir:       *out,
+		Name:         *server,
+		Logf:         func(format string, args ...interface{}) { fmt.Printf(format+"\n", args...) },
+		OnActivity: func(activity monitor.Activity) {
+			line := fmt.Sprintf("#%d %s %.4f MHz %s",
+				activity.ID, activity.Started.UTC().Format("15:04:05"),
+				activity.FrequencyHz/1e6, activity.Kind)
+			if activity.Mode != "" {
+				line += " (" + activity.Mode + ")"
+			}
+			if activity.LevelDB > 0 {
+				line += fmt.Sprintf(" %.0f dB", activity.LevelDB)
+			}
+			fmt.Println(line)
+			if activity.Detail != "" {
+				fmt.Printf("    %s\n", activity.Detail)
+			}
+		},
+	})
+	if *out != "" {
+		if err := os.MkdirAll(*out, 0o755); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("monitoring %s (%s); spectrum threshold %.0f dB, listen %s, voice %v\n",
+		*server, *kind, *threshold, *listen, *voiceOn)
+	if !voice.Available(voice.DefaultOptions()) {
+		fmt.Println("note: no speech backend found; voice traffic is reported but not transcribed")
+	}
+	if *minutes > 0 {
+		go func() {
+			time.Sleep(time.Duration(*minutes * float64(time.Minute)))
+			cancel()
+		}()
+	}
+	err = instance.Run(ctx)
+	if err == context.Canceled {
+		fmt.Printf("\n%d activity(ies) seen\n", len(instance.Activities()))
+		return nil
+	}
+	return err
+}
+
 func cmdFetch(args []string) error {
 	fs := flag.NewFlagSet("fetch", flag.ExitOnError)
 	name := fs.String("satellite", "", "satellite name")
@@ -1062,7 +1156,7 @@ func cmdSpectrum(args []string) error {
 	fs := flag.NewFlagSet("spectrum", flag.ExitOnError)
 	server := fs.String("server", "", "OpenWebRX receiver URL (required)")
 	frames := fs.Int("frames", 40, "FFT frames to average")
-	threshold := fs.Float64("threshold", 8, "report peaks this many dB above the noise floor")
+	threshold := fs.Float64("threshold", 10, "report peaks this many dB above the noise floor")
 	top := fs.Int("top", 25, "maximum peaks to print")
 	allProfiles := fs.Bool("all-profiles", false, "switch through every SDR profile the server offers")
 	fs.Parse(args)
@@ -1230,8 +1324,49 @@ func cmdWeb(args []string) error {
 	port := fs.Int("port", 8000, "port to bind")
 	capturesDir := fs.String("captures-dir", "../captures", "directory of saved WAV captures to list and serve")
 	galleryDir := fs.String("gallery-dir", "", "directory for SatNOGS gallery artefacts (default: cache/gallery)")
+	monitorServer := fs.String("monitor-server", "", "receiver to monitor for live traffic (empty = no monitoring)")
+	monitorKind := fs.String("monitor-kind", "openwebrx", "monitor receiver protocol: openwebrx, websdr or kiwi")
+	monitorProfile := fs.String("monitor-profile", "", "OpenWebRX profile for the monitor")
+	monitorStrategy := fs.String("monitor-strategy", "sweep", "monitor strategy: sweep or spectrum")
+	monitorStart := fs.Float64("monitor-start", 144000000, "monitor sweep start frequency in Hz")
+	monitorEnd := fs.Float64("monitor-end", 146000000, "monitor sweep end frequency in Hz")
+	monitorStep := fs.Float64("monitor-step", 25000, "monitor sweep step in Hz")
+	monitorThreshold := fs.Float64("monitor-threshold", 10, "monitor threshold in dB above the noise floor")
+	monitorListen := fs.Duration("monitor-listen", 8*time.Second, "audio to record per transmission")
+	monitorVoice := fs.Bool("monitor-voice", true, "transcribe voice traffic")
+	monitorOut := fs.String("monitor-out", "", "directory to save the recorded transmissions")
 	fs.Parse(args)
 	server := web.New(*capturesDir, *galleryDir)
+	if *monitorServer != "" {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		source, err := monitor.SourceFor(ctx, *monitorKind, *monitorServer, *monitorProfile)
+		if err != nil {
+			return err
+		}
+		instance := monitor.New(monitor.Options{
+			Source:       source,
+			Strategy:     *monitorStrategy,
+			StartHz:      *monitorStart,
+			EndHz:        *monitorEnd,
+			StepHz:       *monitorStep,
+			ThresholdDB:  *monitorThreshold,
+			Listen:       *monitorListen,
+			Voice:        *monitorVoice,
+			VoiceOptions: voice.DefaultOptions(),
+			OutDir:       *monitorOut,
+			Name:         *monitorServer,
+			Logf:         func(format string, args ...interface{}) { log.Printf("monitor: "+format, args...) },
+		})
+		if *monitorOut != "" {
+			if err := os.MkdirAll(*monitorOut, 0o755); err != nil {
+				return err
+			}
+		}
+		server.SetMonitor(instance)
+		go instance.Run(ctx)
+		fmt.Printf("monitoring %s (%s)\n", *monitorServer, *monitorKind)
+	}
 	return server.Serve(fmt.Sprintf("%s:%d", *host, *port))
 }
 
@@ -1241,7 +1376,7 @@ func cmdWeb(args []string) error {
 // maritime broadcasts.
 func cmdDecode(args []string) error {
 	fs := flag.NewFlagSet("decode", flag.ExitOnError)
-	mode := fs.String("mode", "auto", "auto | aprs | morse | dtmf | rtty | psk31 | sstv | pocsag | eas | navtex | all")
+	mode := fs.String("mode", "auto", "auto | aprs | morse | dtmf | rtty | psk31 | sstv | pocsag | eas | navtex | voice | all")
 	offset := fs.Float64("offset", 0, "audio centre frequency in Hz for psk31/rtty (0 = auto)")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
@@ -1313,6 +1448,20 @@ func cmdDecode(args []string) error {
 				fmt.Printf("   navtex: %s%s %s\n", m.Station, m.Subject, m.Serial)
 				for _, line := range strings.Split(strings.TrimRight(m.Text, "\n"), "\n") {
 					fmt.Printf("           %s\n", line)
+				}
+			}
+		}
+
+		if *mode == "voice" || *mode == "speech" || *mode == "all" {
+			segments := voice.SpeechActivity(samples, rate)
+			if len(segments) == 0 {
+				fmt.Println("   voice: no speech detected")
+			} else {
+				transcript, err := voice.Transcribe(context.Background(), samples, rate, voice.DefaultOptions())
+				if err != nil {
+					fmt.Printf("   voice: %v\n", err)
+				} else {
+					fmt.Printf("   voice: %s\n", transcript.Text)
 				}
 			}
 		}

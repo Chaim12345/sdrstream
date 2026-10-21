@@ -53,6 +53,86 @@ var varicodeDecode = func() map[string]byte {
 // into text. A run of two or more zero bits separates characters; the bits
 // between separators form one character code. Single zero bits are part of
 // a character and must be kept.
+// decodeVaricodeStrict decodes a varicode stream and also reports how many
+// segments were not valid varicode codes. Every character of a real PSK31
+// signal comes from the table, so a stream with invalid segments is noise
+// that happened to look like text.
+func decodeVaricodeStrict(bits string) (string, int, int) {
+	var out []byte
+	invalid, idles := 0, 0
+	flush := func(seg string) {
+		if seg == "" {
+			return
+		}
+		if ch, ok := varicodeDecode[seg]; ok {
+			out = append(out, ch)
+		} else {
+			invalid++
+		}
+	}
+	i, start := 0, 0
+	for i < len(bits) {
+		if bits[i] == '0' && i+1 < len(bits) && bits[i+1] == '0' {
+			flush(bits[start:i])
+			for i < len(bits) && bits[i] == '0' {
+				i++
+			}
+			start = i
+			idles++
+			continue
+		}
+		// PSK31 separates characters with an idle pattern: alternating
+		// bits (0x55 twice, repeated while the transmitter waits) or a
+		// run of zeros. The idle never appears inside a character, but a
+		// varicode code always ends in a one and the idle starts with a
+		// zero, so the run reaches one bit into the character that
+		// precedes it. Try every split of the run and keep the one that
+		// leaves a valid code in front of the idle.
+		if run := idleRun(bits, i); run >= 12 {
+			split := -1
+			for k := 0; k+12 <= run; k++ {
+				segment := bits[start : i+k]
+				if segment == "" {
+					continue
+				}
+				if _, ok := varicodeDecode[segment]; ok {
+					split = k
+					break
+				}
+			}
+			if split < 0 {
+				flush(bits[start:i])
+				i += run
+			} else {
+				flush(bits[start : i+split])
+				i += run - split
+			}
+			idles++
+			start = i
+			continue
+		}
+		i++
+	}
+	flush(bits[start:])
+	return string(out), invalid, idles
+}
+
+// idleLength is the length of the PSK31 idle pattern: two 0x55 bytes.
+const idleLength = 16
+
+// idleRun counts the alternating bits starting at position i (the bit
+// before i is used as the reference).
+func idleRun(bits string, i int) int {
+	run := 0
+	for j := i; j < len(bits); j++ {
+		if j > 0 && bits[j] == bits[j-1] {
+			break
+		}
+		run++
+	}
+	return run
+}
+
 func decodeVaricode(bits string) string {
 	var out []byte
 	flush := func(seg string) {

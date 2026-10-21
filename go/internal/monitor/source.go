@@ -1,0 +1,258 @@
+package monitor
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/chaim12345/sdrstream/go/internal/kiwisdr"
+	"github.com/chaim12345/sdrstream/go/internal/openwebrx"
+	"github.com/chaim12345/sdrstream/go/internal/websdr"
+)
+
+// openWebRXSource watches an OpenWebRX server. It is the richest source:
+// the server sends its own FFT, so the monitor can see every transmission
+// in the profile's span, not just the one the server is tuned to.
+type openWebRXSource struct {
+	client *openwebrx.Client
+	name   string
+
+	mu       sync.Mutex
+	bins     []float64
+	centre   float64
+	span     float64
+	haveSpec bool
+}
+
+// OpenWebRXSource connects to an OpenWebRX server and starts collecting
+// its spectrum frames. The optional profile selects a wide profile so that
+// more of the band is visible.
+func OpenWebRXSource(ctx context.Context, server, profile string) (Source, error) {
+	client, err := openwebrx.New(server, openwebrx.DefaultOptions())
+	if err != nil {
+		return nil, err
+	}
+	if _, err := client.Connect(ctx); err != nil {
+		return nil, err
+	}
+	source := &openWebRXSource{client: client, name: server}
+	if profile != "" {
+		key, err := resolveProfile(client, profile)
+		if err != nil {
+			return nil, err
+		}
+		if err := client.SelectProfile(ctx, key); err != nil {
+			return nil, fmt.Errorf("monitor: select profile %q: %w", profile, err)
+		}
+		// Give the server a moment to switch profile and settle.
+		time.Sleep(700 * time.Millisecond)
+	}
+	go source.pump(ctx)
+	return source, nil
+}
+
+// resolveProfile turns a profile name into the key the server expects.
+// The server identifies a profile as "sdr_id|profile_id", so a name has to
+// be looked up before it can be selected.
+func resolveProfile(client *openwebrx.Client, name string) (string, error) {
+	profiles := client.ProfileList()
+	for _, profile := range profiles {
+		if strings.EqualFold(strings.TrimSpace(profile.Name), strings.TrimSpace(name)) {
+			return profile.Key, nil
+		}
+	}
+	// Also accept the key itself, or a unique prefix of the name.
+	for _, profile := range profiles {
+		if profile.Key == name {
+			return profile.Key, nil
+		}
+	}
+	var names []string
+	for _, profile := range profiles {
+		names = append(names, profile.Name)
+	}
+	return "", fmt.Errorf("monitor: no profile named %q; the server offers: %s",
+		name, strings.Join(names, ", "))
+}
+
+// pump keeps the latest spectrum frame.
+func (s *openWebRXSource) pump(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-s.client.Events():
+			if !ok {
+				return
+			}
+			switch event.Type {
+			case "fft":
+				// The secondary FFT belongs to the server's second
+				// receiver, which is tuned somewhere else entirely; only
+				// the primary spectrum matches the audio we can record.
+				if event.Secondary {
+					continue
+				}
+				if bins, ok := event.Value.([]float64); ok && len(bins) > 0 {
+					s.mu.Lock()
+					s.bins = bins
+					s.mu.Unlock()
+				}
+			case "config":
+				config, ok := event.Value.(openwebrx.Config)
+				if !ok {
+					continue
+				}
+				s.mu.Lock()
+				if config.CenterFreq != nil {
+					s.centre = float64(*config.CenterFreq)
+				}
+				if config.SampRate != nil {
+					s.span = *config.SampRate
+				}
+				s.mu.Unlock()
+			}
+		}
+	}
+}
+
+// Spectrum returns the latest FFT frame.
+func (s *openWebRXSource) Spectrum() ([]float64, float64, float64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.bins) == 0 || s.span <= 0 {
+		return nil, s.centre, s.span, false
+	}
+	return s.bins, s.centre, s.span, true
+}
+
+// Listen retunes and records.
+func (s *openWebRXSource) Listen(ctx context.Context, hz float64, mode string, dur time.Duration) ([]float64, int, error) {
+	frequency := int64(hz)
+	if err := s.client.Tune(ctx, &frequency, mode, nil); err != nil {
+		return nil, 0, err
+	}
+	// Give the server a moment to retune and settle before recording.
+	time.Sleep(400 * time.Millisecond)
+	samples, rate, err := s.client.RecordSamples(ctx, dur)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]float64, len(samples))
+	for i, s := range samples {
+		out[i] = float64(s) / 32768
+	}
+	return out, rate, nil
+}
+
+// Close shuts the connection.
+func (s *openWebRXSource) Close() error {
+	s.client.Close()
+	return nil
+}
+
+// webSDRSource watches a WebSDR server. WebSDR sends audio only, so this
+// source can listen but cannot see the spectrum; the monitor then reports
+// what it hears on the tuned frequency.
+type webSDRSource struct {
+	client *websdr.Client
+	name   string
+}
+
+// WebSDRSource connects to a WebSDR server.
+func WebSDRSource(ctx context.Context, server string) (Source, error) {
+	client, err := websdr.New(server, websdr.Options{Reconnect: true})
+	if err != nil {
+		return nil, err
+	}
+	if err := client.Connect(ctx); err != nil {
+		return nil, err
+	}
+	return &webSDRSource{client: client, name: server}, nil
+}
+
+// Spectrum reports that this source has no spectrum.
+func (s *webSDRSource) Spectrum() ([]float64, float64, float64, bool) { return nil, 0, 0, false }
+
+// Listen retunes and records.
+func (s *webSDRSource) Listen(ctx context.Context, hz float64, mode string, dur time.Duration) ([]float64, int, error) {
+	if err := s.client.Tune(ctx, hz/1000, mode, nil); err != nil {
+		return nil, 0, err
+	}
+	time.Sleep(400 * time.Millisecond)
+	samples, rate, err := s.client.Record(ctx, dur)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]float64, len(samples))
+	for i, v := range samples {
+		out[i] = float64(v) / 32768
+	}
+	return out, rate, nil
+}
+
+// Close shuts the connection.
+func (s *webSDRSource) Close() error {
+	s.client.Close()
+	return nil
+}
+
+// kiwiSource watches a KiwiSDR server. Like WebSDR it has no spectrum in
+// this client, so it can only listen.
+type kiwiSource struct {
+	client *kiwisdr.Client
+	name   string
+}
+
+// KiwiSource connects to a KiwiSDR server.
+func KiwiSource(ctx context.Context, server string) (Source, error) {
+	client, err := kiwisdr.New(server, kiwisdr.DefaultOptions())
+	if err != nil {
+		return nil, err
+	}
+	if err := client.Connect(ctx); err != nil {
+		return nil, err
+	}
+	return &kiwiSource{client: client, name: server}, nil
+}
+
+// Spectrum reports that this source has no spectrum.
+func (s *kiwiSource) Spectrum() ([]float64, float64, float64, bool) { return nil, 0, 0, false }
+
+// Listen retunes and records.
+func (s *kiwiSource) Listen(ctx context.Context, hz float64, mode string, dur time.Duration) ([]float64, int, error) {
+	if err := s.client.Tune(ctx, int64(hz), mode); err != nil {
+		return nil, 0, err
+	}
+	time.Sleep(400 * time.Millisecond)
+	samples, rate, err := s.client.Record(ctx, dur)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]float64, len(samples))
+	for i, v := range samples {
+		out[i] = float64(v) / 32768
+	}
+	return out, rate, nil
+}
+
+// Close shuts the connection.
+func (s *kiwiSource) Close() error {
+	s.client.Close()
+	return nil
+}
+
+// SourceFor builds the receiver source for a protocol name.
+func SourceFor(ctx context.Context, kind, server, profile string) (Source, error) {
+	switch kind {
+	case "openwebrx", "":
+		return OpenWebRXSource(ctx, server, profile)
+	case "websdr":
+		return WebSDRSource(ctx, server)
+	case "kiwi", "kiwisdr":
+		return KiwiSource(ctx, server)
+	}
+	return nil, fmt.Errorf("monitor: unknown receiver kind %q", kind)
+}

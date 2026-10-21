@@ -95,18 +95,19 @@ type Client struct {
 	Clients   int
 	LastError error
 
-	events     chan Event
-	quit       chan struct{}
-	conn       *websocket.Conn
-	mu         sync.Mutex
-	audio      *adpcm.Decoder
-	hd         *adpcm.Decoder
-	fft        *adpcm.Decoder
-	sequence   int
-	tuning     map[string]interface{}
-	closeOnce  sync.Once
-	outputRate int
-	hdRate     int
+	events      chan Event
+	audioEvents chan Event
+	quit        chan struct{}
+	conn        *websocket.Conn
+	mu          sync.Mutex
+	audio       *adpcm.Decoder
+	hd          *adpcm.Decoder
+	fft         *adpcm.Decoder
+	sequence    int
+	tuning      map[string]interface{}
+	closeOnce   sync.Once
+	outputRate  int
+	hdRate      int
 }
 
 // Options configures a Client.
@@ -142,9 +143,10 @@ func New(rawURL string, options Options) (*Client, error) {
 	}
 	return &Client{
 		URL: streamURL, ClientName: "sdrstream",
-		events: make(chan Event, 256),
-		quit:   make(chan struct{}),
-		audio:  adpcm.New(), hd: adpcm.New(), fft: adpcm.New(),
+		events:      make(chan Event, 256),
+		audioEvents: make(chan Event, 256),
+		quit:        make(chan struct{}),
+		audio:       adpcm.New(), hd: adpcm.New(), fft: adpcm.New(),
 		tuning:     map[string]interface{}{},
 		outputRate: options.OutputRate,
 		hdRate:     options.HDOutputRate,
@@ -434,10 +436,28 @@ func decodePCM(payload []byte) []int16 {
 	return out
 }
 
+// publishAudio puts audio on its own channel. The control and spectrum
+// events share one channel, and a consumer that watches the spectrum (the
+// monitor does) would otherwise take half of the audio away from the
+// recorder.
 func (c *Client) publishAudio(samples []int16, samplerate int, compressed bool, kind string) {
 	chunk := AudioChunk{Samples: samples, Samplerate: samplerate, Sequence: c.sequence, Compressed: compressed, Kind: kind}
 	c.sequence++
-	c.publish(Event{Type: "audio", Value: chunk})
+	event := Event{Type: "audio", Value: chunk}
+	select {
+	case c.audioEvents <- event:
+	default:
+		// The recorder is not keeping up; drop the oldest chunk rather
+		// than blocking the socket reader.
+		select {
+		case <-c.audioEvents:
+		default:
+		}
+		select {
+		case c.audioEvents <- event:
+		default:
+		}
+	}
 }
 
 func (c *Client) publish(event Event) {
@@ -520,7 +540,14 @@ func (c *Client) Tune(ctx context.Context, frequency *int64, modulation string, 
 		return nil
 	}
 	payload, _ := json.Marshal(message)
-	return conn.WriteMessage(websocket.TextMessage, payload)
+	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+		return err
+	}
+	// Some servers stop the demodulator when the tuning changes and then
+	// send no audio at all until the client asks for it again.
+	start := map[string]interface{}{"type": "dspcontrol", "action": "start"}
+	restart, _ := json.Marshal(start)
+	return conn.WriteMessage(websocket.TextMessage, restart)
 }
 
 // SelectProfile switches the receiver to another SDR profile, identified by
@@ -571,7 +598,7 @@ func (c *Client) Record(ctx context.Context, duration time.Duration) ([]AudioChu
 			return chunks, nil
 		case <-ctx.Done():
 			return chunks, ctx.Err()
-		case event := <-c.events:
+		case event := <-c.audioEvents:
 			if event.Type == "audio" {
 				chunks = append(chunks, event.Value.(AudioChunk))
 			}
