@@ -2,6 +2,7 @@
 venv/
 *.wav
 !tests/data/*.wav
+!go/internal/decode/testdata/*.wav
 *.raw
 .pytest_cache/
 .mypy_cache/

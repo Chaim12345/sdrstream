@@ -2,6 +2,7 @@ package decode
 
 import (
 	"fmt"
+	"math"
 )
 
 // SSTV (slow-scan television) sends a picture as an audio tone whose
@@ -10,9 +11,11 @@ import (
 // can tell a real image from noise before spending time on the picture.
 //
 // VIS format: a 1900 Hz leader (~300 ms), a 1200 Hz break (~10 ms), a
-// second 1900 Hz leader (~300 ms), then nine 30 ms signalling tones: a
-// 1100 Hz start bit, seven data bits LSB first (1100 Hz = 1, 1300 Hz = 0),
-// an even-parity bit over the data bits, and a 1200 Hz stop bit.
+// second 1900 Hz leader (~300 ms), then ten 30 ms signalling tones: a
+// start bit, seven data bits LSB first (1100 Hz = 1, 1300 Hz = 0), an
+// even-parity bit over the data bits, and a 1200 Hz stop bit. The start
+// bit is 1200 Hz in the original Robot/G3OQD documentation and in the
+// pysstv encoder, while some encoders send 1100 Hz; both are accepted.
 const (
 	sstvLeader = 1900.0
 	sstvBreak  = 1200.0
@@ -21,16 +24,20 @@ const (
 	sstvBitLen = 0.030 // seconds
 )
 
-// sstvModes maps a VIS code to a human mode name.
+// sstvModes maps a 7-bit VIS code to a human mode name. Cross-checked
+// against the QSSTV mode table (src/sstv/sstvparam.cpp, which stores the
+// parity bit in bit 7), pysstv's VIS_CODE constants, and the G3OQD /
+// barberdsp mode descriptions.
 var sstvModes = map[int]string{
-	0x00: "Robot 36", 0x01: "Robot 12", 0x02: "Robot 24", 0x03: "Robot 8",
-	0x04: "Robot 24 BW", 0x08: "Robot 8 BW",
-	0x28: "Scottie S1", 0x2C: "Scottie S2", 0x30: "Scottie DX",
-	0x5C: "Scottie S3", 0x5D: "Scottie S4", 0x5F: "Scottie S5",
-	0x38: "Martin M1", 0x3C: "Martin M2", 0x40: "Martin M3", 0x44: "Martin M4",
-	0x60: "PD 50", 0x61: "PD 90", 0x62: "PD 120", 0x63: "PD 160",
-	0x64: "PD 180", 0x65: "PD 240", 0x66: "PD 290", 0x76: "PD 160",
-	0x8C: "Scottie S1 (alt)", 0xAC: "Martin M1 (alt)", 0xB0: "Wraase SC2-120",
+	0x02: "Robot 8 BW", 0x06: "Robot 12 BW", 0x0A: "Robot 24 BW", 0x0E: "Robot 36 BW",
+	0x04: "Robot 24", 0x08: "Robot 36", 0x0C: "Robot 72",
+	0x20: "Martin M4", 0x24: "Martin M3", 0x28: "Martin M2", 0x2C: "Martin M1",
+	0x38: "Scottie S2", 0x3C: "Scottie S1", 0x4C: "Scottie DX",
+	0x37: "Wraase SC2-180", 0x3B: "Wraase SC2-60", 0x3F: "Wraase SC2-120",
+	0x5D: "PD 50", 0x63: "PD 90", 0x5F: "PD 120", 0x62: "PD 160",
+	0x60: "PD 180", 0x61: "PD 240", 0x5E: "PD 290",
+	0x40: "AVT 24", 0x44: "AVT 90", 0x48: "AVT 94",
+	0x71: "Pasokon P3", 0x72: "Pasokon P5", 0x73: "Pasokon P7",
 }
 
 // SSTVResult is a detected SSTV header.
@@ -41,136 +48,263 @@ type SSTVResult struct {
 	SnrdB    float64
 }
 
+// tonePurity returns, per hop, the share of window energy near freq:
+// 2*g^2/(N*power) is ~1 for a pure tone and falls sharply as energy
+// spreads. This is robust where instantaneous-frequency demodulation
+// wobbles, notably on 1200 Hz sync tones.
+func tonePurity(samples []float64, rate int, freq, winSec, hopSec float64) []float64 {
+	win := int(winSec * float64(rate))
+	hop := int(hopSec * float64(rate))
+	if win < 8 || hop < 1 {
+		return nil
+	}
+	n := (len(samples) - win) / hop
+	if n <= 0 {
+		return nil
+	}
+	out := make([]float64, n)
+	for h := 0; h < n; h++ {
+		seg := samples[h*hop : h*hop+win]
+		var power float64
+		for _, v := range seg {
+			power += v * v
+		}
+		if power <= 1e-9*float64(win) {
+			out[h] = 0
+			continue
+		}
+		g := goertzel(seg, rate, freq)
+		out[h] = 2 * g * g / (float64(win) * power)
+	}
+	return out
+}
+
 // SSTVDetect scans audio for SSTV VIS headers and returns each one found
 // with the mode it names.
+//
+// False-positive defences, in order: both leaders must hold a pure
+// 1900 Hz tone for ~290 ms, checked per 2 ms hop (image data always
+// carries a 1200 Hz line sync inside any 300 ms window, and swept video
+// tones wander out of the band); the start and stop bits must be correct;
+// the data bits must pass even parity; and when enough audio follows the
+// header, the image must show a consistent line-sync cadence.
 func SSTVDetect(samples []float64, rate int) []SSTVResult {
-	if rate < 8000 || len(samples) < rate/2 {
+	if rate < 8000 || len(samples) < rate {
 		return nil
 	}
-	bitSamples := int(sstvBitLen * float64(rate))
-	if bitSamples < 8 {
+	const hopSec, winSec = 0.002, 0.008
+	p1200 := tonePurity(samples, rate, sstvBreak, winSec, hopSec)
+	p1900 := tonePurity(samples, rate, sstvLeader, winSec, hopSec)
+	if len(p1200) == 0 {
 		return nil
 	}
+	hopN := int(hopSec * float64(rate))
+	bitN := int(sstvBitLen * float64(rate))
+	leaderHops := int(0.290 / hopSec) // ~290 ms of leader each side
+	var demod []float64               // computed lazily on the first header candidate
 	var out []SSTVResult
-	// The calibration header is leader1(1900, ~300 ms), break(1200, 10 ms),
-	// leader2(1900, ~300 ms), then the VIS bits. A break candidate wins
-	// only when its own 10 ms window is pure 1200 Hz and both flanking
-	// 300 ms windows are pure 1900 Hz.
-	breakWindow := rate / 100 // 10 ms
-	leaderWindow := 3 * rate / 10
-	// Advance by an eighth of the break so some window is always at least
-	// 7/8 inside a 10 ms break, regardless of where it starts.
-	step := breakWindow / 8
-	if step < 1 {
-		step = 1
-	}
-	for start := breakWindow; start+breakWindow <= len(samples); start += step {
-		brk := samples[start : start+breakWindow]
-		var segPower float64
-		for _, s := range brk {
-			segPower += s * s
-		}
-		if segPower <= 0 {
+	for h := leaderHops; h+leaderHops < len(p1200); h++ {
+		// Break candidate: 1200 Hz dominates with decent purity.
+		if p1200[h] < 0.5 || p1200[h] < p1900[h]+0.1 {
 			continue
 		}
-		g1200 := goertzel(brk, rate, sstvBreak)
-		g1900 := goertzel(brk, rate, sstvLeader)
-		if g1200 <= g1900*4 || (g1200*g1200)/segPower < float64(len(brk))/8 {
+		j := h
+		for j < len(p1200) && p1200[j] > 0.5 && p1200[j] > p1900[j]+0.1 {
+			j++
+		}
+		runMs := float64(j-h) * hopSec * 1000
+		if runMs < 3 || runMs > 24 {
+			h = j
 			continue
 		}
-		leadStart := start - leaderWindow
-		if leadStart < 0 || start+leaderWindow >= len(samples) {
+		if !leaderHolds(p1900, p1200, h-leaderHops, h) ||
+			!leaderHolds(p1900, p1200, j, j+leaderHops) {
+			h = j
 			continue
 		}
-		// Both the leader1 block before and the leader2 block after must
-		// be dominated by 1900 Hz; random audio never shows two long pure
-		// tones around a 10 ms spawn.
-		if !hasLeader(samples[leadStart:start], rate, sstvLeader) {
+		// The bit section starts where leader 2 collapses. Begin the
+		// search near the end of the verified leader run so the 8 ms
+		// window straddling the break cannot pass for the collapse;
+		// the first weak hop is roughly half a window early.
+		base := -1
+		for k := j + leaderHops - 8; k+1 < len(p1900) && k < j+int(0.330/hopSec); k++ {
+			if p1900[k] < 0.35 {
+				base = k*hopN + int(0.004*float64(rate))
+				break
+			}
+		}
+		if base < 0 || base+10*bitN > len(samples) {
+			h = j
 			continue
 		}
-		if !hasLeader(samples[start+breakWindow:start+leaderWindow+breakWindow], rate, sstvLeader) {
-			continue
+		// Refine the bit-section start to sample precision on the
+		// demodulated trace: the start bit (1100 or 1200 Hz) is the
+		// first sustained drop below 1600 Hz. The coarse hop grid can
+		// place base a few ms either way, which would skew every line.
+		if demod == nil {
+			demod = fmDemod(samples, rate)
 		}
-		// Found the header; the VIS bits start after leader 2.
-		base := start + breakWindow + leaderWindow
-		vis, ok := readVIS(samples, rate, base, bitSamples)
+		refined := base
+		lo := base - int(0.008*float64(rate))
+		if lo < 0 {
+			lo = 0
+		}
+		hi := base + int(0.008*float64(rate))
+		for p := lo; p+4 < hi && p+4 < len(demod); p++ {
+			if demod[p] < 1600 && demod[p+1] < 1600 && demod[p+2] < 1600 && demod[p+3] < 1600 {
+				refined = p
+				break
+			}
+		}
+		base = refined
+		vis, ok := readVIS(samples, rate, base, bitN)
 		if !ok {
+			h = j
 			continue
 		}
 		name, known := sstvModes[vis]
 		if !known {
 			name = fmt.Sprintf("VIS 0x%02X", vis)
 		}
-		out = append(out, SSTVResult{
+		// Anchor StartSec on the refined bit-section start: the break
+		// is exactly one leader (300 ms) and one break (10 ms) earlier,
+		// which the coarse 2 ms hop grid cannot place precisely.
+		breakStart := float64(base)/float64(rate) - 0.300 - 0.010
+		res := SSTVResult{
 			Mode:     name,
 			VIS:      vis,
-			StartSec: float64(start) / float64(rate),
-		})
-		// Skip past this header so one break is not counted twice.
-		start = base + 9*bitSamples
+			StartSec: breakStart,
+		}
+		// When the clip continues well past the header, the image lines
+		// must show a consistent sync cadence. A spurious header inside
+		// image data is always followed by more audio, so this check
+		// only fires where it has evidence to work with.
+		headerEndSec := res.StartSec + 0.010 + 0.300 + 10*sstvBitLen
+		if float64(len(samples))/float64(rate)-headerEndSec > 1.0 {
+			if !hasSyncCadence(p1200, hopSec, headerEndSec) {
+				h = j
+				continue
+			}
+		}
+		out = append(out, res)
+		h = base/hopN + 150 // past the 300 ms of VIS bits
 	}
 	return out
 }
 
-// hasLeader reports whether a segment is dominated by the given tone.
-func hasLeader(seg []float64, rate int, leaderFreq float64) bool {
-	if len(seg) < rate/50 {
+// leaderHolds reports whether every hop in [from, to) is dominated by a
+// pure 1900 Hz leader tone.
+func leaderHolds(p1900, p1200 []float64, from, to int) bool {
+	if from < 0 || to > len(p1900) {
 		return false
 	}
-	lead := goertzel(seg, rate, leaderFreq)
-	var power float64
-	for _, s := range seg {
-		power += s * s
+	for k := from; k < to; k++ {
+		if p1900[k] < 0.55 || p1900[k] < p1200[k] {
+			return false
+		}
 	}
-	if power <= 0 {
-		return false
-	}
-	// A pure sine of amplitude A over N samples has energy N*A^2/2. The
-	// Goertzel magnitude is ~N*A/2, so its square over the total is ~N/2.
-	ratio := (lead * lead) / power
-	return ratio > float64(len(seg))/8
+	return true
 }
 
-// readVIS reads a 1100 Hz start bit, seven data bits LSB first, an even
-// parity bit and a 1200 Hz stop bit starting at sample offset base. It
-// returns the VIS code.
+// hasSyncCadence reports whether the 1200 Hz purity trace after the
+// header carries at least three line-sync runs at a consistent cadence
+// (successive intervals within 15% of each other, in the 30-1100 ms
+// range spanned by every documented SSTV mode).
+func hasSyncCadence(p1200 []float64, hopSec, fromSec float64) bool {
+	start := int(fromSec / hopSec)
+	var runs []int // run start hops
+	for i := start; i < len(p1200); {
+		if p1200[i] < 0.45 {
+			i++
+			continue
+		}
+		j := i
+		for j < len(p1200) && p1200[j] >= 0.45 {
+			j++
+		}
+		if float64(j-i)*hopSec >= 0.003 { // shortest documented sync is ~4.8 ms
+			runs = append(runs, i)
+		}
+		i = j + 1
+	}
+	if len(runs) < 3 {
+		return false
+	}
+	consistent := 0
+	for k := 1; k+1 < len(runs); k++ {
+		d1 := float64(runs[k]-runs[k-1]) * hopSec
+		d2 := float64(runs[k+1]-runs[k]) * hopSec
+		if d1 < 0.03 || d1 > 1.1 {
+			continue
+		}
+		if r := d2 / d1; r > 0.85 && r < 1.15 {
+			consistent++
+			if consistent >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// readVIS reads a start bit, seven data bits LSB first, an even parity
+// bit and a 1200 Hz stop bit starting at sample offset base, and returns
+// the 7-bit VIS code. The start bit may be 1200 Hz (original spec and
+// pysstv) or 1100 Hz (some encoders); the stop bit must be 1200 Hz.
 func readVIS(samples []float64, rate, base, bitSamples int) (int, bool) {
-	readBit := func(i int) (int, bool) {
-		from := base + i*bitSamples
-		to := from + bitSamples
+	if bitSamples < 8 {
+		return 0, false
+	}
+	// Measure each bit over its middle two thirds so a couple of
+	// milliseconds of base misalignment cannot straddle bit boundaries.
+	span := bitSamples * 2 / 3
+	off := (bitSamples - span) / 2
+	readBit := func(i int) (g1100, g1200, g1300 float64, ok bool) {
+		from := base + i*bitSamples + off
+		to := from + span
 		if to > len(samples) {
-			return 0, false
+			return 0, 0, 0, false
 		}
 		seg := samples[from:to]
-		zero := goertzel(seg, rate, sstvBit0)
-		one := goertzel(seg, rate, sstvBit1)
-		if one > zero {
-			return 1, true
-		}
-		return 0, true
+		return goertzel(seg, rate, sstvBit1),
+			goertzel(seg, rate, sstvBreak),
+			goertzel(seg, rate, sstvBit0), true
 	}
-	if start, ok := readBit(0); !ok || start != 1 {
-		return 0, false
+	g1100, g1200, g1300, ok := readBit(0)
+	if !ok || math.Max(g1100, g1200) <= g1300*1.5 {
+		return 0, false // start bit must be clearly below 1300 Hz
 	}
 	vis := 0
 	for i := 0; i < 7; i++ {
-		b, ok := readBit(i + 1)
+		g1, _, g0, ok := readBit(i + 1)
 		if !ok {
 			return 0, false
 		}
-		vis |= b << i
+		if math.Max(g1, g0) < math.Min(g1, g0)*1.5 {
+			return 0, false // ambiguous bit, not clean FSK
+		}
+		if g1 > g0 {
+			vis |= 1 << i
+		}
 	}
-	parity, ok := readBit(8)
+	g1100p, _, g1300p, ok := readBit(8)
 	if !ok {
 		return 0, false
 	}
-	// Even parity over the seven data bits must match the parity bit.
+	parity := 0
+	if g1100p > g1300p {
+		parity = 1
+	}
 	ones := 0
 	for i := 0; i < 7; i++ {
 		ones += (vis >> i) & 1
 	}
 	if (ones+parity)%2 != 0 {
 		return 0, false
+	}
+	g1100s, g1200s, g1300s, ok := readBit(9)
+	if !ok || g1200s <= g1300s || g1200s <= g1100s {
+		return 0, false // stop bit must be 1200 Hz
 	}
 	return vis, true
 }

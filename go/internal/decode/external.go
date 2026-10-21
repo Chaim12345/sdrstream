@@ -3,8 +3,12 @@ package decode
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
+	"math"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -15,16 +19,34 @@ import (
 // decoders, which exist so the binary is useful on its own.
 
 // MultimonAvailable reports whether multimon-ng is on PATH.
-func MultimonAvailable() bool {
-	_, err := exec.LookPath("multimon-ng")
-	return err == nil
+func MultimonAvailable() bool { return MultimonBinary("") != "" }
+
+// MultimonBinary resolves an explicit executable or an executable on PATH.
+func MultimonBinary(path string) string {
+	if path != "" {
+		if p, err := exec.LookPath(path); err == nil {
+			return p
+		}
+		if st, err := os.Stat(path); err == nil && !st.IsDir() {
+			return path
+		}
+		return ""
+	}
+	p, _ := exec.LookPath("multimon-ng")
+	return p
 }
 
 // MultimonDecode runs multimon-ng over a WAV file with the given
 // demodulators (e.g. "AFSK1200", "MORSE_CW") and returns its decoded
 // lines, one per packet or message.
 func MultimonDecode(ctx context.Context, path string, demodulators ...string) ([]string, error) {
-	if !MultimonAvailable() {
+	return MultimonDecodeWithBinary(ctx, "", path, demodulators...)
+}
+
+// MultimonDecodeWithBinary invokes an optional multimon-ng executable.
+func MultimonDecodeWithBinary(ctx context.Context, binaryPath, path string, demodulators ...string) ([]string, error) {
+	binaryPath = MultimonBinary(binaryPath)
+	if binaryPath == "" {
 		return nil, fmt.Errorf("multimon-ng not installed")
 	}
 	if len(demodulators) == 0 {
@@ -38,7 +60,10 @@ func MultimonDecode(ctx context.Context, path string, demodulators ...string) ([
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "multimon-ng", args...)
+	cmd := exec.CommandContext(ctx, binaryPath, args...)
+	// A grandchild that inherits the pipes must not hang Wait after the
+	// decoder itself is gone.
+	cmd.WaitDelay = 10 * time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -57,3 +82,90 @@ func MultimonDecode(ctx context.Context, path string, demodulators ...string) ([
 	}
 	return lines, nil
 }
+
+// DirewolfBinary resolves an explicit executable or the PATH installation.
+func DirewolfBinary(path string) string {
+	if path != "" {
+		if p, err := exec.LookPath(path); err == nil {
+			return p
+		}
+		if st, err := os.Stat(path); err == nil && !st.IsDir() {
+			return path
+		}
+		return ""
+	}
+	p, _ := exec.LookPath("direwolf")
+	return p
+}
+
+// DirewolfDecode runs Dire Wolf against in-memory mono PCM using a temporary
+// receive-only config and stdin. No network, radio control, or transmit path
+// is configured. Only valid-looking AX.25 address lines are returned.
+func DirewolfDecode(ctx context.Context, binaryPath string, samples []float64, rate int) ([]string, error) {
+	path := DirewolfBinary(binaryPath)
+	if path == "" {
+		return nil, fmt.Errorf("direwolf not installed")
+	}
+	if rate < 8000 || rate > 48000 || rate%100 != 0 {
+		return nil, fmt.Errorf("unsupported Dire Wolf sample rate %d", rate)
+	}
+	pcm := make([]byte, len(samples)*2)
+	for i, sample := range samples {
+		if math.IsNaN(sample) || math.IsInf(sample, 0) {
+			sample = 0
+		}
+		if sample > 1 {
+			sample = 1
+		}
+		if sample < -1 {
+			sample = -1
+		}
+		v := int16(math.Round(sample * 32767))
+		binary.LittleEndian.PutUint16(pcm[i*2:], uint16(v))
+	}
+	cfg, err := os.CreateTemp("", "sdrstream-direwolf-*.conf")
+	if err != nil {
+		return nil, err
+	}
+	cfgPath := cfg.Name()
+	defer os.Remove(cfgPath)
+	if _, err = cfg.WriteString("ADEVICE stdin null\nCHANNEL 0\nMYCALL NOCALL\n"); err != nil {
+		cfg.Close()
+		return nil, err
+	}
+	if err = cfg.Close(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "-c", cfgPath, "-r", fmt.Sprint(rate), "-n", "1", "-b", "16", "-t", "0", "-q", "h", "-")
+	cmd.WaitDelay = 10 * time.Second
+	if libdir := filepath.Join(filepath.Dir(filepath.Dir(path)), "lib"); isDir(libdir) {
+		// Prepend so the bundled libraries win, but keep any path the
+		// caller already configured instead of discarding it.
+		ldpath := libdir
+		if existing := os.Getenv("LD_LIBRARY_PATH"); existing != "" {
+			ldpath += ":" + existing
+		}
+		cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH="+ldpath)
+	}
+	cmd.Stdin = bytes.NewReader(pcm)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil && stdout.Len() == 0 {
+		return nil, fmt.Errorf("direwolf: %v: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	var lines []string
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if i := strings.Index(line, "] "); i >= 0 {
+			line = line[i+2:]
+		}
+		if strings.Contains(line, ">") && strings.Contains(line, ":") {
+			lines = append(lines, line)
+		}
+	}
+	return lines, nil
+}
+
+func isDir(path string) bool { st, err := os.Stat(path); return err == nil && st.IsDir() }

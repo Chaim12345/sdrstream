@@ -4,15 +4,18 @@ package web
 
 import (
 	"context"
+	"embed"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +30,7 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/satnogs"
 	"github.com/chaim12345/sdrstream/go/internal/tle"
 	"github.com/chaim12345/sdrstream/go/internal/tracking"
+	"github.com/chaim12345/sdrstream/go/internal/verify"
 )
 
 // Capture is one recording the UI can show.
@@ -73,21 +77,64 @@ type SatelliteInfo struct {
 }
 
 // Server holds the state and serves the UI and API.
+type LiveGalleryItem struct {
+	ObservationID int       `json:"observation_id"`
+	Satellite     string    `json:"satellite"`
+	Station       string    `json:"station"`
+	Start         time.Time `json:"start"`
+	Mode          string    `json:"mode"`
+	FrequencyHz   int64     `json:"frequency_hz"`
+	Kind          string    `json:"kind"`
+	Name          string    `json:"name"`
+	URL           string    `json:"url"`
+	AudioURL      string    `json:"audio_url,omitempty"`
+	Size          int64     `json:"size,omitempty"`
+	Text          string    `json:"text,omitempty"`
+}
+
+type ScanStatus struct {
+	Station     string    `json:"station"`
+	FrequencyHz float64   `json:"frequency_hz"`
+	Mode        string    `json:"mode"`
+	State       string    `json:"state"`
+	Result      string    `json:"result,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// ScanMetrics reports the bounded station-scan ramp and its current load.
+type ScanMetrics struct {
+	RampStep               int          `json:"ramp_step"`
+	MaxConnections         int          `json:"max_connections"`
+	ActiveConnections      int          `json:"active_connections"`
+	Refusals               int          `json:"refusals"`
+	Timeouts               int          `json:"timeouts"`
+	LoadAverage            float64      `json:"load_average"`
+	CoreCount              int          `json:"core_count"`
+	EstimatedBandwidthMbps float64      `json:"estimated_bandwidth_mbps"`
+	BandwidthLimitMbps     float64      `json:"bandwidth_limit_mbps"`
+	Stations               []ScanStatus `json:"stations"`
+}
+
 type Server struct {
 	mu          sync.Mutex
 	captures    []Capture
 	passes      []PassInfo
 	gallery     []gallery.Item
+	liveGallery []LiveGalleryItem
 	html        string
 	capturesDir string
 	galleryDir  string
 	galleryAt   time.Time
 	monitor     *monitor.Monitor
+	scans       []ScanStatus
+	scanMetrics ScanMetrics
 	stations    []directory.Station
 	stationsAt  time.Time
 	// fetchStations is directory.FetchStations in production and a seam
 	// for the tests, which cannot wait on the public directory.
 	fetchStations func(context.Context) ([]directory.Station, error)
+	NoAuth        bool
+	auth          authState
 }
 
 // New builds a server with the bundled page. When capturesDir is non-empty
@@ -331,37 +378,45 @@ func wavInfo(path string) (rate int, dataBytes int64, err error) {
 	}
 }
 
-// securityHeaders sets the headers every response carries. The UI is a
-// single page with an inline script, so the policy allows inline code but
-// blocks framing and cross-origin access.
+// securityHeaders sets headers for the single-page UI and same-origin assets.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := w.Header()
 		header.Set("X-Content-Type-Options", "nosniff")
 		header.Set("X-Frame-Options", "DENY")
 		header.Set("Referrer-Policy", "no-referrer")
-		header.Set("Content-Security-Policy",
-			"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "+
-				"img-src 'self' data:; media-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'")
+		header.Set("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})
 }
 
+//go:embed static
+var staticFS embed.FS
+
 // Handler returns the HTTP routes.
 func (s *Server) Handler() http.Handler {
+	s.auth.init()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/login", s.handleLogin)
+	mux.HandleFunc("/logout", s.handleLogout)
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/status.json", s.handleStatus)
 	mux.HandleFunc("/api/captures.json", s.handleCaptures)
 	mux.HandleFunc("/api/satellites.json", s.handleSatellites)
 	mux.HandleFunc("/api/observations.json", s.handleObservations)
 	mux.HandleFunc("/api/gallery.json", s.handleGallery)
+	mux.HandleFunc("/api/test-fixtures.json", s.handleTestFixtures)
+	mux.HandleFunc("/api/scans.json", s.handleScans)
 	mux.HandleFunc("/api/activity.json", s.handleActivity)
 	mux.HandleFunc("/api/spectrum.json", s.handleSpectrum)
 	mux.HandleFunc("/api/stations.json", s.handleStations)
+	mux.HandleFunc("/api/map.json", s.handleMap)
+	mux.HandleFunc("/api/tiles/", s.handleTile)
+	mux.Handle("/static/", http.FileServerFS(staticFS))
 	mux.HandleFunc("/audio/", s.handleAudio)
+	mux.HandleFunc("/audio/live/", s.handleLiveAudio)
 	mux.HandleFunc("/gallery/", s.handleGalleryFile)
-	return securityHeaders(mux)
+	return securityHeaders(s.wrapAuth(mux))
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -422,14 +477,83 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 // files so the browser never depends on the SatNOGS S3 bucket.
 func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	items := make([]gallery.Item, len(s.gallery))
-	copy(items, s.gallery)
+	items := append([]LiveGalleryItem(nil), s.liveGallery...)
+	sat := append([]gallery.Item(nil), s.gallery...)
 	s.mu.Unlock()
-	for i := range items {
-		items[i].URL = "/gallery/" + url.PathEscape(items[i].Name)
-		items[i].Path = ""
+	for i := range sat {
+		sat[i].URL = "/gallery/" + url.PathEscape(sat[i].Name)
+		sat[i].Path = ""
 	}
-	writeJSON(w, items)
+	out := make([]interface{}, 0, len(items)+len(sat))
+	for _, item := range items {
+		out = append(out, item)
+	}
+	for _, item := range sat {
+		out = append(out, item)
+	}
+	writeJSON(w, out)
+}
+
+// AddLiveArtifact saves a verified decoder result with source metadata.
+func (s *Server) AddLiveArtifact(activity monitor.Activity, pngData []byte) error {
+	if err := verify.Live(activity.Kind, activity.Mode, activity.Detail, pngData, activity.VerificationAnchor); err != nil {
+		return fmt.Errorf("live verification rejected content: %w", err)
+	}
+	name := fmt.Sprintf("live-%s-%d", activity.Started.UTC().Format("20060102T150405Z"), activity.ID)
+	var ext, kind string
+	var data []byte
+	if len(pngData) > 0 {
+		ext, kind, data = ".png", "image", pngData
+	} else {
+		ext, kind, data = ".txt", "text", []byte(activity.Detail)
+	}
+	name += ext
+	if err := os.MkdirAll(s.galleryDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(s.galleryDir, name), data, 0o644); err != nil {
+		return err
+	}
+	station := activity.Label
+	if station == "" {
+		station = activity.Source
+	}
+	item := LiveGalleryItem{ObservationID: 0, Satellite: "Live reception", Station: station, Start: activity.Started, Mode: activity.Mode, FrequencyHz: int64(activity.FrequencyHz), Kind: kind, Name: name, URL: "/gallery/" + url.PathEscape(name), Size: int64(len(data)), Text: activity.Detail}
+	if activity.AudioPath != "" {
+		audioName := name + ".wav"
+		src, err := os.ReadFile(activity.AudioPath)
+		if err == nil && len(src) > 0 {
+			if err := os.WriteFile(filepath.Join(s.galleryDir, audioName), src, 0o644); err == nil {
+				item.AudioURL = "/audio/live/" + url.PathEscape(audioName)
+			}
+		}
+	}
+	s.mu.Lock()
+	s.liveGallery = append([]LiveGalleryItem{item}, s.liveGallery...)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Server) handleLiveAudio(w http.ResponseWriter, r *http.Request) {
+	name, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/audio/live/"))
+	if err != nil || name == "" || strings.ContainsAny(name, "/\\") {
+		http.NotFound(w, r)
+		return
+	}
+	s.mu.Lock()
+	found := false
+	for _, item := range s.liveGallery {
+		if item.AudioURL != "" && strings.HasSuffix(item.AudioURL, url.PathEscape(name)) {
+			found = true
+			break
+		}
+	}
+	s.mu.Unlock()
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, filepath.Join(s.galleryDir, name))
 }
 
 // handleGalleryFile serves one downloaded artefact, but only names that are
@@ -442,6 +566,12 @@ func (s *Server) handleGalleryFile(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	found := false
+	for _, item := range s.liveGallery {
+		if item.Name == name {
+			found = true
+			break
+		}
+	}
 	for _, item := range s.gallery {
 		if item.Name == name {
 			found = true
@@ -457,10 +587,81 @@ func (s *Server) handleGalleryFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // SetMonitor attaches a live monitor to the server.
+func (s *Server) SetScanStatuses(scans []ScanStatus) {
+	s.mu.Lock()
+	s.scans = append([]ScanStatus(nil), scans...)
+	s.mu.Unlock()
+}
+
+func (s *Server) handleScans(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	metrics := s.scanMetrics
+	metrics.Stations = append([]ScanStatus(nil), s.scans...)
+	writeJSON(w, metrics)
+}
+
+// SetScanMetrics publishes live ramp and resource counters for the scanner.
+func (s *Server) SetScanMetrics(metrics ScanMetrics) {
+	s.mu.Lock()
+	metrics.Stations = append([]ScanStatus(nil), s.scans...)
+	s.scanMetrics = metrics
+	s.mu.Unlock()
+}
+
 func (s *Server) SetMonitor(instance *monitor.Monitor) {
 	s.mu.Lock()
 	s.monitor = instance
 	s.mu.Unlock()
+}
+
+// fixtureDir locates test fixtures independent of the process working directory.
+func fixtureDir() string {
+	isDir := func(path string) bool { st, err := os.Stat(path); return err == nil && st.IsDir() }
+	if dir := os.Getenv("SDRSTREAM_FIXTURE_DIR"); dir != "" && isDir(dir) {
+		return dir
+	}
+	if _, file, _, ok := runtime.Caller(0); ok {
+		dir := filepath.Join(filepath.Dir(file), "..", "..", "..", "tests", "data")
+		if isDir(dir) {
+			return dir
+		}
+	}
+	if isDir("tests/data") {
+		return "tests/data"
+	}
+	return ""
+}
+
+// handleTestFixtures lists local test WAV fixtures separately from live reception.
+func (s *Server) handleTestFixtures(w http.ResponseWriter, r *http.Request) {
+	type Fixture struct {
+		Name string `json:"name"`
+		Kind string `json:"kind"`
+		Size int64  `json:"size"`
+	}
+	root := fixtureDir()
+	if root == "" {
+		writeJSON(w, []Fixture{})
+		return
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		writeJSON(w, []Fixture{})
+		return
+	}
+	var fixtures []Fixture
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".wav") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		fixtures = append(fixtures, Fixture{Name: entry.Name(), Kind: "test audio", Size: info.Size()})
+	}
+	writeJSON(w, fixtures)
 }
 
 // handleActivity returns the transmissions the monitor has seen.
@@ -607,6 +808,18 @@ func writeJSON(w http.ResponseWriter, value interface{}) {
 
 // Serve binds addr and serves the UI until the process exits.
 func (s *Server) Serve(addr string) error {
+	if os.Getenv("SDRSTREAM_UI_PASSWORD") == "" && !s.NoAuth {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			host = addr
+		}
+		ip := net.ParseIP(host)
+		loopback := (ip != nil && ip.IsLoopback()) || strings.EqualFold(host, "localhost")
+		if !loopback {
+			return fmt.Errorf("web: refusing to serve %q without SDRSTREAM_UI_PASSWORD: set a password or pass -no-auth to run an open UI", addr)
+		}
+		log.Printf("web: WARNING: no SDRSTREAM_UI_PASSWORD - serving an open UI on loopback only; set a password before exposing this beyond the local machine")
+	}
 	log.Printf("web UI on http://%s", addr)
 	server := &http.Server{Addr: addr, Handler: s.Handler()}
 	return server.ListenAndServe()

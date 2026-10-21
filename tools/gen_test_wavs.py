@@ -602,7 +602,7 @@ if __name__ == "__main__":
     write_wav("/tmp/test_morse.wav", make_morse("CQ DE RS44 SAT"))
     write_wav("/tmp/test_dtmf.wav", make_dtmf("0123456789*#ABCD"))
     write_wav("/tmp/test_rtty.wav", make_rtty("CQ DE RS44 RTTY TEST 599"))
-    write_wav("/tmp/test_sstv.wav", make_sstv_vis(0x3C))  # Martin M2
+    write_wav("/tmp/test_sstv.wav", make_sstv_vis(0x28))  # Martin M2
     write_wav("/tmp/test_psk31.wav", make_psk31("CQ DE RS44 PSK31 TEST"))
     write_wav("/tmp/test_pocsag.wav", make_pocsag(1234567, "HELLO PAGER TEST 123"))
     write_wav("/tmp/test_eas.wav", make_eas())

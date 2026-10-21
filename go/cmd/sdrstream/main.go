@@ -5,15 +5,20 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/catalogue"
@@ -30,6 +35,7 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/satellite"
 	"github.com/chaim12345/sdrstream/go/internal/satellites"
 	"github.com/chaim12345/sdrstream/go/internal/satnogs"
+	"github.com/chaim12345/sdrstream/go/internal/verify"
 	"github.com/chaim12345/sdrstream/go/internal/voice"
 	"github.com/chaim12345/sdrstream/go/internal/web"
 	"github.com/chaim12345/sdrstream/go/internal/websdr"
@@ -783,6 +789,7 @@ func cmdMonitor(args []string) error {
 	voiceThreads := fs.Int("voice-threads", 0, "threads for whisper.cpp (0 = let whisper decide)")
 	voiceBeam := fs.Int("voice-beam", 5, "beam-search width for whisper.cpp (1 = greedy)")
 	voicePrompt := fs.String("voice-prompt", "", "domain hint for whisper.cpp (radio phraseology, callsigns); empty = built-in radio prompt")
+	label := fs.String("label", "", "programme or station label carried on activities and gallery entries (e.g. the broadcast station heard)")
 	out := fs.String("out", "", "directory to save the recorded transmissions")
 	minutes := fs.Float64("minutes", 0, "stop after this many minutes (0 = run until interrupted)")
 	fs.Parse(args)
@@ -791,7 +798,8 @@ func cmdMonitor(args []string) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	signal.NotifyContext(ctx, os.Interrupt)
+	ctx, stopSignals := signal.NotifyContext(ctx, os.Interrupt)
+	defer stopSignals()
 
 	source, err := monitor.SourceFor(ctx, *kind, *server, *profile)
 	if err != nil {
@@ -813,6 +821,7 @@ func cmdMonitor(args []string) error {
 		VoiceOptions: monitorVoiceOptions(*voiceLang, *voiceThreads, *voiceBeam, *voicePrompt),
 		OutDir:       *out,
 		Name:         *server,
+		Label:        *label,
 		Logf:         func(format string, args ...interface{}) { fmt.Printf(format+"\n", args...) },
 		OnActivity: func(activity monitor.Activity) {
 			line := fmt.Sprintf("#%d %s %.4f MHz %s",
@@ -1345,7 +1354,18 @@ func cmdWeb(args []string) error {
 	port := fs.Int("port", 8000, "port to bind")
 	capturesDir := fs.String("captures-dir", "../captures", "directory of saved WAV captures to list and serve")
 	galleryDir := fs.String("gallery-dir", "", "directory for SatNOGS gallery artefacts (default: cache/gallery)")
+	scanStations := fs.String("scan-stations", "", "comma-separated public receivers for bounded parallel scan (one connection per receiver)")
+	scanStart := fs.Int("scan-start-connections", 20, "initial scanner concurrency ramp step")
+	scanMax := fs.Int("scan-max-connections", 80, "integrator scanner maximum concurrency (hard limit 80)")
+	scanRamp := fs.String("scan-ramp", "20,50,100,200", "comma-separated ramp steps, capped by --scan-max-connections")
+	scanGoodRate := fs.Float64("scan-advance-error-rate", 0.15, "advance if a completed wave has refusal+timeout rate below this fraction")
+	scanRefusalBackoff := fs.Float64("scan-backoff-refusal-rate", 0.30, "step down if a completed wave refusal rate exceeds this fraction")
+	scanLoadAdvance := fs.Float64("scan-advance-load-ratio", 0.70, "advance only below this load-average/core ratio")
+	scanLoadBackoff := fs.Float64("scan-backoff-load-ratio", 0.90, "step down above this load-average/core ratio")
+	scanBandwidth := fs.Float64("scan-bandwidth-limit-mbps", 20, "estimated aggregate receive bandwidth limit in Mbit/s")
+	scanStreamKbps := fs.Float64("scan-stream-kbps", 100, "estimated bandwidth per active receiver stream in kbit/s")
 	monitorServer := fs.String("monitor-server", "", "receiver to monitor for live traffic (empty = no monitoring)")
+	monitorLabel := fs.String("monitor-label", "", "programme or station label for monitor activities and gallery entries")
 	monitorKind := fs.String("monitor-kind", "openwebrx", "monitor receiver protocol: openwebrx, websdr or kiwi")
 	monitorProfile := fs.String("monitor-profile", "", "OpenWebRX profile for the monitor")
 	monitorStrategy := fs.String("monitor-strategy", "sweep", "monitor strategy: sweep or spectrum")
@@ -1354,14 +1374,35 @@ func cmdWeb(args []string) error {
 	monitorStep := fs.Float64("monitor-step", 25000, "monitor sweep step in Hz")
 	monitorThreshold := fs.Float64("monitor-threshold", 10, "monitor threshold in dB above the noise floor")
 	monitorListen := fs.Duration("monitor-listen", 8*time.Second, "audio to record per transmission")
+	monitorDwell := fs.Duration("monitor-dwell", 400*time.Millisecond, "time to sample each monitor frequency during a sweep")
+	monitorMode := fs.String("monitor-mode", "auto", "modulation used for monitor audio (auto, fm, usb, am, etc.)")
 	monitorVoice := fs.Bool("monitor-voice", true, "transcribe voice traffic")
 	monitorVoiceLang := fs.String("monitor-voice-lang", "auto", "language hint for speech recognition")
 	monitorVoiceThreads := fs.Int("monitor-voice-threads", 0, "threads for whisper.cpp")
 	monitorVoiceBeam := fs.Int("monitor-voice-beam", 5, "beam-search width for whisper.cpp")
 	monitorVoicePrompt := fs.String("monitor-voice-prompt", "", "domain hint for whisper.cpp")
 	monitorOut := fs.String("monitor-out", "", "directory to save the recorded transmissions")
+	monitorMultimon := fs.String("monitor-multimon", "", "optional local multimon-ng executable (receive-only decode fallback)")
+	monitorDirewolf := fs.String("monitor-direwolf", "", "optional local Dire Wolf executable (receive-only APRS fallback)")
+	sstvImageHelp := fs.String("sstv-image-format-help", "write decoded SSTV image (Martin M1/M2, Scottie S1, Robot 36) as PNG", "help text for SSTV image decoder")
+	_ = sstvImageHelp
+	noAuth := fs.Bool("no-auth", false, "run the web UI without a password (INSECURE: required for non-loopback binds when SDRSTREAM_UI_PASSWORD is unset)")
 	fs.Parse(args)
+	if *monitorMultimon != "" && decode.MultimonBinary(*monitorMultimon) == "" {
+		return fmt.Errorf("-monitor-multimon: %q is not an executable file", *monitorMultimon)
+	}
+	if *monitorDirewolf != "" && decode.DirewolfBinary(*monitorDirewolf) == "" {
+		return fmt.Errorf("-monitor-direwolf: %q is not an executable file", *monitorDirewolf)
+	}
 	server := web.New(*capturesDir, *galleryDir)
+	server.NoAuth = *noAuth
+	if strings.TrimSpace(*scanStations) != "" {
+		config, err := newScanConfig(*scanStart, *scanMax, *scanRamp, *scanGoodRate, *scanRefusalBackoff, *scanLoadAdvance, *scanLoadBackoff, *scanBandwidth, *scanStreamKbps)
+		if err != nil {
+			return err
+		}
+		go runParallelScan(context.Background(), server, strings.Split(*scanStations, ","), *monitorMultimon, *monitorDirewolf, config)
+	}
 	if *monitorServer != "" {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1370,18 +1411,43 @@ func cmdWeb(args []string) error {
 			return err
 		}
 		instance := monitor.New(monitor.Options{
-			Source:       source,
-			Strategy:     *monitorStrategy,
-			StartHz:      *monitorStart,
-			EndHz:        *monitorEnd,
-			StepHz:       *monitorStep,
-			ThresholdDB:  *monitorThreshold,
-			Listen:       *monitorListen,
-			Voice:        *monitorVoice,
-			VoiceOptions: monitorVoiceOptions(*monitorVoiceLang, *monitorVoiceThreads, *monitorVoiceBeam, *monitorVoicePrompt),
-			OutDir:       *monitorOut,
-			Name:         *monitorServer,
-			Logf:         func(format string, args ...interface{}) { log.Printf("monitor: "+format, args...) },
+			OnActivity: func(activity monitor.Activity) {
+				if activity.Detail != "" && (activity.Kind == "data" || activity.Kind == "cw" || activity.Kind == "sstv" || activity.Kind == "voice") {
+					if err := verify.Live(activity.Kind, activity.Mode, activity.Detail, nil, activity.VerificationAnchor); err != nil {
+						log.Printf("gallery: verification rejected live text: %v", err)
+						return
+					}
+					if err := server.AddLiveArtifact(activity, nil); err != nil {
+						log.Printf("gallery: save live text: %v", err)
+					}
+				}
+			},
+			OnImage: func(activity monitor.Activity, png []byte) {
+				if err := verify.Live(activity.Kind, activity.Mode, "", png); err != nil {
+					log.Printf("gallery: verification rejected live image: %v", err)
+					return
+				}
+				if err := server.AddLiveArtifact(activity, png); err != nil {
+					log.Printf("gallery: save live image: %v", err)
+				}
+			},
+			Source:         source,
+			Strategy:       *monitorStrategy,
+			StartHz:        *monitorStart,
+			EndHz:          *monitorEnd,
+			StepHz:         *monitorStep,
+			ThresholdDB:    *monitorThreshold,
+			Dwell:          *monitorDwell,
+			Listen:         *monitorListen,
+			Mode:           *monitorMode,
+			Voice:          *monitorVoice,
+			VoiceOptions:   monitorVoiceOptions(*monitorVoiceLang, *monitorVoiceThreads, *monitorVoiceBeam, *monitorVoicePrompt),
+			MultimonBinary: *monitorMultimon,
+			DirewolfBinary: *monitorDirewolf,
+			OutDir:         *monitorOut,
+			Name:           *monitorServer,
+			Label:          *monitorLabel,
+			Logf:           func(format string, args ...interface{}) { log.Printf("monitor: "+format, args...) },
 		})
 		if *monitorOut != "" {
 			if err := os.MkdirAll(*monitorOut, 0o755); err != nil {
@@ -1403,6 +1469,7 @@ func cmdDecode(args []string) error {
 	fs := flag.NewFlagSet("decode", flag.ExitOnError)
 	mode := fs.String("mode", "auto", "auto | aprs | morse | dtmf | rtty | psk31 | sstv | pocsag | eas | navtex | voice | all (every data mode, no speech)")
 	offset := fs.Float64("offset", 0, "audio centre frequency in Hz for psk31/rtty (0 = auto)")
+	imageOut := fs.String("sstv-image", "", "write decoded Martin M2 SSTV image as PNG")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
 		return fmt.Errorf("decode: pass one or more WAV files")
@@ -1437,13 +1504,23 @@ func cmdDecode(args []string) error {
 				fmt.Println("   psk31:  nothing")
 			}
 		}
-		if *mode == "sstv" || wantAll {
+		if *mode == "sstv" || wantAll || *imageOut != "" {
 			hits := decode.SSTVDetect(samples, rate)
-			if len(hits) == 0 && *mode == "sstv" {
+			if len(hits) == 0 && (*mode == "sstv" || *imageOut != "") {
 				fmt.Println("   sstv:   no VIS header")
 			}
 			for _, h := range hits {
 				fmt.Printf("   sstv:   %s (VIS 0x%02X) at %.1f s\n", h.Mode, h.VIS, h.StartSec)
+			}
+			if *imageOut != "" {
+				pngBytes, err := decode.SSTVImage(samples, rate)
+				if err != nil {
+					fmt.Printf("   sstv image: %v\n", err)
+				} else if err := os.WriteFile(*imageOut, pngBytes, 0o644); err != nil {
+					fmt.Printf("   sstv image: write: %v\n", err)
+				} else {
+					fmt.Printf("   sstv image: wrote %s (%d bytes)\n", *imageOut, len(pngBytes))
+				}
 			}
 		}
 		if *mode == "pocsag" || wantAll {
@@ -1567,4 +1644,367 @@ func cmdScan(args []string) error {
 		}
 	}
 	return nil
+}
+
+type scanTarget struct {
+	server    string
+	frequency float64
+	mode      string
+}
+
+type scanConfig struct {
+	start, maximum                       int
+	ramp                                 []int
+	advanceErrorRate, backoffRefusalRate float64
+	advanceLoadRatio, backoffLoadRatio   float64
+	bandwidthLimitMbps, streamKbps       float64
+}
+
+func newScanConfig(start, maximum int, ramp string, advanceError, backoffRefusal, advanceLoad, backoffLoad, bandwidth, streamKbps float64) (scanConfig, error) {
+	if maximum < 1 || maximum > 80 {
+		return scanConfig{}, fmt.Errorf("--scan-max-connections must be 1..80")
+	}
+	steps := []int{}
+	for _, raw := range strings.Split(ramp, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || n < 1 {
+			return scanConfig{}, fmt.Errorf("invalid --scan-ramp step %q", raw)
+		}
+		n = min(maximum, n)
+		if len(steps) == 0 || steps[len(steps)-1] < n {
+			steps = append(steps, n)
+		}
+	}
+	if len(steps) == 0 {
+		return scanConfig{}, fmt.Errorf("--scan-ramp must include at least one step")
+	}
+	if start < 1 {
+		return scanConfig{}, fmt.Errorf("--scan-start-connections must be positive")
+	}
+	if start > maximum {
+		return scanConfig{}, fmt.Errorf("--scan-start-connections cannot exceed scanner maximum")
+	}
+	if advanceError < 0 || advanceError > 1 || backoffRefusal < 0 || backoffRefusal > 1 || advanceLoad <= 0 || backoffLoad <= 0 || bandwidth <= 0 || streamKbps <= 0 {
+		return scanConfig{}, fmt.Errorf("scan ramp rates and resource limits must be positive fractions/values")
+	}
+	if steps[0] > start {
+		steps = append([]int{start}, steps...)
+	}
+	return scanConfig{start: start, maximum: maximum, ramp: steps, advanceErrorRate: advanceError, backoffRefusalRate: backoffRefusal, advanceLoadRatio: advanceLoad, backoffLoadRatio: backoffLoad, bandwidthLimitMbps: bandwidth, streamKbps: streamKbps}, nil
+}
+
+func runParallelScan(ctx context.Context, server *web.Server, receivers []string, multimonPath, direwolfPath string, cfg scanConfig) {
+	// Normalize and deduplicate receiver identifiers before opening any sockets.
+	unique := make([]string, 0, len(receivers))
+	seen := map[string]bool{}
+	for _, raw := range receivers {
+		entry := strings.TrimSpace(raw)
+		parts := strings.SplitN(entry, "|", 2)
+		if len(parts) != 2 {
+			continue // Require explicit directory type so protocol routing is correct.
+		}
+		kind := strings.TrimSpace(parts[0])
+		host := strings.TrimSpace(strings.TrimRight(parts[1], "/"))
+		key := strings.ToLower(host)
+		if host == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		unique = append(unique, kind+"|"+host)
+	}
+	if len(unique) == 0 {
+		return
+	}
+	stepIndex := 0
+	for i, step := range cfg.ramp {
+		if step <= cfg.start {
+			stepIndex = i
+		}
+	}
+	current := min(cfg.maximum, cfg.ramp[stepIndex])
+	if current < 1 {
+		current = 1
+	}
+	var active atomic.Int64
+	var metricsMu sync.Mutex
+	refusals, timeouts := 0, 0
+	coreCount := runtime.NumCPU()
+	updateMetrics := func() {
+		load := readLoadAverage()
+		metricsMu.Lock()
+		rampStep, refusalCount, timeoutCount := current, refusals, timeouts
+		metricsMu.Unlock()
+		estimated := float64(active.Load()) * cfg.streamKbps / 1000
+		server.SetScanMetrics(web.ScanMetrics{RampStep: rampStep, MaxConnections: cfg.maximum, ActiveConnections: int(active.Load()), Refusals: refusalCount, Timeouts: timeoutCount, LoadAverage: load, CoreCount: coreCount, EstimatedBandwidthMbps: estimated, BandwidthLimitMbps: cfg.bandwidthLimitMbps})
+	}
+	updateMetrics()
+	for offset := 0; offset < len(unique) && ctx.Err() == nil; {
+		width := current
+		if width > len(unique)-offset {
+			width = len(unique) - offset
+		}
+		waveResults := make(chan scanOutcome, width)
+		sem := make(chan struct{}, width)
+		var wg sync.WaitGroup
+		for _, station := range unique[offset : offset+width] {
+			sem <- struct{}{}
+			wg.Add(1)
+			go func(h string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				parts := strings.SplitN(h, "|", 2)
+				if len(parts) != 2 {
+					waveResults <- scanOutcome{}
+					return
+				}
+				outcome := scanStation(ctx, server, parts[0], parts[1], multimonPath, direwolfPath, &active, updateMetrics)
+				waveResults <- outcome
+			}(station)
+		}
+		wg.Wait()
+		close(waveResults)
+		offset += width
+		waveRefusals, waveTimeouts := 0, 0
+		for outcome := range waveResults {
+			if outcome.refused {
+				waveRefusals++
+			}
+			if outcome.timedOut {
+				waveTimeouts++
+			}
+		}
+		metricsMu.Lock()
+		refusals += waveRefusals
+		timeouts += waveTimeouts
+		metricsMu.Unlock()
+		load := readLoadAverage()
+		updateMetrics()
+		denom := float64(max(1, width))
+		issueRate := float64(waveRefusals+waveTimeouts) / denom
+		refusalRate := float64(waveRefusals) / denom
+		loadRatio := load / float64(max(1, coreCount))
+		metricsMu.Lock()
+		if (refusalRate > cfg.backoffRefusalRate || loadRatio > cfg.backoffLoadRatio) && stepIndex > 0 {
+			stepIndex--
+			current = min(cfg.maximum, cfg.ramp[stepIndex])
+		} else if issueRate < cfg.advanceErrorRate && loadRatio < cfg.advanceLoadRatio && float64(current)*cfg.streamKbps/1000 < cfg.bandwidthLimitMbps && stepIndex+1 < len(cfg.ramp) {
+			stepIndex++
+			current = min(cfg.maximum, cfg.ramp[stepIndex])
+		}
+		metricsMu.Unlock()
+		updateMetrics()
+	}
+}
+
+type scanOutcome struct{ refused, timedOut bool }
+
+func classifyScanFailure(err error) scanOutcome {
+	if err == nil {
+		return scanOutcome{}
+	}
+	var ne net.Error
+	isTimeout := errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) || strings.Contains(strings.ToLower(err.Error()), "timeout")
+	text := strings.ToLower(err.Error())
+	refused := strings.Contains(text, "refused") || strings.Contains(text, "rate limit") || strings.Contains(text, "too many") || strings.Contains(text, "429") || strings.Contains(text, "busy")
+	return scanOutcome{refused: refused, timedOut: isTimeout}
+}
+
+func readLoadAverage() float64 {
+	b, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return 0
+	}
+	fields := strings.Fields(string(b))
+	if len(fields) == 0 {
+		return 0
+	}
+	value, _ := strconv.ParseFloat(fields[0], 64)
+	return value
+}
+
+func scanStation(ctx context.Context, server *web.Server, stationType, host, multimonPath, direwolfPath string, active *atomic.Int64, updateMetrics func()) scanOutcome {
+	if strings.EqualFold(stationType, "KiwiSDR") || looksLikeKiwi(host) {
+		return scanKiwiStation(ctx, server, host, active, updateMetrics)
+	}
+	active.Add(1)
+	updateMetrics()
+	protocol := "websdr"
+	if strings.EqualFold(stationType, "OpenWebRX") {
+		protocol = "openwebrx"
+	}
+	source, err := monitor.SourceFor(ctx, protocol, host, "")
+	if err != nil {
+		active.Add(-1)
+		updateMetrics()
+		outcome := classifyScanFailure(err)
+		state := "error"
+		if outcome.refused {
+			state = "refused/skipped"
+		}
+		addScan(server, web.ScanStatus{Station: host, State: state, Result: err.Error(), UpdatedAt: time.Now()})
+		return outcome
+	}
+	defer func() { source.Close(); active.Add(-1); updateMetrics() }()
+	targets := []scanTarget{{host, 144800e3, "fm"}, {host, 145500e3, "fm"}, {host, 145800e3, "fm"}, {host, 433500e3, "fm"}, {host, 118000e3, "am"}, {host, 121500e3, "am"}, {host, 162400e3, "fm"}, {host, 162550e3, "fm"}, {host, 100e6, "wfm"}}
+	for _, target := range targets {
+		if ctx.Err() != nil {
+			return scanOutcome{}
+		}
+		idx := addScan(server, web.ScanStatus{Station: host, FrequencyHz: target.frequency, Mode: target.mode, State: "connecting", UpdatedAt: time.Now()})
+		update := func(state, result string) {
+			scansMu.Lock()
+			scans[idx].State = state
+			scans[idx].Result = result
+			scans[idx].UpdatedAt = time.Now()
+			server.SetScanStatuses(scans)
+			scansMu.Unlock()
+		}
+		update("listening", "")
+		samples, rate, err := source.Listen(ctx, target.frequency, target.mode, 12*time.Second)
+		if err != nil {
+			result := classifyScanFailure(err)
+			state := "error"
+			if result.refused {
+				state = "refused/skipped"
+			}
+			if result.timedOut {
+				state = "timeout"
+			}
+			update(state, err.Error())
+			return result
+		}
+		kind, decoder, detail, ok := monitor.New(monitor.Options{MultimonBinary: multimonPath, DirewolfBinary: direwolfPath, Voice: true, VoiceOptions: monitorVoiceOptions("en", 2, 1, "weather, radio, forecast")}).ClassifyForScan(ctx, samples, rate, 3000)
+		if !ok || detail == "" {
+			update("no verified decode", "")
+			continue
+		}
+		activity := monitor.Activity{ID: int(time.Now().UnixNano()), Started: time.Now().UTC(), FrequencyHz: target.frequency, Kind: kind, Mode: decoder, Detail: detail, Source: host}
+		if err := verify.Live(activity.Kind, activity.Mode, activity.Detail, nil, activity.VerificationAnchor); err != nil {
+			update("unverified decode", err.Error())
+			continue
+		}
+		if decoder == "speech" || kind == "voice" {
+			activity.AudioPath = filepath.Join(os.TempDir(), fmt.Sprintf("sdrstream-live-%d.wav", activity.ID))
+			_ = finishInt16(samples, rate, activity.AudioPath)
+		}
+		if err := server.AddLiveArtifact(activity, nil); err != nil {
+			update("error", err.Error())
+			continue
+		}
+		update("decoded", detail)
+	}
+	return scanOutcome{}
+}
+
+func looksLikeKiwi(host string) bool {
+	text := strings.ToLower(host)
+	return strings.Contains(text, "kiwisdr") || strings.Contains(text, ":8073") || strings.Contains(text, "kiwi")
+}
+
+func scanKiwiStation(ctx context.Context, server *web.Server, host string, active *atomic.Int64, updateMetrics func()) scanOutcome {
+	var refusal, timeout bool
+	for _, target := range decode.HFBroadcasts {
+		if ctx.Err() != nil {
+			break
+		}
+		if !target.ActiveNow(time.Now()) {
+			continue
+		}
+		idx := addScan(server, web.ScanStatus{Station: host, FrequencyHz: target.DialKHz * 1000, Mode: target.Mode, State: "connecting", UpdatedAt: time.Now()})
+		active.Add(1)
+		updateMetrics()
+		result, err := decode.RunHFTarget(ctx, host, target, 12*time.Second)
+		active.Add(-1)
+		updateMetrics()
+		if err != nil {
+			outcome := classifyScanFailure(err)
+			refusal = refusal || outcome.refused
+			timeout = timeout || outcome.timedOut
+			state := "error"
+			if outcome.refused {
+				state = "refused/skipped"
+			}
+			if outcome.timedOut {
+				state = "timeout"
+			}
+			setScanResult(server, idx, state, err.Error())
+			if outcome.refused || outcome.timedOut {
+				break
+			}
+			continue
+		}
+		if !result.Live() {
+			setScanResult(server, idx, "unverified decode", result.Gate.Reason)
+			continue
+		}
+		activity := monitor.Activity{ID: int(time.Now().UnixNano()), Started: result.Started, FrequencyHz: target.DialKHz * 1000, Kind: "data", Mode: target.Kind, Detail: result.Text, VerificationAnchor: target.Expect, Source: host}
+		imageData := result.ImagePNG
+		if len(imageData) > 0 {
+			activity.Kind = target.Kind
+		}
+		if err := server.AddLiveArtifact(activity, imageData); err != nil {
+			setScanResult(server, idx, "unverified decode", err.Error())
+			continue
+		}
+		setScanResult(server, idx, "decoded", result.Gate.Reason)
+	}
+	return scanOutcome{refused: refusal, timedOut: timeout}
+}
+
+func setScanResult(server *web.Server, idx int, state, result string) {
+	scansMu.Lock()
+	defer scansMu.Unlock()
+	if idx >= 0 && idx < len(scans) {
+		scans[idx].State = state
+		scans[idx].Result = result
+		scans[idx].UpdatedAt = time.Now()
+		server.SetScanStatuses(scans)
+	}
+}
+
+func addScan(server *web.Server, entry web.ScanStatus) int {
+	scansMu.Lock()
+	defer scansMu.Unlock()
+	scans = append(scans, entry)
+	idx := len(scans) - 1
+	if len(scans) > 500 {
+		scans = append([]web.ScanStatus(nil), scans[len(scans)-500:]...)
+		idx -= len(scans) - 500
+	}
+	server.SetScanStatuses(scans)
+	return idx
+}
+
+var scansMu sync.Mutex
+var scans []web.ScanStatus
+
+func finishInt16(samples []float64, rate int, path string) error {
+	pcm := make([]int16, len(samples))
+	for i, v := range samples {
+		if v > 1 {
+			v = 1
+		}
+		if v < -1 {
+			v = -1
+		}
+		pcm[i] = int16(v * 32767)
+	}
+	return common.WriteWAVFile(path, pcm, rate)
+}
+
+func plausibleBroadcastText(text string) bool {
+	letters, spaces, total := 0, 0, 0
+	for _, r := range text {
+		total++
+		if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {
+			letters++
+		}
+		if r == ' ' || r == '\n' || r == '\r' {
+			spaces++
+		}
+	}
+	if total < 24 || letters < 18 || float64(letters)/float64(total) < 0.55 {
+		return false
+	}
+	return spaces >= 2
 }

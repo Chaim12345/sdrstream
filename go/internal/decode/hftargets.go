@@ -1,0 +1,97 @@
+package decode
+
+import "time"
+
+// HFTarget is a known HF broadcast service that can be monitored on a
+// public receiver: when it transmits, where to point the dial, how the
+// audio should be demodulated, and which decoder turns it back into text
+// or images.
+type HFTarget struct {
+	Name        string  // human-readable service name
+	Kind        string  // rtty, cw, navtex, wefax, ft8, wspr
+	CarrierKHz  float64 // published carrier/centre frequency
+	DialKHz     float64 // receiver dial frequency (sideband offset applied)
+	Mode        string  // receiver demodulation mode (usb, lsb, am, cw, cwn)
+	Baud        float64 // symbol rate for RTTY/NAVTEX
+	MarkHz      float64 // expected mark tone in the audio passband
+	SpaceHz     float64 // expected space tone in the audio passband
+	Inverted    bool    // mark is the lower RF tone (DWD F1B convention)
+	LinesPerMin float64 // fax drum speed
+	IOC         int     // fax index of cooperation
+	Expect      string  // quality-gate anchor: callsign or phrase a real decode must contain
+}
+
+// HFBroadcasts lists the services monitored for live HF decoding.
+// Frequencies are carrier centres; DialKHz places the wanted tones inside
+// the receiver's USB passband (300-2700 Hz).
+//
+// DWD RTTY (Deutscher Wetterdienst, Pinneberg): 50 baud, 450 Hz shift,
+// F1B, mark LOW. With a USB dial 1.9 kHz below the centre the mark lands
+// at 1675 Hz and space at 2125 Hz. Verified live 2026-10-21 on 4583 kHz
+// ("CQ CQ CQ DE DDK2 DDH7 DDK9").
+var HFBroadcasts = []HFTarget{
+	{
+		Name: "DWD RTTY 4583 (night)", Kind: "rtty",
+		CarrierKHz: 4583.0, DialKHz: 4581.1, Mode: "usb",
+		Baud: 50, MarkHz: 1675, SpaceHz: 2125, Inverted: true,
+		Expect: "DDK2",
+	},
+	{
+		Name: "DWD RTTY 7646", Kind: "rtty",
+		CarrierKHz: 7646.0, DialKHz: 7644.1, Mode: "usb",
+		Baud: 50, MarkHz: 1675, SpaceHz: 2125, Inverted: true,
+		Expect: "DDH7",
+	},
+	{
+		Name: "DWD RTTY 10100.8 (day)", Kind: "rtty",
+		CarrierKHz: 10100.8, DialKHz: 10098.9, Mode: "usb",
+		Baud: 50, MarkHz: 1675, SpaceHz: 2125, Inverted: true,
+		Expect: "DDK9",
+	},
+	{
+		Name: "OK0EU CW beacon", Kind: "cw",
+		CarrierKHz: 7038.5, DialKHz: 7037.8, Mode: "usb",
+		Expect: "OK0EU",
+	},
+	{
+		Name: "NAVTEX 518", Kind: "navtex",
+		CarrierKHz: 518.0, DialKHz: 516.3, Mode: "usb",
+		Baud: 100, MarkHz: 1785, SpaceHz: 1615,
+	},
+	{
+		Name: "DWD WEFAX 3855 (night)", Kind: "wefax",
+		CarrierKHz: 3855.0, DialKHz: 3853.1, Mode: "usb",
+		LinesPerMin: 120, IOC: 576,
+	},
+	{
+		Name: "DWD WEFAX 7880", Kind: "wefax",
+		CarrierKHz: 7880.0, DialKHz: 7878.1, Mode: "usb",
+		LinesPerMin: 120, IOC: 576,
+	},
+	{
+		Name: "DWD WEFAX 13882.5 (day)", Kind: "wefax",
+		CarrierKHz: 13882.5, DialKHz: 13880.6, Mode: "usb",
+		LinesPerMin: 120, IOC: 576,
+	},
+}
+
+// ActiveNow reports whether the target plausibly transmits at t, given its
+// rough schedule. 24/7 services always qualify; DWD fax runs fixed slots.
+func (t HFTarget) ActiveNow(now time.Time) bool {
+	utc := now.UTC()
+	switch t.Kind {
+	case "rtty", "cw", "navtex":
+		return true // 24/7 services (NAVTEX in 10-minute slots every 4 h)
+	case "wefax":
+		// DWD broadcast windows (UTC) per the BAmD schedule.
+		m := utc.Hour()*60 + utc.Minute()
+		windows := [][2]int{{6*60 + 0, 19*60 + 39}, {21*60 + 0, 23*60 + 59}}
+		for _, w := range windows {
+			if m >= w[0] && m <= w[1] {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}

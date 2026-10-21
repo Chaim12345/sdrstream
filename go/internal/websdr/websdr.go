@@ -97,9 +97,21 @@ type Client struct {
 	closeOnce  sync.Once
 }
 
-// New builds a client for a WebSDR server URL.
+// New builds a client for a WebSDR server URL. The page URL may carry a
+// subpath selecting a frontend (e.g. eshail.batc.org.uk/nb/), but the
+// WebSDR protocol always serves its stream from the server root:
+// wss://host/~~stream, as websdr-sound.js connects.
 func New(rawURL string, options Options) (*Client, error) {
-	streamURL, err := common.WebSocketURL(rawURL, StreamPath)
+	base, err := common.NormalizeHTTPURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return nil, err
+	}
+	root := parsed.Scheme + "://" + parsed.Host
+	streamURL, err := common.WebSocketURL(root, StreamPath)
 	if err != nil {
 		return nil, err
 	}

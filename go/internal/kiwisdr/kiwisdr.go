@@ -238,7 +238,8 @@ func (c *Client) Record(ctx context.Context, duration time.Duration) ([]int16, i
 			}
 			flags := body[0]
 			seq := binary.LittleEndian.Uint32(body[1:5])
-			smeter := int(binary.BigEndian.Uint16(body[5:7]))*10 - 127*10
+			smeter10 := int(binary.BigEndian.Uint16(body[5:7])) // raw is 10*(dBm+127)
+			smeter := smeter10 - 127*10
 			chunk := decodeSampleBlock(flags, body[7:], &c.adpcm)
 			if len(chunk.Samples) > 0 {
 				if rate == 12000 {

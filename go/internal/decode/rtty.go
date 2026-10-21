@@ -134,3 +134,44 @@ func ita2Frame(level []byte, over int) string {
 	}
 	return text
 }
+
+// RTTYDecodeAuto tries both mark/space polarities and returns the text of
+// the better-scoring decode. HF RTTY services disagree on which tone is
+// mark: amateur practice puts mark high, but the DWD weather service keys
+// F1B with mark as the lower tone, so a fixed convention silently decodes
+// inverted garbage on one of them.
+func RTTYDecodeAuto(samples []float64, rate int, markHz, spaceHz, baud float64) (text string, inverted bool) {
+	direct := RTTYDecode(samples, rate, markHz, spaceHz, baud)
+	swapped := RTTYDecode(samples, rate, spaceHz, markHz, baud)
+	if RTTYQuality(swapped) > RTTYQuality(direct) {
+		return swapped, true
+	}
+	return direct, false
+}
+
+// RTTYQuality scores decoded RTTY text for readability. Real teleprinter
+// traffic is mostly letters, digits, spaces and a small set of figures;
+// noise decodes into rare punctuation runs and control characters.
+func RTTYQuality(text string) float64 {
+	if len(text) == 0 {
+		return 0
+	}
+	good, bad, letters := 0, 0, 0
+	for _, r := range text {
+		switch {
+		case r >= 'A' && r <= 'Z' || r >= '0' && r <= '9':
+			good++
+			letters++
+		case r == ' ' || r == '\n' || r == '\r':
+			good++
+		case r == '.' || r == ',' || r == '-' || r == '/' || r == ':' || r == '(' || r == ')' || r == '=' || r == '+' || r == '?':
+			good++
+		default:
+			bad++
+		}
+	}
+	if letters < 4 {
+		return 0
+	}
+	return 100 * float64(good) / float64(good+bad)
+}

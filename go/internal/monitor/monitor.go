@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/decode"
+	"github.com/chaim12345/sdrstream/go/internal/verify"
 	"github.com/chaim12345/sdrstream/go/internal/voice"
 )
 
@@ -37,25 +38,26 @@ type Source interface {
 
 // Activity is one detected transmission.
 type Activity struct {
-	ID          int        `json:"id"`
-	Started     time.Time  `json:"started"`
-	Ended       *time.Time `json:"ended,omitempty"` // nil when the transmission was not recorded
-	FrequencyHz float64    `json:"frequency_hz"`
-	BandwidthHz float64    `json:"bandwidth_hz"`
-	LevelDB     float64    `json:"level_db"`
-	Kind        string     `json:"kind"`             // voice, data, cw, carrier, noise, unknown
-	Mode        string     `json:"mode,omitempty"`   // decoder or modulation that produced the detail
-	Detail      string     `json:"detail,omitempty"` // decoded payload or transcript
-	Source      string     `json:"source"`
-	DurationSec float64    `json:"duration_sec"`
-	AudioPath   string     `json:"audio_path,omitempty"`
+	ID                 int        `json:"id"`
+	Started            time.Time  `json:"started"`
+	Ended              *time.Time `json:"ended,omitempty"` // nil when the transmission was not recorded
+	FrequencyHz        float64    `json:"frequency_hz"`
+	BandwidthHz        float64    `json:"bandwidth_hz"`
+	LevelDB            float64    `json:"level_db"`
+	Kind               string     `json:"kind"`             // voice, data, cw, carrier, noise, unknown
+	Mode               string     `json:"mode,omitempty"`   // decoder or modulation that produced the detail
+	Detail             string     `json:"detail,omitempty"` // decoded payload or transcript
+	VerificationAnchor string     `json:"-"`                // expected callsign/phrase for the live quality gate
+	Label              string     `json:"label,omitempty"`
+	Source             string     `json:"source"`
+	DurationSec        float64    `json:"duration_sec"`
+	AudioPath          string     `json:"audio_path,omitempty"`
 }
 
 // Options configures a monitor.
 type Options struct {
 	Source Source
-	// Strategy is "sweep" (listen across the band) or "spectrum" (use the
-	// receiver's own FFT to find peaks).
+	// Strategy is sweep, spectrum, or broadcast (fixed-frequency voice).
 	Strategy string
 	// StartHz, EndHz and StepHz define the sweep range.
 	StartHz float64
@@ -78,12 +80,18 @@ type Options struct {
 	Voice bool
 	// VoiceOptions configures the speech backend.
 	VoiceOptions voice.Options
+	// MultimonBinary and DirewolfBinary opt in to local external decoders.
+	MultimonBinary string
+	DirewolfBinary string
 	// OutDir saves a WAV of every transmission.
 	OutDir string
 	// Name identifies the receiver in reports.
-	Name string
+	Name  string
+	Label string
 	// OnActivity is called for every new or updated activity.
 	OnActivity func(Activity)
+	// OnImage receives verified reconstructed images with their activity metadata.
+	OnImage func(Activity, []byte)
 	// Logf receives progress messages.
 	Logf func(format string, args ...interface{})
 }
@@ -189,6 +197,9 @@ func (m *Monitor) Run(ctx context.Context) error {
 	if m.opts.Strategy == "spectrum" {
 		return m.runSpectrum(ctx)
 	}
+	if m.opts.Strategy == "broadcast" {
+		return m.runBroadcast(ctx)
+	}
 	return m.runSweep(ctx)
 }
 
@@ -214,6 +225,24 @@ func (m *Monitor) worker(ctx context.Context) {
 // and the floor itself looks like a signal to a per-file classifier. The
 // second pass listens longer at the frequencies that stood out and decodes
 // them.
+// runBroadcast records one fixed-frequency broadcast clip at a time.
+func (m *Monitor) runBroadcast(ctx context.Context) error {
+	if m.opts.StartHz <= 0 {
+		return fmt.Errorf("monitor: broadcast strategy needs --start")
+	}
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		m.report(ctx, &candidate{frequency: m.opts.StartHz, firstSeen: time.Now()})
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(m.opts.Listen + 2*time.Second):
+		}
+	}
+}
+
 func (m *Monitor) runSweep(ctx context.Context) error {
 	start := m.opts.StartHz
 	end := m.opts.EndHz
@@ -374,6 +403,7 @@ func (m *Monitor) handleHit(ctx context.Context, frequency float64, hit decode.B
 		LevelDB:     hit.LevelDB,
 		Kind:        "unknown",
 		Source:      m.opts.Name,
+		Label:       m.opts.Label,
 	}
 	m.mu.Lock()
 	m.nextID++
@@ -493,25 +523,55 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 	if len(bins) < 8 || span <= 0 {
 		return nil
 	}
-	// The noise floor is local: a receiver's spectrum rolls off towards
-	// the edges of the profile, so one median for the whole band would
-	// make the edges look like traffic. Each bin is compared with the
-	// median of the bins around it.
-	const window = 24
-	binHz := span / float64(len(bins))
-	floors := make([]float64, len(bins))
-	for i := range bins {
-		low := i - window
+	// A noise-floor window must be wider than a real channel. With the
+	// old 24-bin radius, a 25 kHz FM channel filled the whole local median
+	// window at 125 Hz/bin and raised its own floor until it disappeared.
+	// Estimate a slowly varying local floor every 512 bins from a 2048-bin
+	// window, then interpolate between estimates. A lower quartile resists
+	// occupied channels while still tracking receiver roll-off across the
+	// profile. This keeps sorting work bounded instead of sorting per bin.
+	const floorWindow, floorStride = 2048, 512
+	type floorPoint struct {
+		bin   int
+		value float64
+	}
+	points := make([]floorPoint, 0, len(bins)/floorStride+2)
+	for center := 0; center < len(bins); center += floorStride {
+		low := center - floorWindow/2
 		if low < 0 {
 			low = 0
 		}
-		high := i + window
+		high := low + floorWindow
 		if high > len(bins) {
 			high = len(bins)
+			low = max(0, high-floorWindow)
 		}
-		around := append([]float64(nil), bins[low:high]...)
-		sort.Float64s(around)
-		floors[i] = around[len(around)/2]
+		window := append([]float64(nil), bins[low:high]...)
+		sort.Float64s(window)
+		points = append(points, floorPoint{bin: center, value: window[len(window)/4]})
+	}
+	if points[len(points)-1].bin != len(bins)-1 {
+		center := len(bins) - 1
+		low := max(0, center-floorWindow/2)
+		high := min(len(bins), low+floorWindow)
+		low = max(0, high-floorWindow)
+		window := append([]float64(nil), bins[low:high]...)
+		sort.Float64s(window)
+		points = append(points, floorPoint{bin: center, value: window[len(window)/4]})
+	}
+	binHz := span / float64(len(bins))
+	floors := make([]float64, len(bins))
+	point := 0
+	for i := range bins {
+		for point+1 < len(points)-1 && i > points[point+1].bin {
+			point++
+		}
+		left, right := points[point], points[min(point+1, len(points)-1)]
+		fraction := 0.0
+		if right.bin > left.bin {
+			fraction = float64(i-left.bin) / float64(right.bin-left.bin)
+		}
+		floors[i] = left.value + fraction*(right.value-left.value)
 	}
 	var peaks []peak
 	start := -1
@@ -625,6 +685,7 @@ func (m *Monitor) report(ctx context.Context, candidate *candidate) {
 		LevelDB:     candidate.levelDB,
 		Kind:        "unknown",
 		Source:      m.opts.Name,
+		Label:       m.opts.Label,
 	}
 	m.mu.Lock()
 	m.nextID++
@@ -661,7 +722,7 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 	activity := Activity{
 		ID: work.activityID, Started: time.Now(), FrequencyHz: work.frequency,
 		BandwidthHz: work.bandwidth, LevelDB: work.levelDB, Kind: "unknown",
-		Source: m.opts.Name,
+		Source: m.opts.Name, Label: m.opts.Label,
 	}
 	modes := work.modes
 	if len(modes) == 0 {
@@ -669,6 +730,7 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 	}
 	best := activity
 	found := false
+	var bestImage []byte
 	for _, mode := range modes {
 		samples, rate, err := m.opts.Source.Listen(ctx, work.frequency, mode, m.opts.Listen)
 		// The transmission ended when the receiver stopped hearing it,
@@ -684,6 +746,16 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 			continue
 		}
 		kind, modeName, detail := m.classify(ctx, samples, rate, work.bandwidth)
+		var imageData []byte
+		if kind == "sstv" && bestImage == nil {
+			// The decode is expensive; one frame per activity is enough.
+			imageData, _ = decode.SSTVImage(samples, rate)
+			if len(imageData) > 0 {
+				if err := verify.Live("sstv", "sstv", "", imageData); err != nil {
+					imageData = nil
+				}
+			}
+		}
 		// Mode is the modulation or decoder, never a verdict; when no
 		// decoder produced a name, the modulation that was listened to
 		// is the honest answer.
@@ -693,8 +765,11 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 		candidate := Activity{
 			ID: activity.ID, Started: activity.Started, Ended: &listenEnd,
 			FrequencyHz: work.frequency, BandwidthHz: work.bandwidth, LevelDB: work.levelDB,
-			Kind: kind, Mode: modeName, Detail: detail, Source: m.opts.Name,
+			Kind: kind, Mode: modeName, Detail: detail, Source: m.opts.Name, Label: m.opts.Label,
 			DurationSec: float64(len(samples)) / float64(rate),
+		}
+		if kind == "noise" || kind == "silence" || kind == "unknown" {
+			continue
 		}
 		if m.opts.OutDir != "" {
 			path := filepath.Join(m.opts.OutDir, fmt.Sprintf("activity-%03d-%d-%s.wav",
@@ -707,6 +782,7 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 		// classification stands, so the activity never stays "unknown".
 		if !found || (detail != "" && best.Detail == "") {
 			best = candidate
+			bestImage = imageData
 			found = true
 		}
 	}
@@ -714,11 +790,22 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 	for i := range m.activities {
 		if m.activities[i].ID == activity.ID {
 			activity.Started = m.activities[i].Started
+			if best.Kind == "noise" || best.Kind == "silence" || best.Kind == "unknown" {
+				// Do not flood the feed with detector false positives. Keep
+				// genuine decoded payloads and voice, not background noise.
+				m.activities = append(m.activities[:i], m.activities[i+1:]...)
+				break
+			}
 			m.activities[i] = best
 		}
 	}
 	m.mu.Unlock()
-	m.publish(best)
+	if best.Kind != "noise" && best.Kind != "silence" && best.Kind != "unknown" {
+		m.publish(best)
+		if best.Kind == "sstv" && len(bestImage) > 0 && m.opts.OnImage != nil && verify.Live(best.Kind, best.Mode, "", bestImage) == nil {
+			m.opts.OnImage(best, bestImage)
+		}
+	}
 }
 
 // publish hands an activity to the callback.
@@ -753,11 +840,13 @@ func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, ban
 		}
 		return "noise", "", "no signal above the noise floor"
 	}
-	if mode, detail, ok := m.decodeData(samples, rate, bandwidthHz); ok {
-		if mode == "morse" {
-			return "cw", mode, detail
+	if m.opts.Strategy != "broadcast" {
+		if mode, detail, ok := m.decodeData(ctx, samples, rate, bandwidthHz); ok {
+			if mode == "morse" {
+				return "cw", "cw", detail
+			}
+			return "data", mode, detail
 		}
-		return "data", mode, detail
 	}
 	if !modulated {
 		return "carrier", "", "steady signal, no modulation"
@@ -770,22 +859,33 @@ func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, ban
 	case "voice", "data", "cw":
 		segments := voice.SpeechActivity(samples, rate)
 		if len(segments) == 0 {
-			// No speech: transcribing would only make whisper guess.
-			return hit.Kind, "", "no speech detected"
+			m.opts.Logf("voice: signal present but no speech detected")
+			return hit.Kind, "", ""
 		}
 		if m.opts.Voice && voice.Available(m.opts.VoiceOptions) {
 			transcript, err := voice.Transcribe(ctx, samples, rate, m.opts.VoiceOptions)
 			if err == nil && transcript.Text != "" {
-				return "voice", "speech", transcript.Text
+				verdict := voice.GuardTranscript(samples, rate, transcript.Text)
+				if verdict.Rejected {
+					m.opts.Logf("voice: transcript dropped: %s", verdict.Reason)
+					return "voice", "speech", ""
+				}
+				return "voice", "speech", verdict.Text
 			}
 		}
-		return "voice", "speech", fmt.Sprintf("%d speech segment(s), %.1f s",
-			len(segments), segments[0].End-segments[0].Start)
+		m.opts.Logf("voice: no backend or empty transcript; %d speech segment(s), %.1f s", len(segments), segments[0].End-segments[0].Start)
+		return "voice", "speech", ""
 	case "silence":
 		return "silence", "", ""
 	default:
 		return hit.Kind, "", ""
 	}
+}
+
+// ClassifyForScan exposes the monitor's existing receive-only classifiers to the bounded multi-station scanner.
+func (m *Monitor) ClassifyForScan(ctx context.Context, samples []float64, rate int, bandwidthHz float64) (kind, mode, detail string, ok bool) {
+	kind, mode, detail = m.classify(ctx, samples, rate, bandwidthHz)
+	return kind, mode, detail, detail != "" || kind == "voice" || kind == "sstv"
 }
 
 // decodeData tries every data decoder and returns the first result.
@@ -798,22 +898,54 @@ func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, ban
 // letting the speech detector and whisper look at it. A POCSAG pager
 // channel is 12.5 kHz wide and packet data is a few kHz, so those are not
 // gated.
-func (m *Monitor) decodeData(samples []float64, rate int, bandwidthHz float64) (mode, detail string, ok bool) {
+func (m *Monitor) decodeData(ctx context.Context, samples []float64, rate int, bandwidthHz float64) (mode, detail string, ok bool) {
 	narrowChannel := bandwidthHz <= 0 || bandwidthHz <= 4000
 	// APRS and Morse need a file, so the samples go to a temporary WAV.
 	path, err := writeTempWAV(samples, rate)
 	if err == nil {
 		defer os.Remove(path)
-		if packets, err := decode.AFSKFrames(path); err == nil && len(packets) > 0 {
+		packets, _ := decode.AFSKFrames(path)
+		if len(packets) > 0 {
 			lines := make([]string, 0, len(packets))
 			for _, packet := range packets {
 				lines = append(lines, packet.String())
 			}
 			return "aprs", strings.Join(lines, " | "), true
 		}
+		if m.opts.MultimonBinary != "" && ctx.Err() == nil {
+			lines, err := decode.MultimonDecodeWithBinary(ctx, m.opts.MultimonBinary, path, "AFSK1200")
+			if err == nil && len(lines) > 0 {
+				valid := make([]string, 0, len(lines))
+				for _, line := range lines {
+					if strings.Contains(line, ">") && strings.Contains(line, ":") {
+						valid = append(valid, line)
+					}
+				}
+				if len(valid) > 0 {
+					return "aprs", strings.Join(valid, " | "), true
+				}
+			}
+		}
+		if m.opts.DirewolfBinary != "" && ctx.Err() == nil {
+			lines, err := decode.DirewolfDecode(ctx, m.opts.DirewolfBinary, samples, rate)
+			if err == nil && len(lines) > 0 {
+				return "aprs", strings.Join(lines, " | "), true
+			}
+		}
 		if narrowChannel {
 			if result, err := decode.MorseDecode(path); err == nil && result.Text != "" {
 				return "morse", result.Text, true
+			}
+			if m.opts.MultimonBinary != "" && ctx.Err() == nil {
+				lines, err := decode.MultimonDecodeWithBinary(ctx, m.opts.MultimonBinary, path, "MORSE_CW")
+				if err == nil {
+					for _, line := range lines {
+						text := strings.TrimSpace(line)
+						if validExternalCW(text) {
+							return "morse", text, true
+						}
+					}
+				}
 			}
 		}
 	}
@@ -854,9 +986,8 @@ func (m *Monitor) decodeData(samples []float64, rate int, bandwidthHz float64) (
 		if text := decode.RTTYDecode(samples, rate, 0, 0, 0); text != "" {
 			return "rtty", text, true
 		}
-		if headers := decode.SSTVDetect(samples, rate); len(headers) > 0 {
-			return "sstv", headers[0].Mode, true
-		}
+		// SSTV is intentionally disabled in live classification until the
+		// independent per-line sync decoder passes real-frame review.
 	}
 	return "", "", false
 }
@@ -881,4 +1012,20 @@ func Kinds() []string {
 	kinds := []string{"voice", "data", "cw", "carrier", "noise", "silence", "unknown"}
 	sort.Strings(kinds)
 	return kinds
+}
+
+func validExternalCW(text string) bool {
+	if len(text) < 5 || strings.Contains(strings.ToUpper(text), "ERR") || strings.ContainsAny(text, "<>_") {
+		return false
+	}
+	letters, words := 0, 0
+	for _, r := range text {
+		if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			letters++
+		}
+		if r == ' ' {
+			words++
+		}
+	}
+	return letters >= 5 && words >= 1
 }
