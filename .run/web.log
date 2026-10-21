@@ -1,3 +1,0 @@
-2026/10/21 06:35:12 web UI on http://127.0.0.1:8000
-2026/10/21 06:35:49 web: gallery observations: Get "https://network.satnogs.org/api/observations/?format=json&start=2026-10-14T12%3A35%3A12Z&end=2026-10-21T12%3A35%3A12Z&limit=25": net/http: TLS handshake timeout
-2026/10/21 07:07:26 web: gallery observations: Get "https://network.satnogs.org/api/observations/?format=json&start=2026-10-14T13%3A05%3A49Z&end=2026-10-21T13%3A05%3A49Z&limit=25": dial tcp 94.130.162.100:443: i/o timeout
