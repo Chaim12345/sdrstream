@@ -279,6 +279,36 @@ async def _fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _frames(args: argparse.Namespace) -> int:
+    """Fetch the raw telemetry frames SatNOGS stations submitted for a satellite."""
+    sat = by_name(args.satellite)
+    start = None
+    if args.hours is not None:
+        start = datetime.now(timezone.utc) - timedelta(hours=args.hours)
+    frames = satnogs.telemetry_frames(
+        sat.norad_id, start=start, limit=args.limit, token=args.token)
+    if not frames:
+        print("no telemetry frames found for %s (NORAD %d)"
+              % (sat.name, sat.norad_id))
+        return 1
+    print("%d telemetry frames for %s (NORAD %d):"
+          % (len(frames), sat.name, sat.norad_id))
+    for frame in frames:
+        print("  " + frame.summary())
+    if args.save:
+        out_dir = Path(args.save)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for frame in frames:
+            payload = frame.frame or ""
+            target = out_dir / ("frame_%d.bin" % frame.id)
+            try:  # the DB stores frames as hex text
+                target.write_bytes(bytes.fromhex(payload))
+            except ValueError:
+                target.write_text(payload)
+        print("wrote %d frame file(s) to %s" % (len(frames), out_dir))
+    return 0
+
+
 async def _discover(args: argparse.Namespace) -> int:
     """Find OpenWebRX receivers that can hear a satellite downlink."""
     frequency = args.frequency
@@ -383,6 +413,18 @@ def build_parser() -> argparse.ArgumentParser:
     obs.add_argument("--limit", type=int, default=15,
                      help="how many observations to show (default: 15)")
 
+    frm = sub.add_parser("frames",
+                        help="fetch raw SatNOGS telemetry frames (needs a token)")
+    frm.add_argument("satellite", help="satellite name, e.g. ISS")
+    frm.add_argument("--limit", type=int, default=50,
+                     help="how many frames to fetch (default: 50)")
+    frm.add_argument("--hours", type=float, default=None,
+                     help="only frames from the last N hours")
+    frm.add_argument("--save", default=None,
+                     help="write frames to this directory as one file each")
+    frm.add_argument("--token", default=None,
+                     help="SatNOGS API token (or set SATNOGS_TOKEN)")
+
     sats = sub.add_parser("satellites", help="list amateur satellites")
     sats.add_argument("satellite", nargs="?", default=None,
                       help="show details and receivers for one satellite")
@@ -449,6 +491,8 @@ def main(argv: List[str] | None = None) -> int:
         coro = _satellites(args)
     elif args.command == "observations":
         coro = _observations(args)
+    elif args.command == "frames":
+        coro = _frames(args)
     elif args.command == "fetch":
         coro = _fetch(args)
     elif args.command == "passes":

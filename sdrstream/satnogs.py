@@ -275,3 +275,150 @@ def observed_frequencies(norad_id: int, **kwargs) -> Dict[int, int]:
         if observation.frequency_hz:
             counts[observation.frequency_hz] = counts.get(observation.frequency_hz, 0) + 1
     return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
+
+@dataclass
+class TelemetryFrame:
+    """One raw frame a SatNOGS station submitted to the DB.
+
+    ``frame`` is the payload as the DB stores it (typically a hex string),
+    ``decoded`` the decoder's structured output when the frame was decoded.
+    """
+
+    id: int
+    sat_id: str
+    norad_id: int
+    transmitter: str
+    frame: Optional[str] = None
+    decoded: Optional[str] = None
+    observation_id: Optional[int] = None
+    station_id: Optional[int] = None
+    timestamp: Optional[datetime] = None
+
+    def summary(self) -> str:
+        when = self.timestamp.strftime("%Y-%m-%d %H:%M:%S") if self.timestamp else "?"
+        size = len(self.frame or "") // 2 if self.frame else 0
+        return ("frame %-8d NORAD %-6d obs %-9d st %-5d %s  %3d bytes%s"
+                % (self.id, self.norad_id, self.observation_id or 0,
+                   self.station_id or 0, when, size,
+                   "  (decoded)" if self.decoded else ""))
+
+
+def api_token(explicit: Optional[str] = None) -> Optional[str]:
+    """The SatNOGS API token: an explicit value, else ``SATNOGS_TOKEN``.
+
+    The token is never written to the cache or logs; it is only sent as a
+    request header. Generate one from your profile page on satnogs.org.
+    """
+    if explicit:
+        return explicit
+    return os.environ.get("SATNOGS_TOKEN") or None
+
+
+def telemetry_frames(
+    norad_id: Optional[int] = None,
+    *,
+    satellite: Optional[str] = None,
+    transmitter: Optional[str] = None,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    limit: int = 100,
+    token: Optional[str] = None,
+    timeout: float = 30.0,
+) -> List[TelemetryFrame]:
+    """Fetch submitted telemetry frames from the SatNOGS DB.
+
+    Unlike the observation endpoints, ``/api/telemetry/`` requires an account
+    token (anonymous requests are rejected with an authentication error), so
+    this needs ``token`` or ``SATNOGS_TOKEN`` in the environment. The frames
+    are the community's raw captures — the deepest pool of amateur-satellite
+    telemetry that exists — filtered server-side by satellite, transmitter or
+    observation window. Results are newest first.
+
+    The endpoint is cursor-paginated; *limit* pages through it up to that
+    many frames (capped at 500 to stay polite).
+    """
+    resolved = api_token(token)
+    if not resolved:
+        raise RuntimeError(
+            "the SatNOGS telemetry endpoint needs an API token: pass one "
+            "or set SATNOGS_TOKEN (profile page on satnogs.org)"
+        )
+    query: Dict[str, Any] = {"format": "json"}
+    if norad_id is not None:
+        # The DB keys frames by its own UUID; look it up from the satellite
+        # record so the NORAD id the rest of this package uses still works.
+        found = _satellite_by_norad(norad_id, timeout=timeout)
+        if found is None:
+            return []
+        query["satellite"] = found
+    if satellite:
+        query["satellite"] = satellite
+    if transmitter:
+        query["transmitter"] = transmitter
+    if start is not None:
+        query["start"] = _api_time(start)
+    if end is not None:
+        query["end"] = _api_time(end)
+
+    frames: List[TelemetryFrame] = []
+    cursor: Optional[str] = None
+    while len(frames) < min(limit, 500):
+        page_query = dict(query)
+        if cursor:
+            page_query["cursor"] = cursor
+        request = urllib.request.Request(
+            "%s/telemetry/?%s" % (DB_API, urllib.parse.urlencode(page_query)),
+            headers={
+                "User-Agent": USER_AGENT,
+                "Authorization": "Token %s" % resolved,
+            },
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+        if isinstance(payload, dict):
+            items = payload.get("results", [])
+            cursor = payload.get("next") or None
+        else:  # plain list when unpaginated
+            items = payload
+            cursor = None
+        frames.extend(_telemetry_frame(item) for item in items)
+        if not cursor:
+            break
+    return frames[:max(limit, 0)]
+
+
+def _api_time(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _satellite_by_norad(norad_id: int, timeout: float = 30.0) -> Optional[str]:
+    """The DB's internal UUID for a NORAD catalog number."""
+    request = urllib.request.Request(
+        "%s/satellites/?norad_cat_id=%d&format=json" % (DB_API, norad_id),
+        headers={"User-Agent": USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            found = json.loads(response.read().decode("utf-8", "replace"))
+    except (urllib.error.URLError, ValueError):
+        return None
+    if isinstance(found, list) and found:
+        return found[0].get("sat_id")
+    return None
+
+
+def _telemetry_frame(raw: Dict[str, Any]) -> TelemetryFrame:
+    return TelemetryFrame(
+        id=raw.get("id", 0),
+        sat_id=raw.get("sat_id") or "",
+        norad_id=raw.get("norad_cat_id", 0) or 0,
+        transmitter=raw.get("transmitter") or "",
+        frame=raw.get("frame"),
+        decoded=raw.get("decoded"),
+        observation_id=raw.get("observation_id"),
+        station_id=raw.get("station_id"),
+        timestamp=_parse_time(raw.get("timestamp") or raw.get("created")),
+    )
