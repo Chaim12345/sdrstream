@@ -92,6 +92,7 @@ type job struct {
 	bandwidth  float64
 	levelDB    float64
 	kind       string
+	modes      []string
 	activityID int
 }
 
@@ -356,18 +357,14 @@ func median(values []float64) float64 {
 	return sorted[len(sorted)/2]
 }
 
-// handleHit records a transmission found by the sweep: it listens longer,
-// classifies it and decodes or transcribes it.
+// handleHit records a transmission found by the sweep and hands it to the
+// worker, which listens to it properly and decides what it is.
 func (m *Monitor) handleHit(ctx context.Context, frequency float64, hit decode.BandHit) {
-	listen := m.opts.Listen
-	if listen <= 0 {
-		listen = 6 * time.Second
-	}
 	activity := Activity{
 		Started:     time.Now(),
 		FrequencyHz: frequency,
 		LevelDB:     hit.LevelDB,
-		Kind:        hit.Kind,
+		Kind:        "unknown",
 		Source:      m.opts.Name,
 	}
 	m.mu.Lock()
@@ -378,48 +375,23 @@ func (m *Monitor) handleHit(ctx context.Context, frequency float64, hit decode.B
 		m.activities = m.activities[len(m.activities)-200:]
 	}
 	m.mu.Unlock()
-	m.publish(activity)
 
 	// A wideband signal is FM voice, a narrow one is a sideband or a
-	// beacon; try the matching modulation first and keep whichever
-	// produces the better result.
+	// beacon; try both and keep whichever gives the better answer.
 	modes := []string{"usb", "fm"}
 	if m.opts.Mode != "auto" && m.opts.Mode != "" {
 		modes = []string{m.opts.Mode}
-	} else if hit.Kind == "voice" {
-		modes = []string{"fm", "usb"}
 	}
-	best := activity
-	for _, mode := range modes {
-		samples, rate, err := m.opts.Source.Listen(ctx, frequency, mode, listen)
-		if err != nil || len(samples) == 0 {
-			continue
-		}
-		kind, modeName, detail := m.classify(ctx, samples, rate, 0)
-		candidate := Activity{
-			ID: activity.ID, Started: activity.Started, FrequencyHz: frequency,
-			LevelDB: hit.LevelDB, Kind: kind, Mode: modeName, Detail: detail,
-			Source: m.opts.Name, DurationSec: float64(len(samples)) / float64(rate),
-		}
-		if detail != "" && (best.Detail == "" || len(detail) > len(best.Detail)) {
-			best = candidate
-		}
-		if m.opts.OutDir != "" {
-			path := filepath.Join(m.opts.OutDir, fmt.Sprintf("activity-%03d-%d-%s.wav",
-				activity.ID, int(frequency), mode))
-			if err := voice.WriteWAV(path, samples, rate); err == nil {
-				best.AudioPath = path
-			}
-		}
+	select {
+	case m.jobs <- job{
+		frequency:  frequency,
+		levelDB:    hit.LevelDB,
+		modes:      modes,
+		activityID: activity.ID,
+	}:
+	default:
+		m.publish(activity)
 	}
-	m.mu.Lock()
-	for i := range m.activities {
-		if m.activities[i].ID == activity.ID {
-			m.activities[i] = best
-		}
-	}
-	m.mu.Unlock()
-	m.publish(best)
 }
 
 // runSpectrum watches the receiver's own FFT and reports the peaks.
@@ -619,6 +591,7 @@ func (m *Monitor) report(ctx context.Context, candidate *candidate) {
 		frequency:  candidate.frequency,
 		bandwidth:  candidate.bandwidth,
 		levelDB:    candidate.levelDB,
+		modes:      []string{ChooseMode(m.opts.Mode, candidate.bandwidth)},
 		activityID: activity.ID,
 	}:
 	default:
@@ -634,38 +607,52 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 		BandwidthHz: work.bandwidth, LevelDB: work.levelDB, Kind: "unknown",
 		Source: m.opts.Name,
 	}
-	samples, rate, err := m.opts.Source.Listen(ctx, work.frequency,
-		ChooseMode(m.opts.Mode, work.bandwidth), m.opts.Listen)
-	if err != nil || len(samples) == 0 {
-		if err != nil {
-			m.opts.Logf("listen at %.4f MHz failed: %v", work.frequency/1e6, err)
-		} else {
-			m.opts.Logf("listen at %.4f MHz returned no audio", work.frequency/1e6)
-		}
-		m.publish(activity)
-		return
+	modes := work.modes
+	if len(modes) == 0 {
+		modes = []string{m.surveyMode()}
 	}
-	kind, mode, detail := m.classify(ctx, samples, rate, work.bandwidth)
-	activity.Kind = kind
-	activity.Mode = mode
-	activity.Detail = detail
-	activity.DurationSec = float64(len(samples)) / float64(rate)
-	if m.opts.OutDir != "" {
-		path := filepath.Join(m.opts.OutDir, fmt.Sprintf("activity-%03d-%d-%s.wav",
-			activity.ID, int(activity.FrequencyHz), mode))
-		if err := voice.WriteWAV(path, samples, rate); err == nil {
-			activity.AudioPath = path
+	best := activity
+	found := false
+	for _, mode := range modes {
+		samples, rate, err := m.opts.Source.Listen(ctx, work.frequency, mode, m.opts.Listen)
+		if err != nil || len(samples) == 0 {
+			if err != nil {
+				m.opts.Logf("listen at %.4f MHz failed: %v", work.frequency/1e6, err)
+			} else {
+				m.opts.Logf("listen at %.4f MHz returned no audio", work.frequency/1e6)
+			}
+			continue
+		}
+		kind, modeName, detail := m.classify(ctx, samples, rate, work.bandwidth)
+		candidate := Activity{
+			ID: activity.ID, Started: activity.Started, FrequencyHz: work.frequency,
+			BandwidthHz: work.bandwidth, LevelDB: work.levelDB, Kind: kind, Mode: modeName,
+			Detail: detail, Source: m.opts.Name,
+			DurationSec: float64(len(samples)) / float64(rate),
+		}
+		if m.opts.OutDir != "" {
+			path := filepath.Join(m.opts.OutDir, fmt.Sprintf("activity-%03d-%d-%s.wav",
+				activity.ID, int(work.frequency), modeName))
+			if err := voice.WriteWAV(path, samples, rate); err == nil {
+				candidate.AudioPath = path
+			}
+		}
+		// A verdict with content beats one without; otherwise the first
+		// classification stands, so the activity never stays "unknown".
+		if !found || (detail != "" && best.Detail == "") {
+			best = candidate
+			found = true
 		}
 	}
 	m.mu.Lock()
 	for i := range m.activities {
 		if m.activities[i].ID == activity.ID {
 			activity.Started = m.activities[i].Started
-			m.activities[i] = activity
+			m.activities[i] = best
 		}
 	}
 	m.mu.Unlock()
-	m.publish(activity)
+	m.publish(best)
 }
 
 // publish hands an activity to the callback.
