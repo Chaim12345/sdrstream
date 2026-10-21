@@ -748,6 +748,23 @@ func cmdRelays(args []string) error {
 
 // cmdMonitor watches a receiver for any traffic, not just satellites, and
 // decodes or transcribes whatever it finds.
+// monitorVoiceOptions builds the speech options for the monitor, applying a
+// built-in radio phraseology prompt when the caller does not supply one: the
+// jargon is the part whisper gets wrong on its own.
+func monitorVoiceOptions(language string, threads, beam int, prompt string) voice.Options {
+	if prompt == "" {
+		prompt = "Radio traffic. Callsign, over, roger, copy, QSO, CQ, frequency, signal report, antenna, transponder, runway, tower, ground, approach, contact, squawk, wind, heading, cleared."
+	}
+	return voice.Options{
+		Binary:   os.Getenv("SDRSTREAM_WHISPER"),
+		Model:    os.Getenv("SDRSTREAM_WHISPER_MODEL"),
+		Language: language,
+		Threads:  threads,
+		BeamSize: beam,
+		Prompt:   prompt,
+	}
+}
+
 func cmdMonitor(args []string) error {
 	fs := flag.NewFlagSet("monitor", flag.ExitOnError)
 	server := fs.String("server", "", "receiver URL")
@@ -762,6 +779,10 @@ func cmdMonitor(args []string) error {
 	listen := fs.Duration("listen", 8*time.Second, "how much audio to record per transmission (0 = none)")
 	mode := fs.String("mode", "auto", "modulation used when listening (auto picks fm or usb)")
 	voiceOn := fs.Bool("voice", true, "transcribe voice traffic")
+	voiceLang := fs.String("voice-lang", "auto", "language hint for speech recognition (auto detects)")
+	voiceThreads := fs.Int("voice-threads", 0, "threads for whisper.cpp (0 = let whisper decide)")
+	voiceBeam := fs.Int("voice-beam", 5, "beam-search width for whisper.cpp (1 = greedy)")
+	voicePrompt := fs.String("voice-prompt", "", "domain hint for whisper.cpp (radio phraseology, callsigns); empty = built-in radio prompt")
 	out := fs.String("out", "", "directory to save the recorded transmissions")
 	minutes := fs.Float64("minutes", 0, "stop after this many minutes (0 = run until interrupted)")
 	fs.Parse(args)
@@ -789,7 +810,7 @@ func cmdMonitor(args []string) error {
 		Listen:       *listen,
 		Mode:         *mode,
 		Voice:        *voiceOn,
-		VoiceOptions: voice.DefaultOptions(),
+		VoiceOptions: monitorVoiceOptions(*voiceLang, *voiceThreads, *voiceBeam, *voicePrompt),
 		OutDir:       *out,
 		Name:         *server,
 		Logf:         func(format string, args ...interface{}) { fmt.Printf(format+"\n", args...) },
@@ -816,7 +837,7 @@ func cmdMonitor(args []string) error {
 	}
 	fmt.Printf("monitoring %s (%s); spectrum threshold %.0f dB, listen %s, voice %v\n",
 		*server, *kind, *threshold, *listen, *voiceOn)
-	if !voice.Available(voice.DefaultOptions()) {
+	if !voice.Available(monitorVoiceOptions(*voiceLang, *voiceThreads, *voiceBeam, *voicePrompt)) {
 		fmt.Println("note: no speech backend found; voice traffic is reported but not transcribed")
 	}
 	if *minutes > 0 {
@@ -1334,6 +1355,10 @@ func cmdWeb(args []string) error {
 	monitorThreshold := fs.Float64("monitor-threshold", 10, "monitor threshold in dB above the noise floor")
 	monitorListen := fs.Duration("monitor-listen", 8*time.Second, "audio to record per transmission")
 	monitorVoice := fs.Bool("monitor-voice", true, "transcribe voice traffic")
+	monitorVoiceLang := fs.String("monitor-voice-lang", "auto", "language hint for speech recognition")
+	monitorVoiceThreads := fs.Int("monitor-voice-threads", 0, "threads for whisper.cpp")
+	monitorVoiceBeam := fs.Int("monitor-voice-beam", 5, "beam-search width for whisper.cpp")
+	monitorVoicePrompt := fs.String("monitor-voice-prompt", "", "domain hint for whisper.cpp")
 	monitorOut := fs.String("monitor-out", "", "directory to save the recorded transmissions")
 	fs.Parse(args)
 	server := web.New(*capturesDir, *galleryDir)
@@ -1353,7 +1378,7 @@ func cmdWeb(args []string) error {
 			ThresholdDB:  *monitorThreshold,
 			Listen:       *monitorListen,
 			Voice:        *monitorVoice,
-			VoiceOptions: voice.DefaultOptions(),
+			VoiceOptions: monitorVoiceOptions(*monitorVoiceLang, *monitorVoiceThreads, *monitorVoiceBeam, *monitorVoicePrompt),
 			OutDir:       *monitorOut,
 			Name:         *monitorServer,
 			Logf:         func(format string, args ...interface{}) { log.Printf("monitor: "+format, args...) },

@@ -81,6 +81,8 @@ const indexPage = `<!DOCTYPE html>
   .badge.voice { color: var(--voice); border-color: #1e3a8a; }
   .badge.data { color: var(--data); border-color: #4c1d95; }
   .badge.cw, .badge.carrier { color: var(--warn); border-color: #78350f; }
+  .badge.noise { color: var(--muted); border-color: var(--line); }
+  .badge.silence { color: var(--muted); border-color: var(--line); opacity: .6; }
   #spectrum { width: 100%; max-width: 100%; height: 260px; display: block; border-radius: 8px; background: #06090f; border: 1px solid var(--line); }
   .axis { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; margin-top: 6px; }
   .feed { display: flex; flex-direction: column; gap: 10px; max-height: 520px; overflow-y: auto; }
