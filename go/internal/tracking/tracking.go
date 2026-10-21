@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/akhenakh/sgp4"
+	"github.com/chaim12345/sdrstream/go/internal/tle"
 )
 
 // Speed of light in m/s.
@@ -210,3 +211,29 @@ func (tr *Tracker) FindPasses(lat, lon float64, start time.Time, hours, minEleva
 
 // ForTLE gives callers direct access to the parsed TLE, for Doppler sweeps.
 func (tr *Tracker) ForTLE() *sgp4.TLE { return tr.tle }
+
+// FromGPText builds a tracker from General-Perturbations records, matching
+// name case-insensitively. GP records are the preferred element source:
+// since the NORAD catalog passed 99,999, objects with six-digit catalog
+// numbers are published only in the GP formats, never as TLE text.
+func FromGPText(text, name string) (*Tracker, error) {
+	normalized, err := tle.NormalizeGPJSON(text)
+	if err != nil {
+		return nil, fmt.Errorf("parsing GP records: %w", err)
+	}
+	records, err := sgp4.ParseOMMs([]byte(normalized))
+	if err != nil {
+		return nil, fmt.Errorf("parsing GP records: %w", err)
+	}
+	want := strings.ToUpper(strings.TrimSpace(name))
+	for i := range records {
+		if strings.Contains(strings.ToUpper(records[i].ObjectName), want) {
+			tle, err := records[i].ToTLE()
+			if err != nil {
+				return nil, err
+			}
+			return &Tracker{tle: tle}, nil
+		}
+	}
+	return nil, fmt.Errorf("no GP record found for %q", name)
+}

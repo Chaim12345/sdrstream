@@ -279,6 +279,158 @@ async def _fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _frames(args: argparse.Namespace) -> int:
+    """Fetch the raw telemetry frames SatNOGS stations submitted for a satellite."""
+    sat = by_name(args.satellite)
+    start = None
+    if args.hours is not None:
+        start = datetime.now(timezone.utc) - timedelta(hours=args.hours)
+    frames = satnogs.telemetry_frames(
+        sat.norad_id, start=start, limit=args.limit, token=args.token)
+    if not frames:
+        print("no telemetry frames found for %s (NORAD %d)"
+              % (sat.name, sat.norad_id))
+        return 1
+    print("%d telemetry frames for %s (NORAD %d):"
+          % (len(frames), sat.name, sat.norad_id))
+    for frame in frames:
+        print("  " + frame.summary())
+    if args.save:
+        out_dir = Path(args.save)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for frame in frames:
+            payload = frame.frame or ""
+            target = out_dir / ("frame_%d.bin" % frame.id)
+            try:  # the DB stores frames as hex text
+                target.write_bytes(bytes.fromhex(payload))
+            except ValueError:
+                target.write_text(payload)
+        print("wrote %d frame file(s) to %s" % (len(frames), out_dir))
+    return 0
+
+
+async def _schedule(args: argparse.Namespace) -> int:
+    """Manage and run the automatic pass-recording scheduler."""
+    from .schedule import DEFAULT_STORE, Scheduler
+
+    scheduler = Scheduler(DEFAULT_STORE)
+    if args.add:
+        job = scheduler.add(args.add, output_dir=args.dir,
+                            min_elevation=args.min_elevation)
+        print("following %s (passes above %.0f deg, saving to %s)"
+              % (job.satellite, job.min_elevation, job.output_dir))
+    if args.remove:
+        print("removed" if scheduler.remove(args.remove)
+              else "no job for %s" % args.remove)
+    if args.list:
+        jobs = scheduler.jobs()
+        if not jobs:
+            print("no scheduled satellites; use --add SAT")
+        for job in jobs:
+            print("  %-16s el >%-3.0f deg  next %2.0f h  -> %s (%d passes done)"
+                  % (job.satellite, job.min_elevation,
+                     job.lookahead_hours, job.output_dir, len(job.done)))
+    if args.once or args.run:
+        if not scheduler.jobs():
+            print("nothing scheduled; use --add SAT first")
+            return 1
+        if args.run:
+            scheduler.run(poll_seconds=args.poll, on_event=print)
+        else:
+            recorded = scheduler.run_once(on_event=print)
+            print("recorded %d pass(es)" % recorded)
+    if not (args.add or args.remove or args.list or args.once or args.run):
+        print("nothing to do; use --add SAT, --list, --once or --run")
+    return 0
+
+
+async def _catalogue(args: argparse.Namespace) -> int:
+    """Show the receiver catalogue, optionally refreshing it first."""
+    if args.refresh:
+        count = catalogue.refresh()
+        print("refreshed the catalogue: %d receivers" % count)
+    else:
+        print("%d bundled receivers (use --refresh for the live list)"
+              % len(catalogue.RECEIVERS))
+    receivers = (catalogue.for_band(args.band) if args.band
+                 else sorted(catalogue.RECEIVERS.values(),
+                             key=lambda r: r.url))
+    for receiver in receivers:
+        tags = ",".join(receiver.satellite_bands) or "-"
+        print("  %-45s %-8s %7.3f, %7.3f  %s"
+              % (receiver.url, receiver.kind,
+                 receiver.latitude, receiver.longitude, tags))
+    return 0
+
+
+async def _kiwisdr(args: argparse.Namespace) -> int:
+    """List public KiwiSDR receivers, honoring each operator's API policy."""
+    from . import kiwisdr_directory
+
+    receivers = kiwisdr_directory.discover()
+    if not args.all:
+        receivers = kiwisdr_directory.api_permitted(receivers)
+    if args.frequency is not None:
+        receivers = kiwisdr_directory.for_frequency(args.frequency, receivers)
+    print("%d public KiwiSDR receiver(s)%s:"
+          % (len(receivers), "" if args.all else " allowing API clients"))
+    for receiver in receivers[:args.limit]:
+        where = ("%.2f, %.2f" % (receiver.latitude, receiver.longitude)
+                 if receiver.latitude is not None else
+                 (receiver.grid or receiver.location or "?")[:24])
+        low, high = receiver.bands[0] if receiver.bands else (0, 0)
+        print("  %-38s %5d/%d ch  %5.1f-%5.1f MHz  %s"
+              % (receiver.url[:38], receiver.users, receiver.users_max,
+                 low / 1e6, high / 1e6, where))
+    return 0
+
+
+async def _transmitters(args: argparse.Namespace) -> int:
+    """List the transmitters SatNOGS knows for a satellite."""
+    from . import satnogs
+
+    sat = by_name(args.satellite)
+    records = satnogs.transmitter(sat.norad_id)
+    if not args.all:
+        records = [r for r in records if r.get("alive")]
+    print("%d transmitter(s) for %s (NORAD %d)%s:"
+          % (len(records), sat.name, sat.norad_id,
+             "" if args.all else ", alive only"))
+    for record in records:
+        downlink = record.get("downlink_low")
+        uplink = record.get("uplink_low")
+        baud = record.get("baud")
+        print("  %-28s %-8s  down %8.4f MHz%s%s"
+              % ((record.get("description") or "?")[:28],
+                 record.get("mode") or "-",
+                 (downlink or 0) / 1e6,
+                 "  up %.4f MHz" % (uplink / 1e6) if uplink else "",
+                 "  %d baud" % baud if baud else ""))
+    return 0
+
+
+async def _spacewx(args: argparse.Namespace) -> int:
+    """Show the current space weather from NOAA SWPC."""
+    from . import spacewx
+
+    print(spacewx.space_weather().summary())
+    return 0
+
+
+async def _aprs(args: argparse.Namespace) -> int:
+    """Collect live packets from the APRS-IS backbone."""
+    from . import aprs
+
+    print("listening on APRS-IS%s..."
+          % (" (filter %s)" % args.filter if args.filter else ""))
+    packets = aprs.listen(callsign=args.callsign, filter_spec=args.filter,
+                         max_packets=args.limit, seconds=args.seconds)
+    print("%d packet(s):" % len(packets))
+    for packet in packets:
+        print("  " + packet.summary())
+    return 0
+
+
 async def _discover(args: argparse.Namespace) -> int:
     """Find OpenWebRX receivers that can hear a satellite downlink."""
     frequency = args.frequency
@@ -383,6 +535,71 @@ def build_parser() -> argparse.ArgumentParser:
     obs.add_argument("--limit", type=int, default=15,
                      help="how many observations to show (default: 15)")
 
+    frm = sub.add_parser("frames",
+                        help="fetch raw SatNOGS telemetry frames (needs a token)")
+    frm.add_argument("satellite", help="satellite name, e.g. ISS")
+    frm.add_argument("--limit", type=int, default=50,
+                     help="how many frames to fetch (default: 50)")
+    frm.add_argument("--hours", type=float, default=None,
+                     help="only frames from the last N hours")
+    frm.add_argument("--save", default=None,
+                     help="write frames to this directory as one file each")
+    frm.add_argument("--token", default=None,
+                     help="SatNOGS API token (or set SATNOGS_TOKEN)")
+
+    sch = sub.add_parser("schedule",
+                         help="record satellite passes automatically")
+    sch.add_argument("--add", metavar="SAT",
+                    help="follow a satellite and record its passes")
+    sch.add_argument("--remove", metavar="SAT", help="stop following a satellite")
+    sch.add_argument("--list", action="store_true", help="list scheduled jobs")
+    sch.add_argument("--once", action="store_true",
+                    help="check for due passes, record them, exit")
+    sch.add_argument("--run", action="store_true",
+                    help="keep checking and recording until stopped")
+    sch.add_argument("--dir", default="captures",
+                    help="directory for recordings (default: captures)")
+    sch.add_argument("--min-elevation", type=float, default=10.0,
+                    help="minimum pass elevation to record (default: 10)")
+    sch.add_argument("--poll", type=float, default=60.0,
+                    help="seconds between checks in --run (default: 60)")
+
+    cat = sub.add_parser("catalogue",
+                         help="show or refresh the receiver catalogue")
+    cat.add_argument("--refresh", action="store_true",
+                     help="reload receivers from the live WebSDR list")
+    cat.add_argument("--band", default=None,
+                     help="list receivers tagged for this band (2m, 70cm, ...)")
+
+    kwd = sub.add_parser("kiwisdr",
+                         help="list public KiwiSDR receivers from the mirror")
+    kwd.add_argument("--frequency", type=float, default=None,
+                     help="only receivers covering this frequency, in Hz")
+    kwd.add_argument("--limit", type=int, default=20,
+                     help="how many receivers to show (default: 20)")
+    kwd.add_argument("--all", action="store_true",
+                     help="include receivers that do not allow API clients")
+
+    trx = sub.add_parser("transmitters",
+                         help="list a satellite's transmitters from SatNOGS")
+    trx.add_argument("satellite", help="satellite name, e.g. ISS")
+    trx.add_argument("--all", action="store_true",
+                     help="include transmitters that are no longer alive")
+
+    wx = sub.add_parser("spacewx",
+                        help="current space weather from NOAA SWPC")
+
+    apr = sub.add_parser("aprs",
+                         help="listen to live APRS traffic on the backbone")
+    apr.add_argument("--filter", default=None, metavar="FILTER",
+                    help="APRS-IS filter, e.g. r/32.79/34.99/100 or b/4X1UN")
+    apr.add_argument("--limit", type=int, default=10,
+                    help="how many packets to collect (default: 10)")
+    apr.add_argument("--seconds", type=float, default=30.0,
+                     help="how long to listen (default: 30)")
+    apr.add_argument("--callsign", default="N0CALL",
+                     help="callsign for the login line (default: N0CALL)")
+
     sats = sub.add_parser("satellites", help="list amateur satellites")
     sats.add_argument("satellite", nargs="?", default=None,
                       help="show details and receivers for one satellite")
@@ -449,6 +666,20 @@ def main(argv: List[str] | None = None) -> int:
         coro = _satellites(args)
     elif args.command == "observations":
         coro = _observations(args)
+    elif args.command == "frames":
+        coro = _frames(args)
+    elif args.command == "schedule":
+        coro = _schedule(args)
+    elif args.command == "catalogue":
+        coro = _catalogue(args)
+    elif args.command == "kiwisdr":
+        coro = _kiwisdr(args)
+    elif args.command == "transmitters":
+        coro = _transmitters(args)
+    elif args.command == "spacewx":
+        coro = _spacewx(args)
+    elif args.command == "aprs":
+        coro = _aprs(args)
     elif args.command == "fetch":
         coro = _fetch(args)
     elif args.command == "passes":

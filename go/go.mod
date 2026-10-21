@@ -1,4 +1,4 @@
-module github.com/Chaim12345/sdrstream/go
+module github.com/chaim12345/sdrstream/go
 
 go 1.23.4
 

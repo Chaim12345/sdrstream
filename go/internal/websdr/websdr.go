@@ -25,8 +25,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Chaim12345/sdrstream/go/internal/common"
-	"github.com/Chaim12345/sdrstream/go/internal/vocoder"
+	"github.com/chaim12345/sdrstream/go/internal/common"
+	"github.com/chaim12345/sdrstream/go/internal/vocoder"
 	"github.com/gorilla/websocket"
 )
 

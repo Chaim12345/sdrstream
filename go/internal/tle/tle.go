@@ -1,4 +1,6 @@
-// Package tle fetches and caches two-line element sets from Celestrak.
+// Package tle fetches and caches orbit elements from Celestrak: General-Perturbations
+// records where available (the only format that carries six-digit NORAD
+// catalog numbers) and two-line element sets as the fallback.
 //
 // TLEs go stale: SGP4 error grows by roughly a kilometre a day for a low Earth
 // orbit, which is tolerable for a day or two and useless after a few weeks.
@@ -6,11 +8,13 @@
 package tle
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -269,4 +273,115 @@ func sortStrings(values []string) {
 			values[j], values[j-1] = values[j-1], values[j]
 		}
 	}
+}
+
+// GPGroups maps the same groups to the General-Perturbations JSON endpoint.
+// Since the NORAD catalog passed 99,999 in July 2026, objects with six-digit
+// catalog numbers are published only in the GP formats, never as TLE text —
+// so this is the preferred element source, with TLE as the fallback.
+var GPGroups = map[string]string{
+	"amateur":  "https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=json",
+	"weather":  "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=json",
+	"stations": "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=json",
+	"cubesat":  "https://celestrak.org/NORAD/elements/gp.php?GROUP=cubesat&FORMAT=json",
+}
+
+const gpCatnrURLTemplate = "https://celestrak.org/NORAD/elements/gp.php?CATNR=%d&FORMAT=json"
+
+// GPCachePath returns where a group's GP JSON set is cached.
+func GPCachePath(group string) string {
+	return filepath.Join(DefaultCacheDir, "gp_"+group+".json")
+}
+
+// GPAgeSeconds reports how long ago the cached GP set was fetched, or -1.
+func GPAgeSeconds(group string) float64 {
+	info, err := os.Stat(GPCachePath(group))
+	if err != nil {
+		return -1
+	}
+	return time.Since(info.ModTime()).Seconds()
+}
+
+// FetchGP downloads a group's GP JSON and caches it. The text is normalised
+// on the way in (see normalizeGPJSON), so the cached copy is always the form
+// the element parser accepts.
+func FetchGP(group string, timeout time.Duration) (string, error) {
+	URL, ok := GPGroups[group]
+	if !ok {
+		return "", fmt.Errorf("unknown group %q for GP data", group)
+	}
+	text, err := httpGet(URL, timeout)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(strings.TrimSpace(text), "[") {
+		return "", fmt.Errorf("not a GP JSON array from %s", URL)
+	}
+	text, err = NormalizeGPJSON(text)
+	if err != nil {
+		return "", err
+	}
+	if mkdirErr := os.MkdirAll(DefaultCacheDir, 0o755); mkdirErr == nil {
+		_ = os.WriteFile(GPCachePath(group), []byte(text), 0o644)
+	}
+	return text, nil
+}
+
+// LoadGP returns a group's GP JSON, downloading only when the cache is
+// stale. With offline set, the cached copy is used however old it is.
+func LoadGP(group string, maxAgeHours float64, offline bool, timeout time.Duration) (string, error) {
+	age := GPAgeSeconds(group)
+	if age >= 0 && (offline || age < maxAgeHours*3600) {
+		data, err := os.ReadFile(GPCachePath(group))
+		if err == nil {
+			return string(data), nil
+		}
+	}
+	if offline {
+		return "", fmt.Errorf("no cached GP set for %q; run without --offline once", group)
+	}
+	text, err := FetchGP(group, timeout)
+	if err != nil {
+		if age >= 0 {
+			if stale, readErr := os.ReadFile(GPCachePath(group)); readErr == nil {
+				return string(stale), nil
+			}
+		}
+		return "", err
+	}
+	return text, nil
+}
+
+// gpStringNumbers are the CCSDS OMM fields CelesTrak quotes as strings even
+// though they are numeric. The element parser types them as numbers, so the
+// payload is normalised before parsing; fixing the values in place keeps the
+// two libraries' struct definitions out of each other's business.
+var gpStringNumbers = []string{"NORAD_CAT_ID", "ELEMENT_SET_NO", "REV_AT_EPOCH", "EPHEMERIS_TYPE"}
+
+// NormalizeGPJSON rewrites CelesTrak's string-quoted numeric CCSDS fields
+// to JSON numbers so the element parser accepts the payload. It is exported
+// because both the cached GP fetch and direct GP parsing need it.
+func NormalizeGPJSON(text string) (string, error) {
+	var entries []map[string]any
+	if err := json.Unmarshal([]byte(text), &entries); err != nil {
+		return "", fmt.Errorf("parsing GP JSON: %w", err)
+	}
+	for _, entry := range entries {
+		for _, field := range gpStringNumbers {
+			value, ok := entry[field].(string)
+			if !ok {
+				continue
+			}
+			number, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if err != nil {
+				continue // leave odd values alone; the parser will complain
+			}
+			entry[field] = number
+		}
+	}
+	out, err := json.Marshal(entries)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }

@@ -9,6 +9,9 @@
 //
 // It reads a job as JSON on stdin and writes the passes as JSON on stdout, so
 // the caller keeps ownership of the satellite table and the receiver list.
+//
+// The orbit model is the same akhenakh/sgp4 library the main Go module uses,
+// so pass predictions cannot drift between the two code paths.
 package main
 
 import (
@@ -18,7 +21,7 @@ import (
 	"os"
 	"time"
 
-	satellite "github.com/Mohammed-Ashour/go-satellite-v2/pkg/satellite"
+	sgp4 "github.com/akhenakh/sgp4"
 )
 
 // Job is the request read from stdin.
@@ -65,6 +68,30 @@ type Report struct {
 	ElapsedMs  float64     `json:"elapsed_ms"`
 }
 
+// satelliteState carries one satellite's propagation plus the per-observer
+// look-angle machinery built once per satellite.
+type satelliteState struct {
+	tle       *sgp4.TLE
+	observers []*sgp4.Location
+}
+
+// elevation returns the elevation in degrees above observer index i at t.
+func (s *satelliteState) elevation(i int, t time.Time) (float64, error) {
+	eci, err := s.tle.FindPositionAtTime(t)
+	if err != nil {
+		return 0, err
+	}
+	state := &sgp4.StateVector{
+		X: eci.Position.X, Y: eci.Position.Y, Z: eci.Position.Z,
+		VX: eci.Velocity.X, VY: eci.Velocity.Y, VZ: eci.Velocity.Z,
+	}
+	observation, err := state.GetLookAngle(s.observers[i], t)
+	if err != nil {
+		return 0, err
+	}
+	return observation.LookAngles.Elevation, nil
+}
+
 // sample is one coarse elevation reading within a pass.
 type sample struct {
 	at time.Time
@@ -93,14 +120,23 @@ func main() {
 	began := time.Now()
 	report := Report{Satellites: make([]SatResult, 0, len(job.Satellites))}
 	for _, js := range job.Satellites {
-		sat := satellite.TLEToSat(js.Line1, js.Line2, satellite.GravityWGS72)
 		result := SatResult{
 			Name:      js.Name,
 			Observers: make([][]PassOut, len(job.Observers)),
 		}
+		tle, err := sgp4.ParseTLELines([]string{js.Line1, js.Line2})
+		if err != nil {
+			fail("satellite %s: %v", js.Name, err)
+		}
+		state := &satelliteState{tle: tle}
+		for _, obs := range job.Observers {
+			state.observers = append(state.observers, &sgp4.Location{
+				Latitude: obs.Lat, Longitude: obs.Lon, Altitude: 0,
+			})
+		}
 		for i := range job.Observers {
 			result.Observers[i] = findPasses(
-				sat, job.Observers[i], start, job.Hours,
+				state, i, start, job.Hours,
 				job.MinElevation, job.StepSeconds)
 		}
 		report.Satellites = append(report.Satellites, result)
@@ -119,24 +155,10 @@ func fail(format string, args ...interface{}) {
 	os.Exit(1)
 }
 
-// elevation returns the elevation in degrees of sat above obs at t.
-func elevation(sat satellite.Satellite, obs satellite.LatLong, t time.Time) float64 {
-	position, _ := satellite.Propagate(
-		sat, t.Year(), int(t.Month()), t.Day(), t.Hour(), t.Minute(), t.Second())
-	jd := satellite.JDay(
-		t.Year(), int(t.Month()), t.Day(), t.Hour(), t.Minute(), t.Second())
-	look := satellite.ECIToLookAngles(position, obs, 0.0, jd)
-	return look.El * satellite.RAD2DEG
-}
-
 // findPasses scans coarse then refines the rise, peak and set of each pass.
-func findPasses(sat satellite.Satellite, obs JobObserver, start time.Time,
+func findPasses(sat *satelliteState, observer int, start time.Time,
 	hours, minElevation, stepSeconds float64) []PassOut {
 
-	obsRad := satellite.LatLong{
-		Latitude:  obs.Lat * satellite.DEG2RAD,
-		Longitude: obs.Lon * satellite.DEG2RAD,
-	}
 	step := time.Duration(stepSeconds * float64(time.Second))
 	end := start.Add(time.Duration(hours * float64(time.Hour)))
 
@@ -145,9 +167,12 @@ func findPasses(sat satellite.Satellite, obs JobObserver, start time.Time,
 	samples := []sample{}
 
 	for t := start; !t.After(end); t = t.Add(step) {
-		el := elevation(sat, obsRad, t)
+		el, err := sat.elevation(observer, t)
+		if err != nil {
+			continue // a step that cannot propagate is skipped, not fatal
+		}
 		if el > 0 && riseTime == nil {
-			r := refineCrossing(sat, obsRad, t.Add(-step), t, true)
+			r := refineCrossing(sat, observer, t.Add(-step), t, true)
 			riseTime = &r
 			samples = samples[:0]
 		}
@@ -158,8 +183,8 @@ func findPasses(sat satellite.Satellite, obs JobObserver, start time.Time,
 		if riseTime == nil {
 			continue
 		}
-		setTime := refineCrossing(sat, obsRad, t.Add(-step), t, false)
-		peakAt, peakEl := refinePeak(sat, obsRad, samples)
+		setTime := refineCrossing(sat, observer, t.Add(-step), t, false)
+		peakAt, peakEl := refinePeak(sat, observer, samples)
 		if peakEl >= minElevation {
 			passes = append(passes, PassOut{
 				Rise:         riseTime.UTC().Format(time.RFC3339),
@@ -175,54 +200,55 @@ func findPasses(sat satellite.Satellite, obs JobObserver, start time.Time,
 	return passes
 }
 
-// refineCrossing bisects between before and after to the horizon crossing.
-func refineCrossing(sat satellite.Satellite, obs satellite.LatLong,
-	before, after time.Time, rising bool) time.Time {
-
+// refineCrossing bisects to the minute a horizon crossing between two times.
+func refineCrossing(sat *satelliteState, observer int, before, after time.Time,
+	rising bool) time.Time {
 	lo, hi := before, after
 	for i := 0; i < 12; i++ {
 		mid := lo.Add(hi.Sub(lo) / 2)
-		above := elevation(sat, obs, mid) > 0
-		if above == rising {
+		el, err := sat.elevation(observer, mid)
+		if err != nil {
+			break
+		}
+		if (el > 0) == rising {
 			hi = mid
 		} else {
 			lo = mid
 		}
 	}
-	return lo.Add(hi.Sub(lo) / 2)
+	return hi
 }
 
-// refinePeak ternary-searches the apex between the samples either side of the
-// tallest one; elevation is unimodal across a single pass.
-func refinePeak(sat satellite.Satellite, obs satellite.LatLong,
-	samples []sample) (time.Time, float64) {
-
-	best := 0
-	for i := range samples {
-		if samples[i].el > samples[best].el {
-			best = i
+// refinePeak golden-section searches the sample with the highest elevation.
+func refinePeak(sat *satelliteState, observer int, samples []sample) (time.Time, float64) {
+	if len(samples) == 0 {
+		return time.Time{}, 0
+	}
+	bestAt := samples[0].at
+	bestEl := samples[0].el
+	for _, s := range samples[1:] {
+		if s.el > bestEl {
+			bestAt, bestEl = s.at, s.el
 		}
 	}
-	lo := samples[best].at
-	hi := samples[best].at
-	if best > 0 {
-		lo = samples[best-1].at
-	}
-	if best+1 < len(samples) {
-		hi = samples[best+1].at
-	}
-	if !lo.Before(hi) {
-		return samples[best].at, samples[best].el
-	}
-	for i := 0; i < 25; i++ {
-		a := lo.Add(hi.Sub(lo) / 3)
-		b := hi.Add(hi.Sub(lo) / -3)
-		if elevation(sat, obs, a) < elevation(sat, obs, b) {
-			lo = a
-		} else {
-			hi = b
+	// Walk downhill on both sides with a shrinking step to sharpen the peak.
+	step := time.Minute
+	for i := 0; i < 40; i++ {
+		improved := false
+		for _, dir := range []time.Duration{-step, step} {
+			candidate := bestAt.Add(dir)
+			el, err := sat.elevation(observer, candidate)
+			if err == nil && el > bestEl {
+				bestAt, bestEl = candidate, el
+				improved = true
+			}
+		}
+		if !improved {
+			step /= 2
+			if step < time.Second {
+				break
+			}
 		}
 	}
-	mid := lo.Add(hi.Sub(lo) / 2)
-	return mid, elevation(sat, obs, mid)
+	return bestAt, bestEl
 }

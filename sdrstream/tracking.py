@@ -186,6 +186,24 @@ class Tracker:
         self._position_cache_limit = 8192
 
     @classmethod
+    def from_record(cls, record) -> "Tracker":
+        """Build a tracker from an :class:`~sdrstream.orbit.OrbitRecord`.
+
+        The record is initialised straight into python-sgp4, so satellites
+        whose catalog numbers do not fit the TLE layout (the six-digit IDs
+        CelesTrak publishes only as GP JSON) can be tracked too.
+        """
+        _require_sgp4()
+        tracker = cls.__new__(cls)
+        tracker.satellite = record.to_satrec()
+        tracker.tle_line1 = record.tle_lines[0] if record.tle_lines else ""
+        tracker.tle_line2 = record.tle_lines[1] if record.tle_lines else ""
+        tracker.orbit_record = record
+        tracker._position_cache = {}
+        tracker._position_cache_limit = 8192
+        return tracker
+
+    @classmethod
     def from_tle_text(cls, text: str, name: str) -> "Tracker":
         """Build a tracker from a TLE block, matching *name* case-insensitively.
 
@@ -197,6 +215,18 @@ class Tracker:
             if want in lines[i].upper() and lines[i + 1].startswith("1 "):
                 return cls(lines[i + 1], lines[i + 2])
         raise ValueError("no TLE found for %r" % name)
+
+    @classmethod
+    def from_records(cls, records, name: str) -> "Tracker":
+        """Build a tracker from a list of records, matching *name* loosely.
+
+        Mirrors :meth:`from_tle_text`'s partial, case-insensitive matching.
+        """
+        want = name.strip().upper()
+        for record in records:
+            if want in record.name.upper():
+                return cls.from_record(record)
+        raise ValueError("no element record found for %r" % name)
 
     def propagate(self, dt: datetime) -> Tuple[float, float, float]:
         """Position in ECI kilometres at *dt*."""

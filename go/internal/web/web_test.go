@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Chaim12345/sdrstream/go/internal/gallery"
+	"github.com/chaim12345/sdrstream/go/internal/gallery"
 )
 
 func newTestServer(t *testing.T) *Server {

@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Chaim12345/sdrstream/go/internal/satnogs"
+	"github.com/chaim12345/sdrstream/go/internal/satnogs"
 )
 
 // Item is one artefact from one observation.

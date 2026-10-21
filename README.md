@@ -95,6 +95,32 @@ python -m sdrstream info --server wss://sdr.example.org/ws/
 
 # Open the browser UI
 python -m sdrstream web --port 8000
+
+# --- data fetching, no radio needed ---
+
+# Raw telemetry frames from the SatNOGS DB (needs a token; see below)
+python -m sdrstream frames ISS --limit 10
+
+# Everything SatNOGS knows about a satellite's transmitters
+python -m sdrstream transmitters ISS
+
+# What the network actually heard lately
+python -m sdrstream observations ISS
+
+# Space weather right now (Kp, 10.7 cm flux, X-ray class, sunspots)
+python -m sdrstream spacewx
+
+# Live APRS traffic within 300 km of a point, off the internet backbone
+python -m sdrstream aprs --filter r/32.79/34.99/300 --limit 10
+
+# Public KiwiSDR receivers that allow API clients
+python -m sdrstream kiwisdr --frequency 145500000
+
+# Refresh the receiver catalogue from the live WebSDR list
+python -m sdrstream catalogue --refresh
+
+# Follow satellites and record their passes automatically
+python -m sdrstream schedule --add ISS --run
 ```
 
 ## Web UI
@@ -247,9 +273,12 @@ the pass to start, so it is fine to launch it early.
 
 ### Where the data comes from
 
-* **Orbital elements** come from Celestrak's amateur group, cached for a day
-  (`sdrstream.tle`). A TLE is only good for a few days; stale elements put the
-  satellite in the wrong place, so refetch rather than trust an old cache.
+* **Orbital elements** come from Celestrak, cached for a day (`sdrstream.tle`).
+  The GP (General-Perturbations) records are fetched first: since the NORAD
+  catalog passed 99,999 in July 2026, satellites with six-digit catalog numbers
+  are published only in the GP formats, never as TLE text, so TLE remains the
+  fallback. A TLE is only good for a few days; stale elements put the satellite
+  in the wrong place, so refetch rather than trust an old cache.
 * **The satellite table** (`sdrstream.satellites`) is a small curated list of
   the downlinks most likely to be audible. Frequencies drift, so treat it as a
   starting point.
@@ -281,6 +310,38 @@ If the SatNOGS API is unreachable but public fetch proxies are available, set
 `SDRSTREAM_SATNOGS_PROXY` to one with a `{url}` placeholder
 (`https://api.allorigins.win/raw?url={url}`). Only the public observation
 feed is sent through it; payload files still come from the S3 store directly.
+
+* **Raw telemetry frames** need a SatNOGS account token: `GET /api/telemetry/`
+  on the SatNOGS DB rejects anonymous requests. Set `SATNOGS_TOKEN` in the
+  environment (profile page on satnogs.org) and the frames — the community's
+  raw captures, newest first — come through:
+
+```bash
+export SATNOGS_TOKEN=...   # from your satnogs.org profile page
+python -m sdrstream frames ISS --save frames/
+```
+
+* **Transmitter inventories** (`sdrstream transmitters SAT`) list every
+  downlink SatNOGS knows for a satellite — mode, uplink and downlink, baud,
+  and whether the transmitter is still alive.
+* **Space weather** (`sdrstream spacewx`) comes from NOAA SWPC's free JSON
+  products: the planetary K index, the 10.7 cm solar flux, the GOES X-ray
+  class and the current sunspot regions, with a one-line HF verdict.
+* **Live APRS traffic** (`sdrstream aprs`) connects to the APRS-IS backbone —
+  the internet side of the amateur packet network, which carries everything
+  the ISS digipeater forwards. An APRS-IS filter on the login line narrows the
+  firehose: `r/lat/lon/radius` for an area, `b/callsign` for one station,
+  `t/w` for weather reports only. Listening needs no account.
+* **The KiwiSDR directory** (`sdrstream kiwisdr`) comes from the mirror the
+  KiwiSDR maintainer asks API clients to use (the origin list must not be
+  fetched per client). Receivers that did not opt in to API clients are
+  is passed. The web server refreshes the same gallery every 30 minutes and
+  serves the files itself, so the browser never depends on the S3 bucket.
+
+* **The KiwiSDR directory** (`sdrstream kiwisdr`) comes from the mirror the
+  KiwiSDR maintainer asks API clients to use (the origin list must not be
+  fetched per client). Receivers that did not opt in to API clients are
+  excluded by default; each operator's `ext_api` policy decides.
 
 ### Relays and the payload gallery (Go)
 

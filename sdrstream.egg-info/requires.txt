@@ -1,0 +1,11 @@
+websockets>=11
+
+[analysis]
+numpy
+
+[satellites]
+sgp4>=2.20
+
+[test]
+websockets>=11
+sgp4>=2.20

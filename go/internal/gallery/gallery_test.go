@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Chaim12345/sdrstream/go/internal/satnogs"
+	"github.com/chaim12345/sdrstream/go/internal/satnogs"
 )
 
 func TestClassify(t *testing.T) {

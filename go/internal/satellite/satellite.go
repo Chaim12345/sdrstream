@@ -15,13 +15,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Chaim12345/sdrstream/go/internal/catalogue"
-	"github.com/Chaim12345/sdrstream/go/internal/common"
-	"github.com/Chaim12345/sdrstream/go/internal/openwebrx"
-	"github.com/Chaim12345/sdrstream/go/internal/satellites"
-	"github.com/Chaim12345/sdrstream/go/internal/tle"
-	"github.com/Chaim12345/sdrstream/go/internal/tracking"
-	"github.com/Chaim12345/sdrstream/go/internal/websdr"
+	"github.com/chaim12345/sdrstream/go/internal/catalogue"
+	"github.com/chaim12345/sdrstream/go/internal/common"
+	"github.com/chaim12345/sdrstream/go/internal/openwebrx"
+	"github.com/chaim12345/sdrstream/go/internal/satellites"
+	"github.com/chaim12345/sdrstream/go/internal/tle"
+	"github.com/chaim12345/sdrstream/go/internal/tracking"
+	"github.com/chaim12345/sdrstream/go/internal/websdr"
 )
 
 // SegmentSeconds is how long one connection stays open before reconnecting
@@ -62,6 +62,27 @@ func (p ChasePlan) Summary() string {
 	return strings.Join(lines, "\n")
 }
 
+// loadTracker builds the propagation tracker for a satellite, preferring
+// General-Perturbations records and falling back to TLE text. GP records
+// are the modern element format: since the NORAD catalog passed 99,999 in
+// July 2026, new satellites are published only there, never as TLE text.
+func loadTracker(name, tleText string, offline bool) (*tracking.Tracker, error) {
+	if tleText != "" {
+		return tracking.FromTLEText(tleText, name)
+	}
+	gp, err := tle.LoadGP("amateur", 24, offline, 60*time.Second)
+	if err == nil {
+		if tracker, gpErr := tracking.FromGPText(gp, name); gpErr == nil {
+			return tracker, nil
+		}
+	}
+	text, err := tle.Load("amateur", 24, offline, 60*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return tracking.FromTLEText(text, name)
+}
+
 // PlanPass works out when and where to record sat. With receiver nil and no
 // coordinates, the first receiver that covers the downlink is used.
 func PlanPass(sat satellites.Sat, receiver *catalogue.Receiver,
@@ -94,14 +115,7 @@ func PlanPass(sat satellites.Sat, receiver *catalogue.Receiver,
 	}
 
 	text := tleText
-	if text == "" {
-		fetched, err := tle.Load("amateur", 24, offline, 60*time.Second)
-		if err != nil {
-			return ChasePlan{}, err
-		}
-		text = fetched
-	}
-	tracker, err := tracking.FromTLEText(text, sat.Name)
+	tracker, err := loadTracker(sat.Name, text, offline)
 	if err != nil {
 		return ChasePlan{}, err
 	}
@@ -263,14 +277,7 @@ func Chase(ctx context.Context, plan ChasePlan, outPath string,
 		say = func(string) {}
 	}
 	text := plan.TLEText
-	if text == "" {
-		fetched, err := tle.Load("amateur", 24, offline, 60*time.Second)
-		if err != nil {
-			return 0, err
-		}
-		text = fetched
-	}
-	tracker, err := tracking.FromTLEText(text, plan.Satellite.Name)
+	tracker, err := loadTracker(plan.Satellite.Name, text, offline)
 	if err != nil {
 		return 0, err
 	}
