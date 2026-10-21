@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,23 +36,116 @@ var CacheDir = func() string {
 	return filepath.Join(home, ".cache", "sdrstream")
 }()
 
+// Demoddata is one artefact a station produced from an observation. The
+// URL usually points at a raw bitstream, a decoded image or a text file.
+type Demoddata struct {
+	PayloadDemod string `json:"payload_demod"`
+}
+
 // Observation is one ground station's recording of one satellite.
+//
+// The SatNOGS API renamed several fields over time, so UnmarshalJSON accepts
+// both the current names (norad_cat_id, observation_frequency,
+// transmitter_mode, waterfall, demoddata[]) and the older ones (norad_id,
+// frequency, mode, waterfall_download, payload_download).
 type Observation struct {
-	ID          int       `json:"id"`
-	Satellite   int       `json:"satellite"`
-	SatName     string    `json:"satellite_name"`
-	NoradID     int       `json:"norad_id"`
-	Station     string    `json:"station_name"`
-	Latitude    float64   `json:"ground_station_latitude"`
-	Longitude   float64   `json:"ground_station_longitude"`
-	Start       time.Time `json:"start"`
-	End         time.Time `json:"end"`
-	MaxElevation float64  `json:"max_elevation"`
-	FrequencyHz int64     `json:"frequency"`
-	Mode        string    `json:"mode"`
-	Status      string    `json:"status"`
-	WaterfallURL string    `json:"waterfall_download"`
-	DemodURL    string     `json:"payload_download"`
+	ID           int         `json:"id"`
+	Satellite    int         `json:"satellite"`
+	SatName      string      `json:"satellite_name"`
+	TLE0         string      `json:"tle0"`
+	NoradID      int         `json:"norad_id"`
+	Station      string      `json:"station_name"`
+	Latitude     float64     `json:"station_lat"`
+	Longitude    float64     `json:"station_lng"`
+	Start        time.Time   `json:"start"`
+	End          time.Time   `json:"end"`
+	MaxElevation float64     `json:"max_altitude"`
+	FrequencyHz  int64       `json:"observation_frequency"`
+	Mode         string      `json:"transmitter_mode"`
+	Status       string      `json:"status"`
+	WaterfallURL string      `json:"waterfall"`
+	PayloadURL   string      `json:"payload"`
+	DemodURL     string      `json:"payload_download"`
+	Demoddata    []Demoddata `json:"demoddata"`
+}
+
+// UnmarshalJSON normalises the current and legacy SatNOGS field names.
+func (o *Observation) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID                   int         `json:"id"`
+		Start                time.Time   `json:"start"`
+		End                  time.Time   `json:"end"`
+		Satellite            int         `json:"satellite"`
+		NoradCatID           int         `json:"norad_cat_id"`
+		NoradID              int         `json:"norad_id"`
+		SatName              string      `json:"satellite_name"`
+		TLE0                 string      `json:"tle0"`
+		Station              string      `json:"station_name"`
+		Latitude             float64     `json:"station_lat"`
+		Longitude            float64     `json:"station_lng"`
+		MaxAltitude          float64     `json:"max_altitude"`
+		MaxElevation         float64     `json:"max_elevation"`
+		Frequency            int64       `json:"frequency"`
+		ObservationFrequency int64       `json:"observation_frequency"`
+		DownlinkLow          int64       `json:"transmitter_downlink_low"`
+		Mode                 string      `json:"mode"`
+		TransmitterMode      string      `json:"transmitter_mode"`
+		Status               string      `json:"status"`
+		Waterfall            string      `json:"waterfall"`
+		WaterfallDownload    string      `json:"waterfall_download"`
+		Payload              string      `json:"payload"`
+		PayloadDownload      string      `json:"payload_download"`
+		Demoddata            []Demoddata `json:"demoddata"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	o.ID = raw.ID
+	o.Start = raw.Start
+	o.End = raw.End
+	o.Satellite = raw.Satellite
+	o.NoradID = raw.NoradCatID
+	if o.NoradID == 0 {
+		o.NoradID = raw.NoradID
+	}
+	if o.NoradID == 0 {
+		o.NoradID = raw.Satellite
+	}
+	o.SatName = raw.SatName
+	if o.SatName == "" {
+		o.SatName = strings.TrimPrefix(strings.TrimSpace(raw.TLE0), "0 ")
+	}
+	o.TLE0 = raw.TLE0
+	o.Station = raw.Station
+	o.Latitude = raw.Latitude
+	o.Longitude = raw.Longitude
+	o.MaxElevation = raw.MaxAltitude
+	if o.MaxElevation == 0 {
+		o.MaxElevation = raw.MaxElevation
+	}
+	o.FrequencyHz = raw.ObservationFrequency
+	if o.FrequencyHz == 0 {
+		o.FrequencyHz = raw.DownlinkLow
+	}
+	if o.FrequencyHz == 0 {
+		o.FrequencyHz = raw.Frequency
+	}
+	o.Mode = raw.TransmitterMode
+	if o.Mode == "" {
+		o.Mode = raw.Mode
+	}
+	o.Status = raw.Status
+	o.WaterfallURL = raw.Waterfall
+	if o.WaterfallURL == "" {
+		o.WaterfallURL = raw.WaterfallDownload
+	}
+	o.PayloadURL = raw.Payload
+	o.DemodURL = raw.PayloadDownload
+	o.Demoddata = raw.Demoddata
+	if o.DemodURL == "" && len(o.Demoddata) > 0 {
+		o.DemodURL = o.Demoddata[0].PayloadDemod
+	}
+	return nil
 }
 
 // Duration is the observation length; 0 when the timestamps are missing.
@@ -142,13 +236,30 @@ func Recent(limit int, timeout time.Duration) ([]Observation, error) {
 	return observations, nil
 }
 
+// Between returns observations that started in [start, end], optionally
+// restricted to one satellite. This is how the gallery reaches finished
+// observations: the unfiltered feed only shows upcoming passes.
+func Between(start, end time.Time, noradID, limit int, timeout time.Duration) ([]Observation, error) {
+	path := fmt.Sprintf("/observations/?format=json&start=%s&end=%s&limit=%d",
+		url.QueryEscape(start.UTC().Format(time.RFC3339)),
+		url.QueryEscape(end.UTC().Format(time.RFC3339)), limit)
+	if noradID > 0 {
+		path += fmt.Sprintf("&satellite=%d", noradID)
+	}
+	var observations []Observation
+	if err := getJSON(path, &observations, timeout); err != nil {
+		return nil, err
+	}
+	return observations, nil
+}
+
 // Transmitters returns the DB's transmitter list for one satellite.
 type Transmitter struct {
-	UUID         string  `json:"uuid"`
-	Description  string  `json:"description"`
-	DownlinkLow  float64 `json:"downlink_low"`
-	UplinkLow    float64 `json:"uplink_low"`
-	Mode         string  `json:"mode"`
+	UUID        string  `json:"uuid"`
+	Description string  `json:"description"`
+	DownlinkLow float64 `json:"downlink_low"`
+	UplinkLow   float64 `json:"uplink_low"`
+	Mode        string  `json:"mode"`
 }
 
 // Transmitters fetches the transmitters of one satellite from the SatNOGS DB.

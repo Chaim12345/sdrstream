@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -18,8 +19,10 @@ import (
 	"github.com/Chaim12345/sdrstream/go/internal/decode"
 	"github.com/Chaim12345/sdrstream/go/internal/directory"
 	"github.com/Chaim12345/sdrstream/go/internal/discovery"
+	"github.com/Chaim12345/sdrstream/go/internal/gallery"
 	"github.com/Chaim12345/sdrstream/go/internal/military"
 	"github.com/Chaim12345/sdrstream/go/internal/openwebrx"
+	"github.com/Chaim12345/sdrstream/go/internal/relays"
 	"github.com/Chaim12345/sdrstream/go/internal/satellite"
 	"github.com/Chaim12345/sdrstream/go/internal/satellites"
 	"github.com/Chaim12345/sdrstream/go/internal/satnogs"
@@ -38,10 +41,13 @@ commands:
   passes       predict satellite passes over a receiver
   satrecord    record a pass, tracking Doppler
   discover     find OpenWebRX receivers for a downlink
+  stations     list every public receiver in the directory
   undocumented satellites heard by SatNOGS but missing from the table
   military     government downlinks a public receiver can reach
+  relays       list repeater/transponder satellites and frequencies
   fetch        download SatNOGS captures for a satellite
   observations show real SatNOGS receptions of a satellite
+  gallery      collect real payload images/text from SatNOGS observations
   decode       demodulate recorded WAV files (AFSK/APRS, Morse)
   scan         scan a WAV for transmissions (voice, data, CW)
   bands        sweep receiver bands and report live traffic
@@ -71,14 +77,20 @@ func main() {
 		err = cmdSatrecord(args)
 	case "discover":
 		err = cmdDiscover(args)
+	case "stations":
+		err = cmdStations(args)
 	case "undocumented":
 		err = cmdUndocumented(args)
 	case "military":
 		err = cmdMilitary(args)
+	case "relays":
+		err = cmdRelays(args)
 	case "fetch":
 		err = cmdFetch(args)
 	case "observations":
 		err = cmdObservations(args)
+	case "gallery":
+		err = cmdGallery(args)
 	case "web":
 		err = cmdWeb(args)
 	case "decode":
@@ -520,6 +532,69 @@ func cmdSatrecord(args []string) error {
 	return err
 }
 
+// cmdStations lists every receiver in the public directory, including the
+// KiwiSDR and WebSDR entries the discovery sweep does not probe.
+func cmdStations(args []string) error {
+	fs := flag.NewFlagSet("stations", flag.ExitOnError)
+	kind := fs.String("type", "", "receiver type: OpenWebRX, KiwiSDR or WebSDR")
+	limit := fs.Int("limit", 40, "how many stations to print (0 = all)")
+	asJSON := fs.Bool("json", false, "print JSON")
+	timeout := fs.Float64("timeout", 30, "directory fetch timeout in seconds")
+	fs.Parse(args)
+	fmt.Println("reading", directory.DirectoryURL, "...")
+	stations, err := directory.FetchStations(context.Background(),
+		time.Duration(*timeout*float64(time.Second)))
+	if err != nil {
+		return err
+	}
+	counts := directory.CountByType(stations)
+	var types []string
+	for kind := range counts {
+		types = append(types, kind)
+	}
+	sort.Strings(types)
+	fmt.Printf("%d stations:", len(stations))
+	for _, kind := range types {
+		fmt.Printf(" %d %s", counts[kind], kind)
+	}
+	fmt.Println()
+
+	want := strings.ToLower(strings.TrimSpace(*kind))
+	var filtered []directory.Station
+	for _, station := range stations {
+		if want != "" && strings.ToLower(station.Type) != want {
+			continue
+		}
+		filtered = append(filtered, station)
+	}
+	if *asJSON {
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", " ")
+		return encoder.Encode(filtered)
+	}
+	shown := filtered
+	if *limit > 0 && len(shown) > *limit {
+		shown = shown[:*limit]
+	}
+	for _, station := range shown {
+		fmt.Printf("  %-10s %-32s %-44s (%8.4f,%9.4f)\n",
+			station.Type, clip(station.Name, 32), station.URL,
+			station.Latitude, station.Longitude)
+	}
+	if len(shown) < len(filtered) {
+		fmt.Printf("  ... %d more (use -limit 0 for all)\n", len(filtered)-len(shown))
+	}
+	return nil
+}
+
+// clip shortens a label to width characters.
+func clip(text string, width int) string {
+	if len(text) <= width {
+		return text
+	}
+	return text[:width-1] + "…"
+}
+
 func cmdDiscover(args []string) error {
 	fs := flag.NewFlagSet("discover", flag.ExitOnError)
 	frequency := fs.Float64("frequency", 0, "downlink in kHz, e.g. 145800")
@@ -600,6 +675,41 @@ func cmdMilitary(args []string) error {
 		}
 	}
 	fmt.Println(military.Report(receivers))
+	return nil
+}
+
+// cmdRelays lists the satellites that repeat uplink traffic, with the
+// frequencies a listener needs.
+func cmdRelays(args []string) error {
+	fs := flag.NewFlagSet("relays", flag.ExitOnError)
+	all := fs.Bool("all", false, "include satellites whose status is not active")
+	kind := fs.String("kind", "", "restrict to one kind (fm, linear, digipeater, transponder)")
+	fs.Parse(args)
+	want := strings.ToLower(*kind)
+	var filtered []relays.Relay
+	for _, relay := range relays.Table(*all) {
+		if want != "" && !strings.Contains(strings.ToLower(string(relay.Kind)), want) {
+			continue
+		}
+		filtered = append(filtered, relay)
+	}
+	if len(filtered) == 0 {
+		fmt.Println("no matching relay satellites")
+		return nil
+	}
+	fmt.Printf("%d relay satellite(s):\n", len(filtered))
+	for _, relay := range filtered {
+		sat := relay.Sat
+		uplink, tone := "-", "-"
+		if sat.UplinkHz != nil {
+			uplink = fmt.Sprintf("%.4f MHz", float64(*sat.UplinkHz)/1e6)
+		}
+		if sat.ToneHz != nil {
+			tone = fmt.Sprintf("%.1f Hz", *sat.ToneHz)
+		}
+		fmt.Printf("  %-9s %-18s down %10.4f MHz  up %-12s ctcss %-7s %s\n",
+			sat.Name, relay.Kind, float64(sat.DownlinkHz)/1e6, uplink, tone, sat.Notes)
+	}
 	return nil
 }
 
@@ -701,6 +811,85 @@ func cmdObservations(args []string) error {
 		}
 	}
 	return nil
+}
+
+// cmdGallery downloads the images and text that ground stations attached to
+// their SatNOGS observations: waterfalls, decoded SSTV frames and payload
+// files. Raw binary demod data is skipped unless -raw is set.
+func cmdGallery(args []string) error {
+	fs := flag.NewFlagSet("gallery", flag.ExitOnError)
+	name := fs.String("satellite", "", "restrict to one satellite")
+	days := fs.Int("days", 7, "how many days back to search")
+	limit := fs.Int("limit", 25, "maximum observations to inspect")
+	out := fs.String("out", "", "output directory (default: cache/gallery)")
+	maxMB := fs.Int64("max-mb", 20, "skip artefacts larger than this")
+	raw := fs.Bool("raw", false, "also keep raw binary demod data")
+	timeout := fs.Duration("timeout", 60*time.Second, "HTTP timeout")
+	fs.Parse(args)
+
+	norad := 0
+	label := "all satellites"
+	if *name != "" {
+		sat, err := satByName(*name)
+		if err != nil {
+			return err
+		}
+		norad = sat.NoradID
+		label = sat.Name
+	}
+	end := time.Now().UTC().Add(6 * time.Hour)
+	start := end.AddDate(0, 0, -*days)
+	fmt.Printf("searching SatNOGS observations of %s from the last %d day(s)...\n", label, *days)
+	observations, err := satnogs.Between(start, end, norad, *limit, *timeout)
+	if err != nil {
+		return err
+	}
+	items := gallery.Collect(observations)
+	if len(items) == 0 {
+		fmt.Println("no observations with waterfall or demod data in that window")
+		return nil
+	}
+	dir := *out
+	if dir == "" {
+		dir = filepath.Join(satnogs.CacheDir, "gallery")
+	}
+	saved, err := gallery.Fetch(items, dir, *timeout, *maxMB<<20, *raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "some artefacts failed: %v\n", err)
+	}
+	sort.SliceStable(saved, func(i, j int) bool { return saved[i].Start.After(saved[j].Start) })
+	lastID := -1
+	for _, item := range saved {
+		if item.ObservationID != lastID {
+			lastID = item.ObservationID
+			fmt.Printf("\n#%d %s %s %s %.4f MHz %s\n", item.ObservationID,
+				item.Satellite, item.Start.UTC().Format("2006-01-02 15:04"),
+				item.Station, float64(item.FrequencyHz)/1e6, item.Mode)
+		}
+		fmt.Printf("  %-6s %8s  %s\n", item.Kind, humanBytes(item.Size), item.Path)
+		if item.Text != "" {
+			line := strings.SplitN(item.Text, "\n", 2)[0]
+			fmt.Printf("         %s\n", line)
+		}
+	}
+	observationsWithData := map[int]bool{}
+	for _, item := range saved {
+		observationsWithData[item.ObservationID] = true
+	}
+	fmt.Printf("\n%d artefact(s) from %d observation(s) saved to %s\n",
+		len(saved), len(observationsWithData), dir)
+	return nil
+}
+
+// humanBytes renders a byte count for the gallery listing.
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d B", n)
 }
 
 // defaultBands are the standard amateur satellite bands used when a
@@ -1011,8 +1200,9 @@ func cmdWeb(args []string) error {
 	host := fs.String("host", "127.0.0.1", "address to bind")
 	port := fs.Int("port", 8000, "port to bind")
 	capturesDir := fs.String("captures-dir", "../captures", "directory of saved WAV captures to list and serve")
+	galleryDir := fs.String("gallery-dir", "", "directory for SatNOGS gallery artefacts (default: cache/gallery)")
 	fs.Parse(args)
-	server := web.New(*capturesDir)
+	server := web.New(*capturesDir, *galleryDir)
 	return server.Serve(fmt.Sprintf("%s:%d", *host, *port))
 }
 

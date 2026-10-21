@@ -31,6 +31,13 @@ const indexPage = `<!DOCTYPE html>
   #msg { font-size: 12px; color: #6b7280; margin: 8px 0; min-height: 15px; }
   .bar { height: 3px; background: #1f2937; }
   .bar > i { display: block; height: 3px; background: #7dd3fc; }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .card { border: 1px solid #1f2937; border-radius: 6px; overflow: hidden; background: #111827; }
+  .card img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #000; }
+  .card pre { margin: 0; padding: 9px; font-size: 10px; color: #9ca3af; white-space: pre-wrap; max-height: 120px; overflow: hidden; }
+  .card .body { padding: 7px 9px; font-size: 11px; color: #6b7280; }
+  .card .body b { color: #93c5fd; font-weight: 500; }
+  .card .body a { color: #34d399; }
 </style>
 </head>
 <body>
@@ -55,7 +62,7 @@ const indexPage = `<!DOCTYPE html>
   <section>
     <h2>Satellites</h2>
     <table id="sats">
-      <thead><tr><th>name</th><th>norad</th><th>downlink</th><th>mode</th><th>status</th><th>receivers</th></tr></thead>
+      <thead><tr><th>name</th><th>norad</th><th>downlink</th><th>mode</th><th>relay</th><th>status</th><th>receivers</th></tr></thead>
       <tbody></tbody>
    </table>
   </section>
@@ -65,6 +72,10 @@ const indexPage = `<!DOCTYPE html>
       <thead><tr><th>satellite</th><th>receiver</th><th>start</th><th>samples</th><th>rate</th><th>file</th></tr></thead>
       <tbody></tbody>
     </table>
+  </section>
+  <section>
+    <h2>SatNOGS gallery <span id="gallery-count" class="miss"></span></h2>
+    <div id="gallery" class="gallery"></div>
   </section>
 </main>
 <script>
@@ -114,15 +125,52 @@ async function refreshSats() {
     const body = el('sats').querySelector('tbody');
     body.textContent = '';
     sats.forEach(s => {
-      const tr = row([s.name, s.norad_id, (s.downlink_hz / 1e6).toFixed(4) + ' MHz', s.mode, s.status, s.receivers]);
+      const tr = row([s.name, s.norad_id, (s.downlink_hz / 1e6).toFixed(4) + ' MHz', s.mode, s.relay || '—', s.status, s.receivers]);
       tr.className = 'sat-status-' + s.status;
       body.appendChild(tr);
     });
   } catch (err) { /* satellites list is static; leave as-is */ }
 }
 
-refreshStatus(); refreshSats();
+async function refreshGallery() {
+  try {
+    const items = await (await fetch('/api/gallery.json')).json();
+    const box = el('gallery');
+    box.textContent = '';
+    el('gallery-count').textContent = items.length ? items.length + ' artefacts' : '';
+    items.slice(0, 30).forEach(it => {
+      const card = document.createElement('div');
+      card.className = 'card';
+      if (it.kind === 'image') {
+        const img = document.createElement('img');
+        img.loading = 'lazy'; img.src = it.url; img.alt = it.satellite;
+        card.appendChild(img);
+      } else if (it.kind === 'text') {
+        const pre = document.createElement('pre');
+        pre.textContent = it.text || '';
+        card.appendChild(pre);
+      }
+      const body = document.createElement('div');
+      body.className = 'body';
+      const name = document.createElement('b');
+      name.textContent = it.satellite || ('#' + it.observation_id);
+      body.appendChild(name);
+      body.appendChild(document.createTextNode(' ' + (it.station || '') + ' · ' + fmtDate(it.start) + ' '));
+      const link = document.createElement('a');
+      link.href = it.url; link.textContent = 'open'; link.target = '_blank';
+      body.appendChild(link);
+      card.appendChild(body);
+      box.appendChild(card);
+    });
+    if (!items.length) box.textContent = 'none yet — the gallery refreshes from SatNOGS in the background';
+  } catch (err) {
+    el('gallery').textContent = 'gallery unavailable: ' + err;
+  }
+}
+
+refreshStatus(); refreshSats(); refreshGallery();
 setInterval(refreshStatus, 5000);
+setInterval(refreshGallery, 30000);
 </script>
 </body>
 </html>

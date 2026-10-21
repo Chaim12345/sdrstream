@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/Chaim12345/sdrstream/go/internal/catalogue"
+	"github.com/Chaim12345/sdrstream/go/internal/gallery"
+	"github.com/Chaim12345/sdrstream/go/internal/relays"
 	"github.com/Chaim12345/sdrstream/go/internal/satellites"
 	"github.com/Chaim12345/sdrstream/go/internal/satnogs"
 	"github.com/Chaim12345/sdrstream/go/internal/tle"
@@ -61,6 +63,7 @@ type SatelliteInfo struct {
 	NoradID    int    `json:"norad_id"`
 	DownlinkHz int64  `json:"downlink_hz"`
 	Mode       string `json:"mode"`
+	Relay      string `json:"relay,omitempty"`
 	Band       string `json:"band"`
 	Status     string `json:"status"`
 	Receivers  int    `json:"receivers"`
@@ -68,20 +71,106 @@ type SatelliteInfo struct {
 
 // Server holds the state and serves the UI and API.
 type Server struct {
-	mu          sync.Mutex
-	captures    []Capture
-	passes      []PassInfo
-	html        string
-	capturesDir string
+	mu           sync.Mutex
+	captures     []Capture
+	passes       []PassInfo
+	gallery      []gallery.Item
+	html         string
+	capturesDir  string
+	galleryDir   string
+	galleryAt    time.Time
 }
 
 // New builds a server with the bundled page. When capturesDir is non-empty
 // the capture table is refreshed from WAV files found there on every poll,
-// so recordings made by satrecord (a separate process) show up live.
-func New(capturesDir string) *Server {
-	s := &Server{capturesDir: capturesDir}
+// so recordings made by satrecord (a separate process) show up live. The
+// gallery uses galleryDir (default: SatNOGS cache/gallery), first loading
+// the manifest cached on disk and then refreshing it in the background.
+func New(capturesDir, galleryDir string) *Server {
+	if galleryDir == "" {
+		galleryDir = filepath.Join(satnogs.CacheDir, "gallery")
+	}
+	s := &Server{capturesDir: capturesDir, galleryDir: galleryDir}
+	s.loadGallery()
+	go s.galleryLoop()
 	s.loadPasses()
 	return s
+}
+
+// galleryLoop keeps the SatNOGS gallery fresh without blocking startup.
+func (s *Server) galleryLoop() {
+	s.refreshGallery()
+	for range time.Tick(30 * time.Minute) {
+		s.refreshGallery()
+	}
+}
+
+// refreshGallery downloads new artefacts (images and text; raw binary is
+// skipped) for observations from the last week and rewrites the manifest.
+func (s *Server) refreshGallery() {
+	end := time.Now().UTC().Add(6 * time.Hour)
+	start := end.AddDate(0, 0, -7)
+	observations, err := satnogs.Between(start, end, 0, 25, 60*time.Second)
+	if err != nil {
+		log.Printf("web: gallery observations: %v", err)
+		return
+	}
+	items := gallery.Collect(observations)
+	saved, err := gallery.Fetch(items, s.galleryDir, 120*time.Second, 20<<20, false)
+	if err != nil {
+		log.Printf("web: gallery fetch: %v", err)
+	}
+	if len(saved) == 0 {
+		return
+	}
+	sort.SliceStable(saved, func(i, j int) bool { return saved[i].Start.After(saved[j].Start) })
+	s.mu.Lock()
+	s.gallery = saved
+	s.galleryAt = time.Now()
+	s.mu.Unlock()
+	s.saveGallery()
+}
+
+// saveGallery writes the manifest next to the artefacts, with absolute
+// paths stripped so the directory can be moved.
+func (s *Server) saveGallery() {
+	s.mu.Lock()
+	items := make([]gallery.Item, len(s.gallery))
+	copy(items, s.gallery)
+	s.mu.Unlock()
+	for i := range items {
+		items[i].Path = ""
+	}
+	data, err := json.MarshalIndent(items, "", " ")
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(s.galleryDir, 0o755)
+	_ = os.WriteFile(filepath.Join(s.galleryDir, "index.json"), data, 0o644)
+}
+
+// loadGallery restores the manifest and drops entries whose files vanished.
+func (s *Server) loadGallery() {
+	data, err := os.ReadFile(filepath.Join(s.galleryDir, "index.json"))
+	if err != nil {
+		return
+	}
+	var items []gallery.Item
+	if err := json.Unmarshal(data, &items); err != nil {
+		return
+	}
+	kept := items[:0]
+	for _, item := range items {
+		path := filepath.Join(s.galleryDir, item.Name)
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		item.Path = path
+		kept = append(kept, item)
+	}
+	s.mu.Lock()
+	s.gallery = kept
+	s.mu.Unlock()
 }
 
 // loadPasses predicts passes for the next 12 hours over a few good receivers
@@ -225,7 +314,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/captures.json", s.handleCaptures)
 	mux.HandleFunc("/api/satellites.json", s.handleSatellites)
 	mux.HandleFunc("/api/observations.json", s.handleObservations)
+	mux.HandleFunc("/api/gallery.json", s.handleGallery)
 	mux.HandleFunc("/audio/", s.handleAudio)
+	mux.HandleFunc("/gallery/", s.handleGalleryFile)
 	return mux
 }
 
@@ -275,12 +366,54 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, filepath.Join(s.capturesDir, name))
 }
 
+// handleGallery lists the saved artefacts. URLs are rewritten to local
+// files so the browser never depends on the SatNOGS S3 bucket.
+func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	items := make([]gallery.Item, len(s.gallery))
+	copy(items, s.gallery)
+	s.mu.Unlock()
+	for i := range items {
+		items[i].URL = "/gallery/" + url.PathEscape(items[i].Name)
+		items[i].Path = ""
+	}
+	writeJSON(w, items)
+}
+
+// handleGalleryFile serves one downloaded artefact, but only names that are
+// present in the manifest, so the directory cannot be browsed or escaped.
+func (s *Server) handleGalleryFile(w http.ResponseWriter, r *http.Request) {
+	name, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/gallery/"))
+	if err != nil || name == "" || strings.ContainsAny(name, "/\\") {
+		http.NotFound(w, r)
+		return
+	}
+	s.mu.Lock()
+	found := false
+	for _, item := range s.gallery {
+		if item.Name == name {
+			found = true
+			break
+		}
+	}
+	s.mu.Unlock()
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, filepath.Join(s.galleryDir, name))
+}
+
 func (s *Server) handleSatellites(w http.ResponseWriter, r *http.Request) {
 	var out []SatelliteInfo
 	for _, sat := range satellites.Table {
+		relay := ""
+		if relays.IsRelay(sat) && sat.Status == "active" {
+			relay = string(relays.KindOf(sat))
+		}
 		out = append(out, SatelliteInfo{
 			Name: sat.Name, NoradID: sat.NoradID, DownlinkHz: sat.DownlinkHz,
-			Mode: sat.Mode, Status: sat.Status,
+			Mode: sat.Mode, Relay: relay, Status: sat.Status,
 			Receivers: len(catalogue.ForFrequency(float64(sat.DownlinkHz))),
 		})
 	}

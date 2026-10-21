@@ -277,6 +277,34 @@ any demodulated data can be pulled down directly:
 python -m sdrstream fetch ISS --out captures --count 2
 ```
 
+### Relays and the payload gallery (Go)
+
+Listening means the relay downlink is what matters: an FM repeater,
+linear transponder or digipeater retransmits whatever reaches its uplink. The
+Go build lists them and flags them in the web UI:
+
+```bash
+cd go
+go run ./cmd/sdrstream relays                  # FM voice, linear, digipeater
+go run ./cmd/sdrstream relays --kind digipeater
+```
+
+The gallery collects what ground stations actually decoded, not just
+waterfalls: SSTV frames, telemetry text and other demod files attached to
+SatNOGS observations.
+
+```bash
+go run ./cmd/sdrstream gallery -days 7                      # images and text
+go run ./cmd/sdrstream gallery -satellite ISS -raw          # keep raw bits too
+go run ./cmd/sdrstream web -port 8000                       # gallery cards in the UI
+```
+
+`gallery` queries a date window because the plain SatNOGS feed only returns
+upcoming passes. Files are classified from their bytes, not the URL extension
+(the S3 links have none), and raw binary demod data is skipped unless `-raw`
+is passed. The web server refreshes the same gallery every 30 minutes and
+serves the files itself, so the browser never depends on the S3 bucket.
+
 ### More receivers, and satellites we do not know about
 
 The WebSDR catalogue is a static file. The other large public network,
@@ -380,6 +408,23 @@ handled deliberately:
   ring buffer.
 * A truncated `0x80` frame is padded with silence: the reference reads past the
   end of the message and relies on `undefined` coercing to zero.
+
+### KiwiSDR
+
+1. Connect to `ws(s)://<host>/<unix-time>/SND` (any plausible timestamp works)
+   and send `SET auth t=kiwi p=` to start a public session.
+2. Send `SET AR OK in=12000 out=44100` before tuning: without it the server
+   does not start audio. Then `SET agc=1` and
+   `SET mod=usb low_cut=300 high_cut=2700 freq=<kHz>`.
+3. Audio frames carry a three-byte tag (`SND`). The payload is one flag byte,
+   a 32-bit little-endian sequence number, a 16-bit **big-endian** S-meter
+   value and samples. Flag `0x10` marks IMA ADPCM; otherwise samples are
+   big-endian int16. The audio rate is 12 kHz.
+4. Configuration arrives in `MSG` frames: the same three-byte tag, one spare
+   byte and ASCII `name=value` pairs. Despite being text they arrive as
+   **binary** WebSocket frames, so they are easy to miss.
+5. The S-meter is `0.1*raw - 127` dBm. `MSG` also carries the server version,
+   receiver count, bandwidth and GPS position.
 
 ## Testing
 

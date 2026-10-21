@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -76,32 +75,25 @@ func Discover(ctx context.Context, timeout time.Duration, limit int) ([]Discover
 	if err != nil {
 		return nil, err
 	}
-	URLs := extractReceiverURLs(body)
+	stations, err := ParseStations(body)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var URLs []string
+	for _, station := range stations {
+		if station.Type != "OpenWebRX" || seen[station.URL] {
+			continue
+		}
+		seen[station.URL] = true
+		URLs = append(URLs, station.URL)
+	}
 	if limit > 0 && len(URLs) > limit {
 		URLs = URLs[:limit]
 	}
 	results := probeAll(ctx, URLs, timeout)
 	sort.Slice(results, func(i, j int) bool { return results[i].URL < results[j].URL })
 	return results, nil
-}
-
-// extractReceiverURLs pulls the ws(s):// or http(s):// server URLs out of the
-// directory page's embedded receiver array.
-func extractReceiverURLs(page string) []string {
-	pattern := regexp.MustCompile(`https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+`)
-	seen := map[string]bool{}
-	var out []string
-	for _, match := range pattern.FindAllString(page, -1) {
-		URL := strings.TrimRight(strings.Split(match, "\"")[0], "/")
-		if seen[URL] {
-			continue
-		}
-		// The map page links to many documentation pages too; keep hosts that
-		// look like receivers (the embedded array entries carry /rx/ or ws).
-		seen[URL] = true
-		out = append(out, URL)
-	}
-	return out
 }
 
 func probeAll(ctx context.Context, URLs []string, timeout time.Duration) []DiscoverResult {
