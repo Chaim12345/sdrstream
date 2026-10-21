@@ -56,7 +56,47 @@ const (
 	refRTTY  = "../../../tests/data/ref_rtty.wav"
 	refSSTV  = "../../../tests/data/ref_sstv.wav"
 	refPSK31 = "../../../tests/data/ref_psk31.wav"
+	refMorse = "../../../tests/data/ref_morse.wav"
 )
+
+func TestMorseReference(t *testing.T) {
+	result, err := MorseDecode(refMorse)
+	if err != nil {
+		t.Fatalf("MorseDecode: %v", err)
+	}
+	if !strings.Contains(result.Text, "CQ DE RS44 SAT") {
+		t.Errorf("text = %q, want it to contain the sent text", result.Text)
+	}
+	if result.ToneHz < 650 || result.ToneHz > 750 {
+		t.Errorf("tone = %.1f Hz, want about 700 Hz", result.ToneHz)
+	}
+	// The fixture keys at 60 ms per dot; anything far from that is a
+	// mis-measured element length rather than a real signal.
+	if result.DotMs < 45 || result.DotMs > 80 {
+		t.Errorf("dot = %.1f ms, want about 60 ms", result.DotMs)
+	}
+}
+
+// TestMorseRejectsNoise checks that a loud noise burst is not reported as
+// CW text: real noise keys into plausible run lengths, so the decoder has
+// to judge the timing before it trusts the characters.
+func TestMorseRejectsNoise(t *testing.T) {
+	rate := 8000
+	samples := make([]float64, rate*10)
+	seed := uint32(12345)
+	for i := range samples {
+		seed = seed*1664525 + 1013904223
+		samples[i] = float64(int32(seed)) / float64(1<<31) * 0.5
+	}
+	result, tone, snr := morseFromSamples(samples, rate)
+	if result.Text != "" {
+		t.Errorf("noise decoded as %q, want no text", result.Text)
+	}
+	if tone <= 0 {
+		t.Error("no tone reported for the noise")
+	}
+	_ = snr
+}
 
 func TestDTMFReference(t *testing.T) {
 	samples, rate, err := ReadWAV(refDTMF)

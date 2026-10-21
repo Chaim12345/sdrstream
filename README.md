@@ -277,6 +277,11 @@ any demodulated data can be pulled down directly:
 python -m sdrstream fetch ISS --out captures --count 2
 ```
 
+If the SatNOGS API is unreachable but public fetch proxies are available, set
+`SDRSTREAM_SATNOGS_PROXY` to one with a `{url}` placeholder
+(`https://api.allorigins.win/raw?url={url}`). Only the public observation
+feed is sent through it; payload files still come from the S3 store directly.
+
 ### Relays and the payload gallery (Go)
 
 Listening means the relay downlink is what matters: an FM repeater,

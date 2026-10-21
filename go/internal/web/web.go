@@ -39,11 +39,11 @@ type Capture struct {
 
 // Status is the live snapshot the UI polls.
 type Status struct {
-	UpdatedAt time.Time         `json:"updated_at"`
-	Captures  []Capture         `json:"captures"`
-	Passes    []PassInfo        `json:"passes"`
-	Satellites []SatelliteInfo  `json:"satellites"`
-	Receivers  int               `json:"receivers"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+	Captures   []Capture       `json:"captures"`
+	Passes     []PassInfo      `json:"passes"`
+	Satellites []SatelliteInfo `json:"satellites"`
+	Receivers  int             `json:"receivers"`
 }
 
 // PassInfo is one predicted pass.
@@ -71,14 +71,14 @@ type SatelliteInfo struct {
 
 // Server holds the state and serves the UI and API.
 type Server struct {
-	mu           sync.Mutex
-	captures     []Capture
-	passes       []PassInfo
-	gallery      []gallery.Item
-	html         string
-	capturesDir  string
-	galleryDir   string
-	galleryAt    time.Time
+	mu          sync.Mutex
+	captures    []Capture
+	passes      []PassInfo
+	gallery     []gallery.Item
+	html        string
+	capturesDir string
+	galleryDir  string
+	galleryAt   time.Time
 }
 
 // New builds a server with the bundled page. When capturesDir is non-empty
@@ -108,7 +108,9 @@ func (s *Server) galleryLoop() {
 // refreshGallery downloads new artefacts (images and text; raw binary is
 // skipped) for observations from the last week and rewrites the manifest.
 func (s *Server) refreshGallery() {
-	end := time.Now().UTC().Add(6 * time.Hour)
+	// The window reaches two days past the local clock so that a clock
+	// behind the network's does not hide the newest recordings.
+	end := time.Now().UTC().AddDate(0, 0, 2)
 	start := end.AddDate(0, 0, -7)
 	observations, err := satnogs.Between(start, end, 0, 25, 60*time.Second)
 	if err != nil {

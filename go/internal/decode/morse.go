@@ -18,6 +18,7 @@ type MorseResult struct {
 	ToneHz    float64
 	SnrdB     float64
 	DotsFound int
+	DotMs     float64
 }
 
 var morseTable = map[string]string{
@@ -228,5 +229,38 @@ func morseFromSamples(samples []float64, rate int) (MorseResult, float64, float6
 	}
 	flushSymbol()
 	_ = dots
-	return MorseResult{Text: sb.String(), DotsFound: len(onLens)}, bestTone, bestSNR
+	stepMs := 1000 * float64(win) / float64(rate)
+	result := MorseResult{Text: sb.String(), DotsFound: len(onLens), DotMs: float64(dot) * stepMs,
+		ToneHz: bestTone, SnrdB: bestSNR}
+	// Noise keys into plausible-looking runs, so the text is only kept when
+	// the timing and the character mix both look like real CW.
+	if !plausibleMorse(result) {
+		result.Text = ""
+	}
+	return result, bestTone, bestSNR
+}
+
+// plausibleMorse rejects output that is really noise. A CW beacon keys at
+// 5-40 words per minute, so a dot lasts 30-200 ms; noise produces runs far
+// shorter than that. The character mix must also be mostly decodable.
+func plausibleMorse(result MorseResult) bool {
+	if result.DotMs < 25 || result.DotMs > 250 {
+		return false
+	}
+	if result.ToneHz < 150 || result.ToneHz > 2000 {
+		return false
+	}
+	letters, unknown := 0, 0
+	for _, r := range result.Text {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			letters++
+		case r == '<':
+			unknown++
+		}
+	}
+	if letters < 6 {
+		return false
+	}
+	return unknown*3 <= letters
 }

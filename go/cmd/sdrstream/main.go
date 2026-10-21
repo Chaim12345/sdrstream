@@ -20,6 +20,7 @@ import (
 	"github.com/Chaim12345/sdrstream/go/internal/directory"
 	"github.com/Chaim12345/sdrstream/go/internal/discovery"
 	"github.com/Chaim12345/sdrstream/go/internal/gallery"
+	"github.com/Chaim12345/sdrstream/go/internal/kiwisdr"
 	"github.com/Chaim12345/sdrstream/go/internal/military"
 	"github.com/Chaim12345/sdrstream/go/internal/openwebrx"
 	"github.com/Chaim12345/sdrstream/go/internal/relays"
@@ -177,8 +178,8 @@ func resolveReceiver(serverURL string, kind string, latArg, lonArg string) (cata
 func cmdRecord(args []string) error {
 	fs := flag.NewFlagSet("record", flag.ExitOnError)
 	server := fs.String("server", "", "server URL or host[:port]")
-	kind := fs.String("kind", "openwebrx", "protocol: openwebrx or websdr")
-	freq := fs.String("freq", "", "frequency: Hz for openwebrx, kHz for websdr")
+	kind := fs.String("kind", "openwebrx", "protocol: openwebrx, websdr or kiwi")
+	freq := fs.String("freq", "", "frequency: Hz for openwebrx and kiwi, kHz for websdr")
 	mode := fs.String("mode", "lsb", "modulation")
 	seconds := fs.Float64("seconds", 10, "recording duration in seconds")
 	out := fs.String("out", "recording.wav", "output file")
@@ -188,6 +189,31 @@ func cmdRecord(args []string) error {
 		return fmt.Errorf("--server is required")
 	}
 	ctx := context.Background()
+	if *kind == "kiwi" {
+		client, err := kiwisdr.New(*server, kiwisdr.DefaultOptions())
+		if err != nil {
+			return err
+		}
+		if err := client.Connect(ctx); err != nil {
+			return err
+		}
+		defer client.Close()
+		frequency, _ := strconv.ParseInt(*freq, 10, 64)
+		if err := client.Tune(ctx, frequency, *mode); err != nil {
+			return err
+		}
+		fmt.Printf("recording %.1fs from %s ...\n", *seconds, *server)
+		samples, rate, err := client.Record(ctx, time.Duration(*seconds*float64(time.Second)))
+		if err != nil {
+			return err
+		}
+		info := client.InfoSnapshot()
+		if info.Version != "" {
+			fmt.Printf("kiwi: version %s, %d channels, GPS %.4f/%.4f\n",
+				info.Version, info.RXChannels, info.GPSLat, info.GPSLon)
+		}
+		return finish(samples, rate, *out)
+	}
 	if *kind == "websdr" {
 		client, err := websdr.New(*server, websdr.Options{Reconnect: !*noReconnect})
 		if err != nil {
@@ -837,7 +863,10 @@ func cmdGallery(args []string) error {
 		norad = sat.NoradID
 		label = sat.Name
 	}
-	end := time.Now().UTC().Add(6 * time.Hour)
+	// The window reaches two days past the local clock: SatNOGS publishes
+	// observations with the start time of the pass, and a clock that lags
+	// the network's would otherwise hide the newest recordings.
+	end := time.Now().UTC().AddDate(0, 0, 2)
 	start := end.AddDate(0, 0, -*days)
 	fmt.Printf("searching SatNOGS observations of %s from the last %d day(s)...\n", label, *days)
 	observations, err := satnogs.Between(start, end, norad, *limit, *timeout)
@@ -1320,10 +1349,13 @@ func cmdDecode(args []string) error {
 				if err != nil {
 					fmt.Printf("   morse: %v\n", err)
 				} else {
-					fmt.Printf("   morse: tone %.0f Hz (SNR %.0f dB, %d key-downs)\n",
-						res.ToneHz, res.SnrdB, res.DotsFound)
 					if res.Text != "" {
+						fmt.Printf("   morse: tone %.0f Hz (SNR %.0f dB, %d key-downs, dot %.0f ms)\n",
+							res.ToneHz, res.SnrdB, res.DotsFound, res.DotMs)
 						fmt.Printf("   text:  %s\n", res.Text)
+					} else {
+						fmt.Printf("   morse: no CW text (strongest tone %.0f Hz, SNR %.0f dB)\n",
+							res.ToneHz, res.SnrdB)
 					}
 				}
 			}

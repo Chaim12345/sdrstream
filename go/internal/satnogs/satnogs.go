@@ -170,8 +170,9 @@ func (o Observation) Summary() string {
 		o.ID, start, o.SatName, o.Mode, o.MaxElevation, frequency, o.Status)
 }
 
-// getJSON fetches and caches one API endpoint. Retries three times because
-// the network is intermittently rate limited or refuses connections.
+// getJSON fetches and caches one API endpoint. The SatNOGS host drops
+// connections and rate limits aggressively, so the request is retried with
+// a backoff before giving up.
 func getJSON(path string, target interface{}, timeout time.Duration) error {
 	cachePath := filepath.Join(CacheDir, "satnogs_"+strings.ReplaceAll(strings.ReplaceAll(path, "/", "_"), "?", "_")+".json")
 	if data, err := os.ReadFile(cachePath); err == nil {
@@ -179,13 +180,25 @@ func getJSON(path string, target interface{}, timeout time.Duration) error {
 			return nil
 		}
 	}
-	URL := networkAPI + path
+	direct := networkAPI + path
+	// Some networks block the SatNOGS API but not its payload store. A
+	// read-only fetch proxy (for example https://api.allorigins.win/raw?url={url})
+	// can be supplied through the environment; only this public feed goes
+	// through it.
+	targets := []string{direct}
+	if proxy := os.Getenv("SDRSTREAM_SATNOGS_PROXY"); proxy != "" {
+		targets = append(targets, strings.ReplaceAll(proxy, "{url}", url.QueryEscape(direct)))
+	}
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 6; attempt++ {
 		if attempt > 0 {
 			time.Sleep(time.Duration(attempt) * 2 * time.Second)
 		}
 		client := &http.Client{Timeout: timeout}
+		// Alternate between the direct host and the proxy: the SatNOGS
+		// host drops connections under load, so a retry on the other route
+		// often succeeds.
+		URL := targets[attempt%len(targets)]
 		request, err := http.NewRequest("GET", URL, nil)
 		if err != nil {
 			return err
