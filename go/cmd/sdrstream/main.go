@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/decode"
 	"github.com/chaim12345/sdrstream/go/internal/directory"
 	"github.com/chaim12345/sdrstream/go/internal/discovery"
+	"github.com/chaim12345/sdrstream/go/internal/feeds"
 	"github.com/chaim12345/sdrstream/go/internal/gallery"
 	"github.com/chaim12345/sdrstream/go/internal/kiwisdr"
 	"github.com/chaim12345/sdrstream/go/internal/military"
@@ -107,6 +109,8 @@ func main() {
 		err = cmdGallery(args)
 	case "web":
 		err = cmdWeb(args)
+	case "feeds":
+		err = cmdFeeds(args)
 	case "decode":
 		err = cmdDecode(args)
 	case "scan":
@@ -1355,8 +1359,8 @@ func cmdWeb(args []string) error {
 	capturesDir := fs.String("captures-dir", "../captures", "directory of saved WAV captures to list and serve")
 	galleryDir := fs.String("gallery-dir", "", "directory for SatNOGS gallery artefacts (default: cache/gallery)")
 	scanStations := fs.String("scan-stations", "", "comma-separated public receivers for bounded parallel scan (one connection per receiver)")
-	scanStart := fs.Int("scan-start-connections", 20, "initial scanner concurrency ramp step")
-	scanMax := fs.Int("scan-max-connections", 80, "integrator scanner maximum concurrency (hard limit 80)")
+	scanStart := fs.Int("scan-start-connections", 49, "initial scanner concurrency ramp step")
+	scanMax := fs.Int("scan-max-connections", 100, "integrator scanner maximum concurrency (hard limit 100)")
 	scanRamp := fs.String("scan-ramp", "20,50,100,200", "comma-separated ramp steps, capped by --scan-max-connections")
 	scanGoodRate := fs.Float64("scan-advance-error-rate", 0.15, "advance if a completed wave has refusal+timeout rate below this fraction")
 	scanRefusalBackoff := fs.Float64("scan-backoff-refusal-rate", 0.30, "step down if a completed wave refusal rate exceeds this fraction")
@@ -1364,6 +1368,8 @@ func cmdWeb(args []string) error {
 	scanLoadBackoff := fs.Float64("scan-backoff-load-ratio", 0.90, "step down above this load-average/core ratio")
 	scanBandwidth := fs.Float64("scan-bandwidth-limit-mbps", 20, "estimated aggregate receive bandwidth limit in Mbit/s")
 	scanStreamKbps := fs.Float64("scan-stream-kbps", 100, "estimated bandwidth per active receiver stream in kbit/s")
+	scanTargetLimit := fs.Int("scan-target-limit", 40, "maximum sequential frequencies per station visit (1..40)")
+	scanStationSession := fs.Duration("scan-station-session", 5*time.Minute, "maximum connection duration per station visit (<=5m)")
 	monitorServer := fs.String("monitor-server", "", "receiver to monitor for live traffic (empty = no monitoring)")
 	monitorLabel := fs.String("monitor-label", "", "programme or station label for monitor activities and gallery entries")
 	monitorKind := fs.String("monitor-kind", "openwebrx", "monitor receiver protocol: openwebrx, websdr or kiwi")
@@ -1387,6 +1393,10 @@ func cmdWeb(args []string) error {
 	sstvImageHelp := fs.String("sstv-image-format-help", "write decoded SSTV image (Martin M1/M2, Scottie S1, Robot 36) as PNG", "help text for SSTV image decoder")
 	_ = sstvImageHelp
 	noAuth := fs.Bool("no-auth", false, "run the web UI without a password (INSECURE: required for non-loopback binds when SDRSTREAM_UI_PASSWORD is unset)")
+	noFeeds := fs.Bool("no-feeds", false, "disable public data feeds")
+	feedsLat := fs.Float64("feeds-lat", 32.08, "feeds center latitude")
+	feedsLon := fs.Float64("feeds-lon", 34.78, "feeds center longitude")
+	aisKey := fs.String("ais-key", os.Getenv("SDRSTREAM_AIS_KEY"), "aisstream.io key; prefer SDRSTREAM_AIS_KEY")
 	fs.Parse(args)
 	if *monitorMultimon != "" && decode.MultimonBinary(*monitorMultimon) == "" {
 		return fmt.Errorf("-monitor-multimon: %q is not an executable file", *monitorMultimon)
@@ -1396,8 +1406,15 @@ func cmdWeb(args []string) error {
 	}
 	server := web.New(*capturesDir, *galleryDir)
 	server.NoAuth = *noAuth
+	if !*noFeeds {
+		feedsManager := feeds.New(0, nil)
+		server.SetFeeds(feedsManager)
+		feedsCtx, feedsCancel := context.WithCancel(context.Background())
+		defer feedsCancel()
+		feeds.Start(feedsCtx, feedsManager, *feedsLat, *feedsLon, *aisKey)
+	}
 	if strings.TrimSpace(*scanStations) != "" {
-		config, err := newScanConfig(*scanStart, *scanMax, *scanRamp, *scanGoodRate, *scanRefusalBackoff, *scanLoadAdvance, *scanLoadBackoff, *scanBandwidth, *scanStreamKbps)
+		config, err := newScanConfig(*scanStart, *scanMax, *scanRamp, *scanGoodRate, *scanRefusalBackoff, *scanLoadAdvance, *scanLoadBackoff, *scanBandwidth, *scanStreamKbps, *scanTargetLimit, *scanStationSession)
 		if err != nil {
 			return err
 		}
@@ -1459,6 +1476,29 @@ func cmdWeb(args []string) error {
 		fmt.Printf("monitoring %s (%s)\n", *monitorServer, *monitorKind)
 	}
 	return server.Serve(fmt.Sprintf("%s:%d", *host, *port))
+}
+
+// cmdFeeds reports a bounded snapshot of the configured public live feeds.
+func cmdFeeds(args []string) error {
+	fs := flag.NewFlagSet("feeds", flag.ExitOnError)
+	lat := fs.Float64("lat", 32.08, "center latitude")
+	lon := fs.Float64("lon", 34.78, "center longitude")
+	listen := fs.Duration("listen", 20*time.Second, "listen duration")
+	aisKey := fs.String("ais-key", os.Getenv("SDRSTREAM_AIS_KEY"), "AIS API key")
+	_ = fs.Parse(args)
+	manager := feeds.New(0, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), *listen+15*time.Second)
+	defer cancel()
+	feeds.Start(ctx, manager, *lat, *lon, *aisKey)
+	select {
+	case <-time.After(*listen):
+	case <-ctx.Done():
+	}
+	snap := manager.Snapshot(40)
+	for _, s := range snap.Sources {
+		fmt.Printf("%s %s %d\n", s.Name, s.State, s.Items)
+	}
+	return nil
 }
 
 // cmdDecode extracts data from a recorded pass: APRS packets via
@@ -1658,11 +1698,19 @@ type scanConfig struct {
 	advanceErrorRate, backoffRefusalRate float64
 	advanceLoadRatio, backoffLoadRatio   float64
 	bandwidthLimitMbps, streamKbps       float64
+	targetLimit                          int
+	stationSession                       time.Duration
 }
 
-func newScanConfig(start, maximum int, ramp string, advanceError, backoffRefusal, advanceLoad, backoffLoad, bandwidth, streamKbps float64) (scanConfig, error) {
-	if maximum < 1 || maximum > 80 {
-		return scanConfig{}, fmt.Errorf("--scan-max-connections must be 1..80")
+func newScanConfig(start, maximum int, ramp string, advanceError, backoffRefusal, advanceLoad, backoffLoad, bandwidth, streamKbps float64, targetLimit int, stationSession time.Duration) (scanConfig, error) {
+	if maximum < 1 || maximum > 100 {
+		return scanConfig{}, fmt.Errorf("--scan-max-connections must be 1..100")
+	}
+	if targetLimit < 1 || targetLimit > 40 {
+		return scanConfig{}, fmt.Errorf("--scan-target-limit must be 1..40")
+	}
+	if stationSession <= 0 || stationSession > 5*time.Minute {
+		return scanConfig{}, fmt.Errorf("--scan-station-session must be >0 and <=5m")
 	}
 	steps := []int{}
 	for _, raw := range strings.Split(ramp, ",") {
@@ -1687,24 +1735,30 @@ func newScanConfig(start, maximum int, ramp string, advanceError, backoffRefusal
 	if advanceError < 0 || advanceError > 1 || backoffRefusal < 0 || backoffRefusal > 1 || advanceLoad <= 0 || backoffLoad <= 0 || bandwidth <= 0 || streamKbps <= 0 {
 		return scanConfig{}, fmt.Errorf("scan ramp rates and resource limits must be positive fractions/values")
 	}
-	if steps[0] > start {
-		steps = append([]int{start}, steps...)
+	if !slices.Contains(steps, start) {
+		insert := len(steps)
+		for i, step := range steps {
+			if step > start {
+				insert = i
+				break
+			}
+		}
+		steps = append(steps, 0)
+		copy(steps[insert+1:], steps[insert:])
+		steps[insert] = start
 	}
-	return scanConfig{start: start, maximum: maximum, ramp: steps, advanceErrorRate: advanceError, backoffRefusalRate: backoffRefusal, advanceLoadRatio: advanceLoad, backoffLoadRatio: backoffLoad, bandwidthLimitMbps: bandwidth, streamKbps: streamKbps}, nil
+	return scanConfig{start: start, maximum: maximum, ramp: steps, advanceErrorRate: advanceError, backoffRefusalRate: backoffRefusal, advanceLoadRatio: advanceLoad, backoffLoadRatio: backoffLoad, bandwidthLimitMbps: bandwidth, streamKbps: streamKbps, targetLimit: targetLimit, stationSession: stationSession}, nil
 }
 
 func runParallelScan(ctx context.Context, server *web.Server, receivers []string, multimonPath, direwolfPath string, cfg scanConfig) {
-	// Normalize and deduplicate receiver identifiers before opening any sockets.
 	unique := make([]string, 0, len(receivers))
 	seen := map[string]bool{}
 	for _, raw := range receivers {
-		entry := strings.TrimSpace(raw)
-		parts := strings.SplitN(entry, "|", 2)
+		parts := strings.SplitN(strings.TrimSpace(raw), "|", 2)
 		if len(parts) != 2 {
-			continue // Require explicit directory type so protocol routing is correct.
+			continue
 		}
-		kind := strings.TrimSpace(parts[0])
-		host := strings.TrimSpace(strings.TrimRight(parts[1], "/"))
+		kind, host := strings.TrimSpace(parts[0]), strings.TrimSpace(strings.TrimRight(parts[1], "/"))
 		key := strings.ToLower(host)
 		if host == "" || seen[key] {
 			continue
@@ -1715,16 +1769,9 @@ func runParallelScan(ctx context.Context, server *web.Server, receivers []string
 	if len(unique) == 0 {
 		return
 	}
-	stepIndex := 0
-	for i, step := range cfg.ramp {
-		if step <= cfg.start {
-			stepIndex = i
-		}
-	}
-	current := min(cfg.maximum, cfg.ramp[stepIndex])
-	if current < 1 {
-		current = 1
-	}
+	steps := cfg.ramp
+	var current atomic.Int64
+	current.Store(int64(min(cfg.maximum, cfg.start)))
 	var active atomic.Int64
 	var metricsMu sync.Mutex
 	refusals, timeouts := 0, 0
@@ -1732,67 +1779,89 @@ func runParallelScan(ctx context.Context, server *web.Server, receivers []string
 	updateMetrics := func() {
 		load := readLoadAverage()
 		metricsMu.Lock()
-		rampStep, refusalCount, timeoutCount := current, refusals, timeouts
+		cumulativeRefusals, cumulativeTimeouts := refusals, timeouts
 		metricsMu.Unlock()
-		estimated := float64(active.Load()) * cfg.streamKbps / 1000
-		server.SetScanMetrics(web.ScanMetrics{RampStep: rampStep, MaxConnections: cfg.maximum, ActiveConnections: int(active.Load()), Refusals: refusalCount, Timeouts: timeoutCount, LoadAverage: load, CoreCount: coreCount, EstimatedBandwidthMbps: estimated, BandwidthLimitMbps: cfg.bandwidthLimitMbps})
+		target, paused := server.ScanControl()
+		server.SetScanMetrics(web.ScanMetrics{RampStep: int(current.Load()), MaxConnections: cfg.maximum, TargetConcurrency: target, Paused: paused, ActiveConnections: int(active.Load()), Refusals: cumulativeRefusals, Timeouts: cumulativeTimeouts, LoadAverage: load, CoreCount: coreCount, EstimatedBandwidthMbps: float64(active.Load()) * cfg.streamKbps / 1000, BandwidthLimitMbps: cfg.bandwidthLimitMbps})
 	}
+	server.SetScanMetrics(web.ScanMetrics{RampStep: int(current.Load()), MaxConnections: cfg.maximum, TargetConcurrency: cfg.start, CoreCount: coreCount, BandwidthLimitMbps: cfg.bandwidthLimitMbps})
 	updateMetrics()
-	for offset := 0; offset < len(unique) && ctx.Err() == nil; {
-		width := current
-		if width > len(unique)-offset {
-			width = len(unique) - offset
+	type result struct{ outcome scanOutcome }
+	results := make(chan result, cfg.maximum)
+	inFlight := 0
+	nextStation := 0
+	completedInWindow, windowIssues, windowRefusals := 0, 0, 0
+	stageIndex := 0
+	for i, step := range steps {
+		if step <= int(current.Load()) {
+			stageIndex = i
 		}
-		waveResults := make(chan scanOutcome, width)
-		sem := make(chan struct{}, width)
-		var wg sync.WaitGroup
-		for _, station := range unique[offset : offset+width] {
-			sem <- struct{}{}
-			wg.Add(1)
-			go func(h string) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				parts := strings.SplitN(h, "|", 2)
-				if len(parts) != 2 {
-					waveResults <- scanOutcome{}
-					return
+	}
+	for (nextStation < len(unique) || inFlight > 0) && ctx.Err() == nil {
+		for {
+			_, paused := server.ScanControl()
+			if !paused || ctx.Err() != nil {
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		requested, paused := server.ScanControl()
+		if paused {
+			requested = 0
+		}
+		limit := min(cfg.maximum, min(requested, int(current.Load())))
+		for nextStation < len(unique) && inFlight < limit && ctx.Err() == nil {
+			station := unique[nextStation]
+			nextStation++
+			parts := strings.SplitN(station, "|", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			stationCtx, cancel := context.WithTimeout(ctx, cfg.stationSession)
+			inFlight++
+			go func(kind, host string) {
+				outcome := scanStation(stationCtx, server, kind, host, cfg.targetLimit, multimonPath, direwolfPath, &active, updateMetrics)
+				cancel()
+				results <- result{outcome}
+			}(parts[0], parts[1])
+		}
+		if inFlight == 0 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case r := <-results:
+			inFlight--
+			completedInWindow++
+			if r.outcome.refused {
+				windowRefusals++
+				windowIssues++
+			}
+			metricsMu.Lock()
+			if r.outcome.refused {
+				refusals++
+			}
+			if r.outcome.timedOut {
+				timeouts++
+				windowIssues++
+			}
+			metricsMu.Unlock()
+			updateMetrics()
+			// Decide after each 20 completed stations, not after the slowest one in a fixed wave.
+			if completedInWindow >= 20 {
+				loadRatio := readLoadAverage() / float64(max(1, coreCount))
+				refusalRate := float64(windowRefusals) / float64(completedInWindow)
+				if (refusalRate > cfg.backoffRefusalRate || loadRatio > cfg.backoffLoadRatio) && stageIndex > 0 {
+					stageIndex--
+					current.Store(int64(min(cfg.maximum, steps[stageIndex])))
+				} else if refusalRate <= cfg.backoffRefusalRate && float64(windowIssues)/float64(completedInWindow) < cfg.advanceErrorRate && loadRatio < cfg.advanceLoadRatio && float64(current.Load())*cfg.streamKbps/1000 < cfg.bandwidthLimitMbps && stageIndex+1 < len(steps) {
+					stageIndex++
+					current.Store(int64(min(cfg.maximum, steps[stageIndex])))
 				}
-				outcome := scanStation(ctx, server, parts[0], parts[1], multimonPath, direwolfPath, &active, updateMetrics)
-				waveResults <- outcome
-			}(station)
-		}
-		wg.Wait()
-		close(waveResults)
-		offset += width
-		waveRefusals, waveTimeouts := 0, 0
-		for outcome := range waveResults {
-			if outcome.refused {
-				waveRefusals++
-			}
-			if outcome.timedOut {
-				waveTimeouts++
+				completedInWindow, windowIssues, windowRefusals = 0, 0, 0
+				updateMetrics()
 			}
 		}
-		metricsMu.Lock()
-		refusals += waveRefusals
-		timeouts += waveTimeouts
-		metricsMu.Unlock()
-		load := readLoadAverage()
-		updateMetrics()
-		denom := float64(max(1, width))
-		issueRate := float64(waveRefusals+waveTimeouts) / denom
-		refusalRate := float64(waveRefusals) / denom
-		loadRatio := load / float64(max(1, coreCount))
-		metricsMu.Lock()
-		if (refusalRate > cfg.backoffRefusalRate || loadRatio > cfg.backoffLoadRatio) && stepIndex > 0 {
-			stepIndex--
-			current = min(cfg.maximum, cfg.ramp[stepIndex])
-		} else if issueRate < cfg.advanceErrorRate && loadRatio < cfg.advanceLoadRatio && float64(current)*cfg.streamKbps/1000 < cfg.bandwidthLimitMbps && stepIndex+1 < len(cfg.ramp) {
-			stepIndex++
-			current = min(cfg.maximum, cfg.ramp[stepIndex])
-		}
-		metricsMu.Unlock()
-		updateMetrics()
 	}
 }
 
@@ -1822,9 +1891,9 @@ func readLoadAverage() float64 {
 	return value
 }
 
-func scanStation(ctx context.Context, server *web.Server, stationType, host, multimonPath, direwolfPath string, active *atomic.Int64, updateMetrics func()) scanOutcome {
+func scanStation(ctx context.Context, server *web.Server, stationType, host string, targetLimit int, multimonPath, direwolfPath string, active *atomic.Int64, updateMetrics func()) scanOutcome {
 	if strings.EqualFold(stationType, "KiwiSDR") || looksLikeKiwi(host) {
-		return scanKiwiStation(ctx, server, host, active, updateMetrics)
+		return scanKiwiStation(ctx, server, host, targetLimit, active, updateMetrics)
 	}
 	active.Add(1)
 	updateMetrics()
@@ -1832,7 +1901,9 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host, mul
 	if strings.EqualFold(stationType, "OpenWebRX") {
 		protocol = "openwebrx"
 	}
-	source, err := monitor.SourceFor(ctx, protocol, host, "")
+	connectCtx, cancelConnect := context.WithTimeout(ctx, 10*time.Second)
+	source, err := monitor.SourceFor(connectCtx, protocol, host, "")
+	cancelConnect()
 	if err != nil {
 		active.Add(-1)
 		updateMetrics()
@@ -1841,16 +1912,25 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host, mul
 		if outcome.refused {
 			state = "refused/skipped"
 		}
-		addScan(server, web.ScanStatus{Station: host, State: state, Result: err.Error(), UpdatedAt: time.Now()})
+		addScan(server, web.ScanStatus{StationType: stationType, Station: host, State: state, Result: err.Error(), UpdatedAt: time.Now()})
 		return outcome
 	}
 	defer func() { source.Close(); active.Add(-1); updateMetrics() }()
-	targets := []scanTarget{{host, 144800e3, "fm"}, {host, 145500e3, "fm"}, {host, 145800e3, "fm"}, {host, 433500e3, "fm"}, {host, 118000e3, "am"}, {host, 121500e3, "am"}, {host, 162400e3, "fm"}, {host, 162550e3, "fm"}, {host, 100e6, "wfm"}}
+	targets := []scanTarget{
+		{host, 144800e3, "fm"}, {host, 145500e3, "fm"}, {host, 145800e3, "fm"}, {host, 145825e3, "fm"},
+		{host, 146520e3, "fm"}, {host, 433500e3, "fm"}, {host, 434650e3, "fm"}, {host, 446006250, "fm"},
+		{host, 446093750, "fm"}, {host, 162400e3, "fm"}, {host, 162425e3, "fm"}, {host, 162450e3, "fm"},
+		{host, 162475e3, "fm"}, {host, 162500e3, "fm"}, {host, 162525e3, "fm"}, {host, 162550e3, "fm"},
+		{host, 88.1e6, "wfm"}, {host, 94.5e6, "wfm"}, {host, 100e6, "wfm"}, {host, 104.5e6, "wfm"},
+	}
+	if targetLimit < len(targets) {
+		targets = targets[:targetLimit]
+	}
 	for _, target := range targets {
 		if ctx.Err() != nil {
 			return scanOutcome{}
 		}
-		idx := addScan(server, web.ScanStatus{Station: host, FrequencyHz: target.frequency, Mode: target.mode, State: "connecting", UpdatedAt: time.Now()})
+		idx := addScan(server, web.ScanStatus{StationType: stationType, Station: host, FrequencyHz: target.frequency, Mode: target.mode, State: "connecting", UpdatedAt: time.Now()})
 		update := func(state, result string) {
 			scansMu.Lock()
 			scans[idx].State = state
@@ -1859,8 +1939,12 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host, mul
 			server.SetScanStatuses(scans)
 			scansMu.Unlock()
 		}
+		update("connected", "")
+		update("tuning", "")
 		update("listening", "")
-		samples, rate, err := source.Listen(ctx, target.frequency, target.mode, 12*time.Second)
+		targetCtx, cancelTarget := context.WithTimeout(ctx, 12*time.Second)
+		samples, rate, err := source.Listen(targetCtx, target.frequency, target.mode, 12*time.Second)
+		cancelTarget()
 		if err != nil {
 			result := classifyScanFailure(err)
 			state := "error"
@@ -1873,7 +1957,9 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host, mul
 			update(state, err.Error())
 			return result
 		}
-		kind, decoder, detail, ok := monitor.New(monitor.Options{MultimonBinary: multimonPath, DirewolfBinary: direwolfPath, Voice: true, VoiceOptions: monitorVoiceOptions("en", 2, 1, "weather, radio, forecast")}).ClassifyForScan(ctx, samples, rate, 3000)
+		decodeCtx, cancelDecode := context.WithTimeout(ctx, 12*time.Second)
+		kind, decoder, detail, ok := monitor.New(monitor.Options{MultimonBinary: multimonPath, DirewolfBinary: direwolfPath, Voice: true, VoiceOptions: monitorVoiceOptions("en", 2, 1, "weather, radio, forecast")}).ClassifyForScan(decodeCtx, samples, rate, 3000)
+		cancelDecode()
 		if !ok || detail == "" {
 			update("no verified decode", "")
 			continue
@@ -1901,19 +1987,25 @@ func looksLikeKiwi(host string) bool {
 	return strings.Contains(text, "kiwisdr") || strings.Contains(text, ":8073") || strings.Contains(text, "kiwi")
 }
 
-func scanKiwiStation(ctx context.Context, server *web.Server, host string, active *atomic.Int64, updateMetrics func()) scanOutcome {
+func scanKiwiStation(ctx context.Context, server *web.Server, host string, targetLimit int, active *atomic.Int64, updateMetrics func()) scanOutcome {
 	var refusal, timeout bool
-	for _, target := range decode.HFBroadcasts {
+	targets := decode.HFBroadcasts
+	if targetLimit < len(targets) {
+		targets = targets[:targetLimit]
+	}
+	for _, target := range targets {
 		if ctx.Err() != nil {
 			break
 		}
 		if !target.ActiveNow(time.Now()) {
 			continue
 		}
-		idx := addScan(server, web.ScanStatus{Station: host, FrequencyHz: target.DialKHz * 1000, Mode: target.Mode, State: "connecting", UpdatedAt: time.Now()})
+		idx := addScan(server, web.ScanStatus{StationType: "KiwiSDR", Station: host, FrequencyHz: target.DialKHz * 1000, Mode: target.Mode, State: "connecting", UpdatedAt: time.Now()})
 		active.Add(1)
 		updateMetrics()
-		result, err := decode.RunHFTarget(ctx, host, target, 12*time.Second)
+		targetCtx, cancelTarget := context.WithTimeout(ctx, 12*time.Second)
+		result, err := decode.RunHFTarget(targetCtx, host, target, 12*time.Second)
+		cancelTarget()
 		active.Add(-1)
 		updateMetrics()
 		if err != nil {
@@ -1963,6 +2055,9 @@ func setScanResult(server *web.Server, idx int, state, result string) {
 }
 
 func addScan(server *web.Server, entry web.ScanStatus) int {
+	if entry.UpdatedAt.IsZero() {
+		entry.UpdatedAt = time.Now()
+	}
 	scansMu.Lock()
 	defer scansMu.Unlock()
 	scans = append(scans, entry)

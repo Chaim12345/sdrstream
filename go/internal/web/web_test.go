@@ -342,6 +342,7 @@ func failedLogins(handler http.Handler, password string, n int, remoteAddr, cfIP
 	for i := 0; i < n; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("password="+password))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Origin", "http://example.com")
 		req.RemoteAddr = remoteAddr
 		if cfIP != "" {
 			req.Header.Set("CF-Connecting-IP", cfIP)
@@ -518,5 +519,42 @@ func TestScanMetricsEndpoint(t *testing.T) {
 		if !strings.Contains(body, field) {
 			t.Errorf("scan metrics missing %s: %s", field, body)
 		}
+	}
+}
+
+func TestScanLogEndpointSinceAndAuth(t *testing.T) {
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "")
+	s := &Server{}
+	s.SetScanStatuses([]ScanStatus{{Station: "rx.example", StationType: "KiwiSDR", FrequencyHz: 145500000, Mode: "fm", State: "connecting", UpdatedAt: time.Unix(1, 0)}})
+	s.SetScanStatuses([]ScanStatus{{Station: "rx.example", StationType: "KiwiSDR", FrequencyHz: 145500000, Mode: "fm", State: "timeout", Result: "deadline", UpdatedAt: time.Unix(2, 0)}})
+	r := httptest.NewRecorder()
+	s.Handler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/scanlog.json?since=1", nil))
+	if !strings.Contains(r.Body.String(), `"state": "timeout"`) || !strings.Contains(r.Body.String(), `"reason": "deadline"`) {
+		t.Fatalf("scan log missing event: %s", r.Body.String())
+	}
+}
+
+func TestScanControlPostBoundsAndUpdates(t *testing.T) {
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "")
+	s := &Server{scanMetrics: ScanMetrics{MaxConnections: 80, RampStep: 49}}
+	bad := httptest.NewRecorder()
+	badReq := httptest.NewRequest(http.MethodPost, "/api/scans/control", strings.NewReader("concurrency=101"))
+	badReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	badReq.Header.Set("Origin", "http://example.com")
+	s.Handler().ServeHTTP(bad, badReq)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("bad concurrency status %d", bad.Code)
+	}
+	ok := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/scans/control", strings.NewReader("concurrency=40&paused=true"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://example.com")
+	s.Handler().ServeHTTP(ok, req)
+	if ok.Code != http.StatusOK || !strings.Contains(ok.Body.String(), `"paused": true`) {
+		t.Fatalf("control failed: %d %s", ok.Code, ok.Body.String())
+	}
+	target, paused := s.ScanControl()
+	if target != 40 || !paused {
+		t.Fatalf("control state=%d,%t", target, paused)
 	}
 }

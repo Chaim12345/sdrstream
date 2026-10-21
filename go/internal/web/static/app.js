@@ -3,8 +3,8 @@
    plus /api/map.json and /api/tiles/ (same-origin tile proxy). */
 
 const el = id => document.getElementById(id);
-const fetchJSON = async url => {
-  const response = await fetch(url);
+const fetchJSON = async (url, options = {}) => {
+  const response = await fetch(url, { credentials: 'same-origin', ...options });
   if (!response.ok) throw new Error(url + ' → HTTP ' + response.status);
   try { return await response.json(); } catch { throw new Error(url + ' → not JSON'); }
 };
@@ -493,9 +493,46 @@ document.querySelectorAll('[data-kind]').forEach(button => button.addEventListen
 }));
 
 /* ---------- scan board ---------- */
+let scanLogSince = 0;
+let scanPaused = false;
+const concurrencyControl = el('scan-concurrency');
+concurrencyControl.addEventListener('input', () => { el('scan-concurrency-value').textContent = concurrencyControl.value; });
+concurrencyControl.addEventListener('change', async () => {
+  try { const body = new URLSearchParams({ concurrency: concurrencyControl.value }); await fetchJSON('/api/scans/control', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body }); el('scan-control-status').textContent = 'applied'; }
+  catch { el('scan-control-status').textContent = 'control failed'; }
+});
+el('scan-pause').addEventListener('click', async () => {
+  scanPaused = !scanPaused;
+  try { const body = new URLSearchParams({ paused: String(scanPaused) }); await fetchJSON('/api/scans/control', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body }); el('scan-pause').textContent = scanPaused ? 'Resume' : 'Pause'; }
+  catch { scanPaused = !scanPaused; el('scan-control-status').textContent = 'control failed'; }
+});
+async function refreshScanLog() {
+  try {
+    const data = await fetchJSON('/api/scanlog.json?since=' + scanLogSince);
+    const box = el('scan-log');
+    const items = data.items || [];
+    if (!items.length && scanLogSince === 0) { box.innerHTML = '<div class="empty">waiting for scan events</div>'; return; }
+    items.filter((x, i) => i === 0 || x.state !== items[i - 1].state || x.reason !== items[i - 1].reason).forEach(x => {
+      scanLogSince = Math.max(scanLogSince, x.id || 0);
+      const row = document.createElement('div'); row.className = 'card';
+      const title = document.createElement('div'); title.className = 'card-title';
+      const tm = document.createElement('span'); tm.textContent = fmtDate(x.updated_at);
+      const station = document.createElement('b'); station.textContent = x.station;
+      const state = document.createElement('span'); state.className = 'scan-state ' + x.state; state.textContent = x.state;
+      title.append(tm, station, state); row.appendChild(title);
+      const meta = document.createElement('div'); meta.className = 'card-meta'; meta.textContent = mhz(x.frequency_hz) + ' · ' + (x.mode || '—') + (x.reason ? ' · ' + x.reason : ''); row.appendChild(meta);
+      box.prepend(row);
+    });
+    while (box.children.length > 100) box.lastElementChild.remove();
+    scanLogSince = Math.max(scanLogSince, data.next_since || 0);
+  } catch { /* auth or scan endpoint temporarily unavailable */ }
+}
 async function refreshScans() {
+  refreshScanLog();
   try {
     const data = await fetchJSON('/api/scans.json');
+    if (data.target_concurrency) { concurrencyControl.value = data.target_concurrency; el('scan-concurrency-value').textContent = data.target_concurrency; }
+    scanPaused = !!data.paused; el('scan-pause').textContent = scanPaused ? 'Resume' : 'Pause';
     const items = data.stations || [];
     const box = el('scan-board');
     box.textContent = '';
@@ -503,7 +540,7 @@ async function refreshScans() {
     summary.textContent = 'ramp '+(data.ramp_step||0)+'/'+(data.max_connections||0)+' · active '+(data.active_connections||0)+' · refusals '+(data.refusals||0)+' · timeouts '+(data.timeouts||0)+' · load '+Number(data.load_average||0).toFixed(2)+'/'+(data.core_count||0)+' cores · est. '+Number(data.estimated_bandwidth_mbps||0).toFixed(1)+'/'+(data.bandwidth_limit_mbps||0)+' Mbps';
     box.appendChild(summary);
     if (!items.length) { box.appendChild(Object.assign(document.createElement('div'), {className:'empty', textContent:'no scan state reported yet'})); return; }
-    items.forEach(x => {
+    items.slice(-40).forEach(x => {
       const card = document.createElement('div'); card.className = 'card';
       const title = document.createElement('div'); title.className = 'card-title';
       const b = document.createElement('b'); b.textContent = x.station;
@@ -683,14 +720,31 @@ async function refreshMapData() {
   }
 }
 
+/* ---------- live public feeds ---------- */
+let feedsSnapshot = null;
+let feedsSourceFilter = '';
+async function refreshFeeds() { try { feedsSnapshot = await fetchJSON('/api/feeds.json'); renderFeeds(); } catch {} }
+function renderFeeds() {
+ if (!feedsSnapshot) return;
+ const sources = feedsSnapshot.sources || [], items = feedsSnapshot.items || [], box = el('feeds-sources'); box.textContent='';
+ const chip=(label,value,state,count)=>{const b=document.createElement('button');b.className='chip'+(feedsSourceFilter===value?' on':'');b.textContent=label+(count?' '+count:'');if(state)b.dataset.state=state;b.onclick=()=>{feedsSourceFilter=value;renderFeeds()};box.appendChild(b)};
+ chip('all','', '',items.length); sources.forEach(s=>chip(s.name,s.name,s.state,s.items));
+ const note=el('feeds-note'); note.textContent='updated '+relTime(feedsSnapshot.updated_at)+sources.filter(s=>s.state==='disabled'||s.state==='error').map(s=>' · '+s.name+': '+(s.detail||s.state)).join('');
+ const list=el('feeds-list'); list.textContent=''; const shown=items.filter(i=>!feedsSourceFilter||i.source===feedsSourceFilter);
+ if(!shown.length){list.innerHTML='<div class="empty">no live data yet - feeds are connecting</div>';return}
+ shown.slice(0,120).forEach(it=>{const c=document.createElement('div');c.className='card-activity feed-'+(it.kind||'data');const r=document.createElement('div');r.className='row';const label=document.createElement('span');label.className='freq';label.textContent=it.label;const badge=document.createElement('span');badge.className='badge feed-src';badge.textContent=it.source;const t=document.createElement('span');t.className='muted';t.textContent=relTime(it.time);r.append(label,badge,t);if(it.ref){const a=document.createElement('a');a.href=it.ref;a.target='_blank';a.rel='noopener';a.textContent='source';r.append(a)}c.appendChild(r);if(it.detail){const d=document.createElement('div');d.className='detail';d.textContent=it.detail;c.appendChild(d)}if(it.has_pos){const m=document.createElement('div');m.className='meta';m.textContent=it.lat.toFixed(3)+', '+it.lon.toFixed(3);c.appendChild(m)}list.appendChild(c)});
+}
+
 /* ---------- boot ---------- */
 // Route the initial hash only now: the map module's state is declared below
 // the router, so an early #map route would hit the temporal dead zone.
 if (location.hash && el('view-' + location.hash.slice(1))) showView(location.hash.slice(1));
-refreshStatus(); refreshSats(); refreshGallery(); refreshStations(); refreshScans(); refreshActivity();
+refreshStatus(); refreshSats(); refreshGallery(); refreshStations(); refreshScans(); refreshActivity(); refreshFeeds();
 setInterval(refreshStatus, 5000);
 setInterval(refreshActivity, 4000);
+setInterval(refreshFeeds, 15000);
 setInterval(refreshScans, 2000);
+setInterval(refreshScanLog, 1500);
 setInterval(refreshSpectrum, 1000);
 setInterval(refreshGallery, 60000);
 setInterval(refreshStations, 300000);

@@ -17,12 +17,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/catalogue"
 	"github.com/chaim12345/sdrstream/go/internal/directory"
+	"github.com/chaim12345/sdrstream/go/internal/feeds"
 	"github.com/chaim12345/sdrstream/go/internal/gallery"
 	"github.com/chaim12345/sdrstream/go/internal/monitor"
 	"github.com/chaim12345/sdrstream/go/internal/relays"
@@ -93,6 +95,7 @@ type LiveGalleryItem struct {
 }
 
 type ScanStatus struct {
+	StationType string    `json:"station_type,omitempty"`
 	Station     string    `json:"station"`
 	FrequencyHz float64   `json:"frequency_hz"`
 	Mode        string    `json:"mode"`
@@ -112,24 +115,30 @@ type ScanMetrics struct {
 	CoreCount              int          `json:"core_count"`
 	EstimatedBandwidthMbps float64      `json:"estimated_bandwidth_mbps"`
 	BandwidthLimitMbps     float64      `json:"bandwidth_limit_mbps"`
+	TargetConcurrency      int          `json:"target_concurrency"`
+	Paused                 bool         `json:"paused"`
 	Stations               []ScanStatus `json:"stations"`
 }
 
 type Server struct {
-	mu          sync.Mutex
-	captures    []Capture
-	passes      []PassInfo
-	gallery     []gallery.Item
-	liveGallery []LiveGalleryItem
-	html        string
-	capturesDir string
-	galleryDir  string
-	galleryAt   time.Time
-	monitor     *monitor.Monitor
-	scans       []ScanStatus
-	scanMetrics ScanMetrics
-	stations    []directory.Station
-	stationsAt  time.Time
+	mu                sync.Mutex
+	captures          []Capture
+	passes            []PassInfo
+	gallery           []gallery.Item
+	liveGallery       []LiveGalleryItem
+	html              string
+	capturesDir       string
+	galleryDir        string
+	galleryAt         time.Time
+	monitor           *monitor.Monitor
+	feeds             *feeds.Manager
+	scans             []ScanStatus
+	scanMetrics       ScanMetrics
+	scanLog           []ScanStatus
+	scanLogSeq        uint64
+	scanControlManual bool
+	stations          []directory.Station
+	stationsAt        time.Time
 	// fetchStations is directory.FetchStations in production and a seam
 	// for the tests, which cannot wait on the public directory.
 	fetchStations func(context.Context) ([]directory.Station, error)
@@ -407,6 +416,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/gallery.json", s.handleGallery)
 	mux.HandleFunc("/api/test-fixtures.json", s.handleTestFixtures)
 	mux.HandleFunc("/api/scans.json", s.handleScans)
+	mux.HandleFunc("/api/feeds.json", s.handleFeeds)
+	mux.HandleFunc("/api/scanlog.json", s.handleScanLog)
+	mux.HandleFunc("/api/scans/control", s.handleScanControl)
 	mux.HandleFunc("/api/activity.json", s.handleActivity)
 	mux.HandleFunc("/api/spectrum.json", s.handleSpectrum)
 	mux.HandleFunc("/api/stations.json", s.handleStations)
@@ -586,24 +598,135 @@ func (s *Server) handleGalleryFile(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, filepath.Join(s.galleryDir, name))
 }
 
+// SetFeeds attaches live public feeds to the server.
+func (s *Server) SetFeeds(m *feeds.Manager) { s.mu.Lock(); s.feeds = m; s.mu.Unlock() }
+
+func (s *Server) handleFeeds(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	m := s.feeds
+	s.mu.Unlock()
+	if m == nil {
+		writeJSON(w, feeds.Snapshot{UpdatedAt: time.Now(), Sources: []feeds.SourceStatus{}, Items: []feeds.Item{}})
+		return
+	}
+	writeJSON(w, m.Snapshot(500))
+}
+
 // SetMonitor attaches a live monitor to the server.
 func (s *Server) SetScanStatuses(scans []ScanStatus) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	old := make(map[string]ScanStatus, len(s.scans))
+	for _, item := range s.scans {
+		old[scanLogKey(item)] = item
+	}
 	s.scans = append([]ScanStatus(nil), scans...)
-	s.mu.Unlock()
+	for _, item := range scans {
+		key := scanLogKey(item)
+		if prev, ok := old[key]; !ok || prev.State != item.State || prev.Result != item.Result {
+			s.scanLogSeq++
+			s.scanLog = append(s.scanLog, item)
+			if len(s.scanLog) > 2000 {
+				s.scanLog = append([]ScanStatus(nil), s.scanLog[len(s.scanLog)-2000:]...)
+			}
+		}
+	}
+}
+
+func scanLogKey(item ScanStatus) string {
+	return fmt.Sprintf("%s|%.0f|%s", item.Station, item.FrequencyHz, item.Mode)
+}
+
+func (s *Server) handleScanLog(w http.ResponseWriter, r *http.Request) {
+	var since uint64
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		since, _ = strconv.ParseUint(raw, 10, 64)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	start := uint64(0)
+	if uint64(len(s.scanLog)) > s.scanLogSeq {
+		start = 0
+	} else {
+		start = s.scanLogSeq - uint64(len(s.scanLog))
+	}
+	items := make([]map[string]any, 0)
+	for i, item := range s.scanLog {
+		seq := start + uint64(i) + 1
+		if seq > since {
+			items = append(items, map[string]any{"id": seq, "station": item.Station, "station_type": item.StationType, "frequency_hz": item.FrequencyHz, "mode": item.Mode, "state": item.State, "reason": item.Result, "updated_at": item.UpdatedAt})
+		}
+	}
+	writeJSON(w, map[string]any{"items": items, "next_since": s.scanLogSeq})
 }
 
 func (s *Server) handleScans(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	metrics := s.scanMetrics
+	if metrics.TargetConcurrency == 0 {
+		metrics.TargetConcurrency = metrics.RampStep
+	}
 	metrics.Stations = append([]ScanStatus(nil), s.scans...)
 	writeJSON(w, metrics)
 }
 
 // SetScanMetrics publishes live ramp and resource counters for the scanner.
+func (s *Server) handleScanControl(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("Origin") != "https://"+r.Host && r.Header.Get("Origin") != "http://"+r.Host {
+		http.Error(w, "same-origin required", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	if raw := r.FormValue("concurrency"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 100 {
+			s.mu.Unlock()
+			http.Error(w, "concurrency must be 1..100", http.StatusBadRequest)
+			return
+		}
+		s.scanMetrics.TargetConcurrency = n
+		s.scanControlManual = true
+	}
+	if raw := r.FormValue("paused"); raw != "" {
+		s.scanMetrics.Paused = raw == "true"
+	}
+	metrics := s.scanMetrics
+	s.mu.Unlock()
+	writeJSON(w, map[string]any{"target_concurrency": metrics.TargetConcurrency, "paused": metrics.Paused})
+}
+
+func (s *Server) ScanControl() (int, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	target := s.scanMetrics.TargetConcurrency
+	if target < 1 {
+		target = s.scanMetrics.RampStep
+	}
+	if target < 1 {
+		target = 1
+	}
+	if target > s.scanMetrics.MaxConnections && s.scanMetrics.MaxConnections > 0 {
+		target = s.scanMetrics.MaxConnections
+	}
+	return target, s.scanMetrics.Paused
+}
+
 func (s *Server) SetScanMetrics(metrics ScanMetrics) {
 	s.mu.Lock()
+	target, paused := s.scanMetrics.TargetConcurrency, s.scanMetrics.Paused
+	if !s.scanControlManual || target == 0 {
+		target = metrics.TargetConcurrency
+	}
+	metrics.TargetConcurrency, metrics.Paused = target, paused
 	metrics.Stations = append([]ScanStatus(nil), s.scans...)
 	s.scanMetrics = metrics
 	s.mu.Unlock()

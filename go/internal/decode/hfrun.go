@@ -31,7 +31,10 @@ func (r HFResult) Live() bool { return r.Gate.Live }
 // always closes its connection, including on error paths.
 func RunHFTarget(ctx context.Context, server string, target HFTarget, listen time.Duration) (HFResult, error) {
 	result := HFResult{Target: target, Server: server, Started: time.Now().UTC()}
-	client, err := kiwisdr.New(server, kiwisdr.DefaultOptions())
+	opts := kiwisdr.DefaultOptions()
+	opts.OpenTimeout = 10 * time.Second
+	opts.IdleTimeout = 13 * time.Second
+	client, err := kiwisdr.New(server, opts)
 	if err != nil {
 		return result, err
 	}

@@ -295,3 +295,15 @@ tr:hover td { background: var(--panel-2); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* live public feeds */
+.badge.feed-src { color: var(--accent); border-color: var(--accent-dim); }
+.chip[data-state="disabled"] { opacity: 0.55; }
+.chip[data-state="error"] { border-color: var(--warn); }
+.card-activity.feed-aircraft { border-left-color: var(--accent); }
+.card-activity.feed-ais { border-left-color: var(--data); }
+.card-activity.feed-aprs, .card-activity.feed-digimode, .card-activity.feed-beacon { border-left-color: var(--voice); }
+.feed-ref { font-size: 11px; text-decoration: none; }
+.feeds-note { margin: 4px 2px 10px; font-size: 12px; }
+
+.badge.feed-src{color:var(--accent);border-color:var(--accent-dim)}.feeds-note{font-size:12px;margin:4px 2px 10px}
