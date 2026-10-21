@@ -309,6 +309,41 @@ async def _frames(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _schedule(args: argparse.Namespace) -> int:
+    """Manage and run the automatic pass-recording scheduler."""
+    from .schedule import DEFAULT_STORE, Scheduler
+
+    scheduler = Scheduler(DEFAULT_STORE)
+    if args.add:
+        job = scheduler.add(args.add, output_dir=args.dir,
+                            min_elevation=args.min_elevation)
+        print("following %s (passes above %.0f deg, saving to %s)"
+              % (job.satellite, job.min_elevation, job.output_dir))
+    if args.remove:
+        print("removed" if scheduler.remove(args.remove)
+              else "no job for %s" % args.remove)
+    if args.list:
+        jobs = scheduler.jobs()
+        if not jobs:
+            print("no scheduled satellites; use --add SAT")
+        for job in jobs:
+            print("  %-16s el >%-3.0f deg  next %2.0f h  -> %s (%d passes done)"
+                  % (job.satellite, job.min_elevation,
+                     job.lookahead_hours, job.output_dir, len(job.done)))
+    if args.once or args.run:
+        if not scheduler.jobs():
+            print("nothing scheduled; use --add SAT first")
+            return 1
+        if args.run:
+            scheduler.run(poll_seconds=args.poll, on_event=print)
+        else:
+            recorded = scheduler.run_once(on_event=print)
+            print("recorded %d pass(es)" % recorded)
+    if not (args.add or args.remove or args.list or args.once or args.run):
+        print("nothing to do; use --add SAT, --list, --once or --run")
+    return 0
+
+
 async def _discover(args: argparse.Namespace) -> int:
     """Find OpenWebRX receivers that can hear a satellite downlink."""
     frequency = args.frequency
@@ -425,6 +460,23 @@ def build_parser() -> argparse.ArgumentParser:
     frm.add_argument("--token", default=None,
                      help="SatNOGS API token (or set SATNOGS_TOKEN)")
 
+    sch = sub.add_parser("schedule",
+                         help="record satellite passes automatically")
+    sch.add_argument("--add", metavar="SAT",
+                    help="follow a satellite and record its passes")
+    sch.add_argument("--remove", metavar="SAT", help="stop following a satellite")
+    sch.add_argument("--list", action="store_true", help="list scheduled jobs")
+    sch.add_argument("--once", action="store_true",
+                    help="check for due passes, record them, exit")
+    sch.add_argument("--run", action="store_true",
+                    help="keep checking and recording until stopped")
+    sch.add_argument("--dir", default="captures",
+                    help="directory for recordings (default: captures)")
+    sch.add_argument("--min-elevation", type=float, default=10.0,
+                    help="minimum pass elevation to record (default: 10)")
+    sch.add_argument("--poll", type=float, default=60.0,
+                    help="seconds between checks in --run (default: 60)")
+
     sats = sub.add_parser("satellites", help="list amateur satellites")
     sats.add_argument("satellite", nargs="?", default=None,
                       help="show details and receivers for one satellite")
@@ -493,6 +545,8 @@ def main(argv: List[str] | None = None) -> int:
         coro = _observations(args)
     elif args.command == "frames":
         coro = _frames(args)
+    elif args.command == "schedule":
+        coro = _schedule(args)
     elif args.command == "fetch":
         coro = _fetch(args)
     elif args.command == "passes":
