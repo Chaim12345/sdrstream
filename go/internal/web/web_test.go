@@ -511,11 +511,11 @@ func TestScanMetricsEndpoint(t *testing.T) {
 	t.Setenv("SDRSTREAM_UI_PASSWORD", "")
 	s := &Server{}
 	s.SetScanStatuses([]ScanStatus{{Station: "rx.example", FrequencyHz: 145500000, Mode: "fm", State: "listening"}})
-	s.SetScanMetrics(ScanMetrics{RampStep: 20, MaxConnections: 80, ActiveConnections: 4, Refusals: 2, Timeouts: 1, LoadAverage: 1.2, CoreCount: 8, EstimatedBandwidthMbps: .4, BandwidthLimitMbps: 20})
+	s.SetScanMetrics(ScanMetrics{RampStep: 20, MaxConnections: 100, ActiveConnections: 4, Refusals: 2, Timeouts: 1, LoadAverage: 1.2, CoreCount: 8, EstimatedBandwidthMbps: .4, BandwidthLimitMbps: 20})
 	r := httptest.NewRecorder()
 	s.Handler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/scans.json", nil))
 	body := r.Body.String()
-	for _, field := range []string{`"ramp_step": 20`, `"max_connections": 80`, `"active_connections": 4`, `"refusals": 2`, `"timeouts": 1`, `"load_average": 1.2`, `"estimated_bandwidth_mbps": 0.4`, `"stations": [`} {
+	for _, field := range []string{`"ramp_step": 20`, `"max_connections": 100`, `"active_connections": 4`, `"refusals": 2`, `"timeouts": 1`, `"load_average": 1.2`, `"estimated_bandwidth_mbps": 0.4`, `"stations": [`} {
 		if !strings.Contains(body, field) {
 			t.Errorf("scan metrics missing %s: %s", field, body)
 		}
@@ -536,7 +536,7 @@ func TestScanLogEndpointSinceAndAuth(t *testing.T) {
 
 func TestScanControlPostBoundsAndUpdates(t *testing.T) {
 	t.Setenv("SDRSTREAM_UI_PASSWORD", "")
-	s := &Server{scanMetrics: ScanMetrics{MaxConnections: 80, RampStep: 49}}
+	s := &Server{scanMetrics: ScanMetrics{MaxConnections: 100, RampStep: 49}}
 	bad := httptest.NewRecorder()
 	badReq := httptest.NewRequest(http.MethodPost, "/api/scans/control", strings.NewReader("concurrency=101"))
 	badReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")

@@ -307,3 +307,11 @@ tr:hover td { background: var(--panel-2); }
 .feeds-note { margin: 4px 2px 10px; font-size: 12px; }
 
 .badge.feed-src{color:var(--accent);border-color:var(--accent-dim)}.feeds-note{font-size:12px;margin:4px 2px 10px}
+
+.mainnav{flex-wrap:wrap;overflow:visible;height:auto;min-height:var(--nav-h);padding-bottom:env(safe-area-inset-bottom)}
+.mainnav button{font-size:12px;min-width:0;flex:1 1 20%;min-height:54px}
+@media(min-width:900px){.mainnav{flex-wrap:nowrap;overflow-y:auto;height:auto}.mainnav button{font-size:12px}}
+.slider-controls{display:flex;gap:8px;align-items:center;width:100%}.slider-controls input{flex:1;width:100%}.slider-controls button{min-width:44px;min-height:44px}
+.scan-log-url,.scan-log .card-meta{overflow-wrap:anywhere;word-break:break-word}pre{white-space:pre-wrap;overflow-wrap:anywhere}
+
+@media(max-width:899px){.mobile-scroll-cue{display:block;font-size:12px}.mainnav button:not([hidden]){flex:1 1 20%}}@media(min-width:900px){.mobile-scroll-cue{display:none}}

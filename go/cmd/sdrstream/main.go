@@ -1361,7 +1361,7 @@ func cmdWeb(args []string) error {
 	scanStations := fs.String("scan-stations", "", "comma-separated public receivers for bounded parallel scan (one connection per receiver)")
 	scanStart := fs.Int("scan-start-connections", 49, "initial scanner concurrency ramp step")
 	scanMax := fs.Int("scan-max-connections", 100, "integrator scanner maximum concurrency (hard limit 100)")
-	scanRamp := fs.String("scan-ramp", "20,50,100,200", "comma-separated ramp steps, capped by --scan-max-connections")
+	scanRamp := fs.String("scan-ramp", "49,100", "comma-separated ramp steps, capped by --scan-max-connections")
 	scanGoodRate := fs.Float64("scan-advance-error-rate", 0.15, "advance if a completed wave has refusal+timeout rate below this fraction")
 	scanRefusalBackoff := fs.Float64("scan-backoff-refusal-rate", 0.30, "step down if a completed wave refusal rate exceeds this fraction")
 	scanLoadAdvance := fs.Float64("scan-advance-load-ratio", 0.70, "advance only below this load-average/core ratio")
@@ -1782,14 +1782,21 @@ func runParallelScan(ctx context.Context, server *web.Server, receivers []string
 		cumulativeRefusals, cumulativeTimeouts := refusals, timeouts
 		metricsMu.Unlock()
 		target, paused := server.ScanControl()
-		server.SetScanMetrics(web.ScanMetrics{RampStep: int(current.Load()), MaxConnections: cfg.maximum, TargetConcurrency: target, Paused: paused, ActiveConnections: int(active.Load()), Refusals: cumulativeRefusals, Timeouts: cumulativeTimeouts, LoadAverage: load, CoreCount: coreCount, EstimatedBandwidthMbps: float64(active.Load()) * cfg.streamKbps / 1000, BandwidthLimitMbps: cfg.bandwidthLimitMbps})
+		server.SetScanMetrics(web.ScanMetrics{RampStep: int(current.Load()), MaxConnections: cfg.maximum, TargetConcurrency: target, Paused: paused, ActiveConnections: int(active.Load()), Refusals: cumulativeRefusals, Timeouts: cumulativeTimeouts, LoadAverage: load, CoreCount: coreCount, EstimatedBandwidthMbps: float64(active.Load()) * cfg.streamKbps / 1000, BandwidthLimitMbps: cfg.bandwidthLimitMbps, MemoryBytes: func() uint64 { var m runtime.MemStats; runtime.ReadMemStats(&m); return m.Sys }(), OpenFDs: func() int { x, _ := os.ReadDir("/proc/self/fd"); return len(x) }()})
 	}
-	server.SetScanMetrics(web.ScanMetrics{RampStep: int(current.Load()), MaxConnections: cfg.maximum, TargetConcurrency: cfg.start, CoreCount: coreCount, BandwidthLimitMbps: cfg.bandwidthLimitMbps})
+	server.SetScanMetrics(web.ScanMetrics{RampStep: int(current.Load()), MaxConnections: cfg.maximum, TargetConcurrency: cfg.start, CoreCount: coreCount, BandwidthLimitMbps: cfg.bandwidthLimitMbps, MemoryBytes: func() uint64 { var m runtime.MemStats; runtime.ReadMemStats(&m); return m.Sys }(), OpenFDs: func() int { x, _ := os.ReadDir("/proc/self/fd"); return len(x) }()})
 	updateMetrics()
-	type result struct{ outcome scanOutcome }
+	type result struct {
+		host    string
+		outcome scanOutcome
+	}
 	results := make(chan result, cfg.maximum)
 	inFlight := 0
 	nextStation := 0
+	activeStations := map[string]bool{}
+	activeCancels := map[string]context.CancelFunc{}
+	backoffUntil := map[string]time.Time{}
+	backoffFor := map[string]time.Duration{}
 	completedInWindow, windowIssues, windowRefusals := 0, 0, 0
 	stageIndex := 0
 	for i, step := range steps {
@@ -1797,41 +1804,97 @@ func runParallelScan(ctx context.Context, server *web.Server, receivers []string
 			stageIndex = i
 		}
 	}
-	for (nextStation < len(unique) || inFlight > 0) && ctx.Err() == nil {
+	for ctx.Err() == nil {
 		for {
 			_, paused := server.ScanControl()
 			if !paused || ctx.Err() != nil {
 				break
 			}
+			for _, cancel := range activeCancels {
+				cancel()
+			}
 			time.Sleep(250 * time.Millisecond)
 		}
 		requested, paused := server.ScanControl()
+		resourceLimit := resourceSafeConcurrency(coreCount)
+		if !resourceLimit.safe && requested > 100 {
+			requested = 100
+		}
 		if paused {
 			requested = 0
 		}
-		limit := min(cfg.maximum, min(requested, int(current.Load())))
-		for nextStation < len(unique) && inFlight < limit && ctx.Err() == nil {
-			station := unique[nextStation]
-			nextStation++
-			parts := strings.SplitN(station, "|", 2)
-			if len(parts) != 2 {
-				continue
+		// A deliberate manual target can raise concurrency above the auto-ramp
+		// stage; auto mode remains ramp-limited.
+		limit := min(cfg.maximum, requested)
+		if !server.ScanControlManual() {
+			limit = min(limit, int(current.Load()))
+		}
+		for inFlight < limit && ctx.Err() == nil {
+			dispatched := false
+			for checked := 0; checked < len(unique); checked++ {
+				station := unique[nextStation]
+				nextStation = (nextStation + 1) % len(unique)
+				parts := strings.SplitN(station, "|", 2)
+				if len(parts) != 2 {
+					continue
+				}
+				host := parts[1]
+				if activeStations[host] || time.Now().Before(backoffUntil[host]) {
+					continue
+				}
+				activeStations[host] = true
+				stationCtx, cancel := context.WithTimeout(ctx, cfg.stationSession)
+				activeCancels[host] = cancel
+				inFlight++
+				go func(kind, host string) {
+					outcome := scanStation(stationCtx, server, kind, host, cfg.targetLimit, multimonPath, direwolfPath, &active, updateMetrics)
+					cancel()
+					results <- result{host: host, outcome: outcome}
+				}(parts[0], host)
+				dispatched = true
+				break
 			}
-			stationCtx, cancel := context.WithTimeout(ctx, cfg.stationSession)
-			inFlight++
-			go func(kind, host string) {
-				outcome := scanStation(stationCtx, server, kind, host, cfg.targetLimit, multimonPath, direwolfPath, &active, updateMetrics)
-				cancel()
-				results <- result{outcome}
-			}(parts[0], parts[1])
+			if !dispatched {
+				break
+			}
 		}
 		if inFlight == 0 {
-			break
+			var earliest time.Time
+			for _, station := range unique {
+				parts := strings.SplitN(station, "|", 2)
+				if len(parts) == 2 {
+					t := backoffUntil[parts[1]]
+					if !t.IsZero() && (earliest.IsZero() || t.Before(earliest)) {
+						earliest = t
+					}
+				}
+			}
+			if earliest.IsZero() {
+				time.Sleep(time.Second)
+			} else if d := time.Until(earliest); d > 0 {
+				time.Sleep(minDuration(d, time.Second))
+			}
+			continue
 		}
 		select {
 		case <-ctx.Done():
 		case r := <-results:
 			inFlight--
+			delete(activeStations, r.host)
+			delete(activeCancels, r.host)
+			if r.outcome.refused || r.outcome.timedOut {
+				d := backoffFor[r.host]
+				if d == 0 {
+					d = 30 * time.Second
+				} else {
+					d = minDuration(d*2, 15*time.Minute)
+				}
+				backoffFor[r.host] = d
+				backoffUntil[r.host] = time.Now().Add(d)
+			} else {
+				backoffFor[r.host] = 0
+				delete(backoffUntil, r.host)
+			}
 			completedInWindow++
 			if r.outcome.refused {
 				windowRefusals++
@@ -1854,7 +1917,7 @@ func runParallelScan(ctx context.Context, server *web.Server, receivers []string
 				if (refusalRate > cfg.backoffRefusalRate || loadRatio > cfg.backoffLoadRatio) && stageIndex > 0 {
 					stageIndex--
 					current.Store(int64(min(cfg.maximum, steps[stageIndex])))
-				} else if refusalRate <= cfg.backoffRefusalRate && float64(windowIssues)/float64(completedInWindow) < cfg.advanceErrorRate && loadRatio < cfg.advanceLoadRatio && float64(current.Load())*cfg.streamKbps/1000 < cfg.bandwidthLimitMbps && stageIndex+1 < len(steps) {
+				} else if refusalRate <= cfg.backoffRefusalRate && loadRatio < cfg.advanceLoadRatio && float64(current.Load())*cfg.streamKbps/1000 < cfg.bandwidthLimitMbps && stageIndex+1 < len(steps) {
 					stageIndex++
 					current.Store(int64(min(cfg.maximum, steps[stageIndex])))
 				}
@@ -1863,6 +1926,13 @@ func runParallelScan(ctx context.Context, server *web.Server, receivers []string
 			}
 		}
 	}
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 type scanOutcome struct{ refused, timedOut bool }
@@ -1876,6 +1946,24 @@ func classifyScanFailure(err error) scanOutcome {
 	text := strings.ToLower(err.Error())
 	refused := strings.Contains(text, "refused") || strings.Contains(text, "rate limit") || strings.Contains(text, "too many") || strings.Contains(text, "429") || strings.Contains(text, "busy")
 	return scanOutcome{refused: refused, timedOut: isTimeout}
+}
+
+type resourceStatus struct {
+	memoryBytes uint64
+	openFDs     int
+	safe        bool
+}
+
+func resourceSafeConcurrency(cores int) resourceStatus {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	entries, err := os.ReadDir("/proc/self/fd")
+	fds := len(entries)
+	if err != nil {
+		fds = 0
+	}
+	safe := (cores <= 0 || readLoadAverage()/float64(cores) < .70) && mem.Sys < 2<<30 && (fds == 0 || fds < 4096)
+	return resourceStatus{memoryBytes: mem.Sys, openFDs: fds, safe: safe}
 }
 
 func readLoadAverage() float64 {
@@ -1930,15 +2018,8 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		if ctx.Err() != nil {
 			return scanOutcome{}
 		}
-		idx := addScan(server, web.ScanStatus{StationType: stationType, Station: host, FrequencyHz: target.frequency, Mode: target.mode, State: "connecting", UpdatedAt: time.Now()})
-		update := func(state, result string) {
-			scansMu.Lock()
-			scans[idx].State = state
-			scans[idx].Result = result
-			scans[idx].UpdatedAt = time.Now()
-			server.SetScanStatuses(scans)
-			scansMu.Unlock()
-		}
+		key := addScan(server, web.ScanStatus{StationType: stationType, Station: host, FrequencyHz: target.frequency, Mode: target.mode, State: "connecting", UpdatedAt: time.Now()})
+		update := func(state, result string) { setScanResult(server, key, state, result) }
 		update("connected", "")
 		update("tuning", "")
 		update("listening", "")
@@ -2000,7 +2081,7 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 		if !target.ActiveNow(time.Now()) {
 			continue
 		}
-		idx := addScan(server, web.ScanStatus{StationType: "KiwiSDR", Station: host, FrequencyHz: target.DialKHz * 1000, Mode: target.Mode, State: "connecting", UpdatedAt: time.Now()})
+		key := addScan(server, web.ScanStatus{StationType: "KiwiSDR", Station: host, FrequencyHz: target.DialKHz * 1000, Mode: target.Mode, State: "connecting", UpdatedAt: time.Now()})
 		active.Add(1)
 		updateMetrics()
 		targetCtx, cancelTarget := context.WithTimeout(ctx, 12*time.Second)
@@ -2019,14 +2100,14 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 			if outcome.timedOut {
 				state = "timeout"
 			}
-			setScanResult(server, idx, state, err.Error())
+			setScanResult(server, key, state, err.Error())
 			if outcome.refused || outcome.timedOut {
 				break
 			}
 			continue
 		}
 		if !result.Live() {
-			setScanResult(server, idx, "unverified decode", result.Gate.Reason)
+			setScanResult(server, key, "unverified decode", result.Gate.Reason)
 			continue
 		}
 		activity := monitor.Activity{ID: int(time.Now().UnixNano()), Started: result.Started, FrequencyHz: target.DialKHz * 1000, Kind: "data", Mode: target.Kind, Detail: result.Text, VerificationAnchor: target.Expect, Source: host}
@@ -2035,39 +2116,54 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 			activity.Kind = target.Kind
 		}
 		if err := server.AddLiveArtifact(activity, imageData); err != nil {
-			setScanResult(server, idx, "unverified decode", err.Error())
+			setScanResult(server, key, "unverified decode", err.Error())
 			continue
 		}
-		setScanResult(server, idx, "decoded", result.Gate.Reason)
+		setScanResult(server, key, "decoded", result.Gate.Reason)
 	}
 	return scanOutcome{refused: refusal, timedOut: timeout}
 }
 
-func setScanResult(server *web.Server, idx int, state, result string) {
+func setScanResult(server *web.Server, key string, state, result string) {
 	scansMu.Lock()
 	defer scansMu.Unlock()
-	if idx >= 0 && idx < len(scans) {
-		scans[idx].State = state
-		scans[idx].Result = result
-		scans[idx].UpdatedAt = time.Now()
-		server.SetScanStatuses(scans)
+	for i := range scans {
+		if scanStatusKey(scans[i]) == key {
+			scans[i].State = state
+			scans[i].Result = result
+			scans[i].UpdatedAt = time.Now()
+			server.UpsertScanStatus(scans[i])
+			return
+		}
 	}
 }
-
-func addScan(server *web.Server, entry web.ScanStatus) int {
+func addScan(server *web.Server, entry web.ScanStatus) string {
 	if entry.UpdatedAt.IsZero() {
 		entry.UpdatedAt = time.Now()
 	}
+	key := scanStatusKey(entry)
 	scansMu.Lock()
 	defer scansMu.Unlock()
-	scans = append(scans, entry)
-	idx := len(scans) - 1
-	if len(scans) > 500 {
-		scans = append([]web.ScanStatus(nil), scans[len(scans)-500:]...)
-		idx -= len(scans) - 500
+	found := false
+	for i := range scans {
+		if scanStatusKey(scans[i]) == key {
+			scans[i] = entry
+			found = true
+			break
+		}
 	}
-	server.SetScanStatuses(scans)
-	return idx
+	if !found {
+		scans = append(scans, entry)
+		if len(scans) > 500 {
+			scans = append([]web.ScanStatus(nil), scans[len(scans)-500:]...)
+		}
+	}
+	server.UpsertScanStatus(entry)
+	return key
+}
+
+func scanStatusKey(s web.ScanStatus) string {
+	return fmt.Sprintf("%s|%.0f|%s", s.Station, s.FrequencyHz, s.Mode)
 }
 
 var scansMu sync.Mutex

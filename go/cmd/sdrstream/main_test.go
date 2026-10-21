@@ -2,16 +2,18 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"github.com/chaim12345/sdrstream/go/internal/web"
 	"testing"
 	"time"
 )
 
 func TestNewScanConfigCapsRampAndStartsAtConfiguredStep(t *testing.T) {
-	cfg, err := newScanConfig(49, 100, "20,50,100,200", .15, .30, .70, .90, 20, 100, 40, 5*time.Minute)
+	cfg, err := newScanConfig(49, 100, "49,100", .15, .30, .70, .90, 20, 100, 40, 5*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.start != 49 || cfg.maximum != 100 || len(cfg.ramp) != 4 || cfg.ramp[0] != 20 || cfg.ramp[1] != 49 || cfg.ramp[2] != 50 || cfg.ramp[3] != 100 {
+	if cfg.start != 49 || cfg.maximum != 100 || len(cfg.ramp) != 2 || cfg.ramp[0] != 49 || cfg.ramp[1] != 100 {
 		t.Fatalf("unexpected scan config: %+v", cfg)
 	}
 	if _, err := newScanConfig(101, 100, "20,50", .15, .30, .70, .90, 20, 100, 40, 5*time.Minute); err == nil {
@@ -33,7 +35,7 @@ func TestClassifyScanFailure(t *testing.T) {
 
 func TestScanConfigTargetLimits(t *testing.T) {
 	base := func(limit int, session time.Duration) error {
-		_, err := newScanConfig(49, 100, "20,50,100,200", .15, .30, .70, .90, 20, 100, limit, session)
+		_, err := newScanConfig(49, 100, "49,100", .15, .30, .70, .90, 20, 100, limit, session)
 		return err
 	}
 	if err := base(40, 5*time.Minute); err != nil {
@@ -44,5 +46,24 @@ func TestScanConfigTargetLimits(t *testing.T) {
 	}
 	if base(40, 6*time.Minute) == nil {
 		t.Fatal("station session above five minutes accepted")
+	}
+}
+
+func TestScanStatusIndexesRemainStablePastDisplayWindow(t *testing.T) {
+	scansMu.Lock()
+	old := scans
+	scans = nil
+	scansMu.Unlock()
+	defer func() { scansMu.Lock(); scans = old; scansMu.Unlock() }()
+	server := web.New("", "")
+	for i := 0; i < 600; i++ {
+		addScan(server, web.ScanStatus{Station: fmt.Sprintf("rx-%d", i), FrequencyHz: 145500000, Mode: "fm", State: "connecting"})
+	}
+	setScanResult(server, "rx-599|145500000|fm", "timeout", "deadline")
+	scansMu.Lock()
+	got := scans[len(scans)-1]
+	scansMu.Unlock()
+	if got.Station != "rx-599" || got.State != "timeout" {
+		t.Fatalf("last stable status = %+v", got)
 	}
 }

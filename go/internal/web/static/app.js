@@ -5,6 +5,7 @@
 const el = id => document.getElementById(id);
 const fetchJSON = async (url, options = {}) => {
   const response = await fetch(url, { credentials: 'same-origin', ...options });
+  if (response.status === 401) { toast('Login expired. Sign in again.'); setTimeout(()=>{location.href='/login'},250); throw new Error('login required'); }
   if (!response.ok) throw new Error(url + ' → HTTP ' + response.status);
   try { return await response.json(); } catch { throw new Error(url + ' → not JSON'); }
 };
@@ -58,9 +59,11 @@ function showView(name) {
   });
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
   if (name === 'map') initMap();
-  location.hash = name;
+  if (location.hash !== '#'+name) history.replaceState(null,'','#'+name);
 }
 views.forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
+const more=el('nav-more'); if(more) more.onclick=()=>{const active=more.getAttribute('aria-expanded')!=='true';more.setAttribute('aria-expanded',String(active));document.querySelectorAll('.mainnav button').forEach((b,i)=>{if(i>=5&&b!==more)b.hidden=!active})};
+window.addEventListener('hashchange',()=>{const name=location.hash.slice(1);if(el('view-'+name)) showView(name)});
 document.querySelectorAll('[data-goto]').forEach(b => b.addEventListener('click', () => showView(b.dataset.goto)));
 
 /* ---------- status / stat cards / next pass ---------- */
@@ -286,7 +289,7 @@ document.querySelectorAll('[data-gallery-kind]').forEach(button => button.addEve
   });
   const test = button.dataset.galleryKind === 'test';
   el('gallery').hidden = test; el('test-fixtures').hidden = !test;
-  if (test) refreshTestFixtures(); else renderGallery();
+  if (test) refreshTestFixtures(); else {el('test-fixtures').textContent='';renderGallery()}
 }));
 
 /* ---------- stations ---------- */
@@ -479,7 +482,7 @@ function renderActivity() {
   const full = activityItems.filter(a => !activityKind || a.kind === activityKind);
   const feed = el('feed');
   feed.textContent = '';
-  if (!full.length) { feed.innerHTML = '<div class="empty">no traffic seen yet</div>'; }
+  if (!full.length) { feed.innerHTML = '<div class="empty">No verified activity yet. Start the Scan view to check public receivers.</div>'; }
   full.slice(0, 80).forEach(a => feed.appendChild(activityCard(a, false)));
   const over = el('feed-overview');
   over.textContent = '';
@@ -496,6 +499,8 @@ document.querySelectorAll('[data-kind]').forEach(button => button.addEventListen
 let scanLogSince = 0;
 let scanPaused = false;
 const concurrencyControl = el('scan-concurrency');
+let scanCards=40; el('scan-minus').onclick=()=>{concurrencyControl.value=Math.max(1,+concurrencyControl.value-10);concurrencyControl.dispatchEvent(new Event('change'))};el('scan-plus').onclick=()=>{concurrencyControl.value=Math.min(+concurrencyControl.max,+concurrencyControl.value+10);concurrencyControl.dispatchEvent(new Event('change'))};el('scan-more').onclick=()=>{scanCards+=40;refreshScans()};
+let scanLogFilter=''; document.querySelectorAll('[data-scan-state]').forEach(b=>b.onclick=()=>{scanLogFilter=b.dataset.scanState;document.querySelectorAll('[data-scan-state]').forEach(x=>x.classList.toggle('on',x===b));});
 concurrencyControl.addEventListener('input', () => { el('scan-concurrency-value').textContent = concurrencyControl.value; });
 concurrencyControl.addEventListener('change', async () => {
   try { const body = new URLSearchParams({ concurrency: concurrencyControl.value }); await fetchJSON('/api/scans/control', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body }); el('scan-control-status').textContent = 'applied'; }
@@ -512,15 +517,16 @@ async function refreshScanLog() {
     const box = el('scan-log');
     const items = data.items || [];
     if (!items.length && scanLogSince === 0) { box.innerHTML = '<div class="empty">waiting for scan events</div>'; return; }
-    items.filter((x, i) => i === 0 || x.state !== items[i - 1].state || x.reason !== items[i - 1].reason).forEach(x => {
+    items.filter((x, i) => (i === 0 || x.state !== items[i - 1].state || x.reason !== items[i - 1].reason) && (!scanLogFilter || x.state===scanLogFilter)).forEach(x => {
       scanLogSince = Math.max(scanLogSince, x.id || 0);
       const row = document.createElement('div'); row.className = 'card';
       const title = document.createElement('div'); title.className = 'card-title';
       const tm = document.createElement('span'); tm.textContent = fmtDate(x.updated_at);
-      const station = document.createElement('b'); station.textContent = x.station;
+      const station = document.createElement('b'); station.textContent = String(x.station||'').replace(/[<>\u0000-\u001f]/g,'').slice(0,200);
       const state = document.createElement('span'); state.className = 'scan-state ' + x.state; state.textContent = x.state;
       title.append(tm, station, state); row.appendChild(title);
-      const meta = document.createElement('div'); meta.className = 'card-meta'; meta.textContent = mhz(x.frequency_hz) + ' · ' + (x.mode || '—') + (x.reason ? ' · ' + x.reason : ''); row.appendChild(meta);
+      const meta = document.createElement('div'); meta.className = 'card-meta'; meta.textContent = mhz(x.frequency_hz) + ' · ' + (x.mode || '—') + ' · ' + ({decoded:'verified decode',timeout:'no response (timeout)',error:'connection issue',connecting:'connecting',listening:'listening',tuning:'tuning'}[x.state]||x.state); row.appendChild(meta);
+      if(x.reason){const details=document.createElement('details');const summary=document.createElement('summary');summary.textContent='technical detail';const raw=document.createElement('pre');raw.textContent=x.reason;details.append(summary,raw);row.append(details)}
       box.prepend(row);
     });
     while (box.children.length > 100) box.lastElementChild.remove();
@@ -532,6 +538,7 @@ async function refreshScans() {
   try {
     const data = await fetchJSON('/api/scans.json');
     if (data.target_concurrency) { concurrencyControl.value = data.target_concurrency; el('scan-concurrency-value').textContent = data.target_concurrency; }
+    el('scan-ramp-value').textContent=(data.ramp_step||0)+'/'+(data.max_connections||0);
     scanPaused = !!data.paused; el('scan-pause').textContent = scanPaused ? 'Resume' : 'Pause';
     const items = data.stations || [];
     const box = el('scan-board');
@@ -540,10 +547,10 @@ async function refreshScans() {
     summary.textContent = 'ramp '+(data.ramp_step||0)+'/'+(data.max_connections||0)+' · active '+(data.active_connections||0)+' · refusals '+(data.refusals||0)+' · timeouts '+(data.timeouts||0)+' · load '+Number(data.load_average||0).toFixed(2)+'/'+(data.core_count||0)+' cores · est. '+Number(data.estimated_bandwidth_mbps||0).toFixed(1)+'/'+(data.bandwidth_limit_mbps||0)+' Mbps';
     box.appendChild(summary);
     if (!items.length) { box.appendChild(Object.assign(document.createElement('div'), {className:'empty', textContent:'no scan state reported yet'})); return; }
-    items.slice(-40).forEach(x => {
+    items.slice(-scanCards).forEach(x => {
       const card = document.createElement('div'); card.className = 'card';
       const title = document.createElement('div'); title.className = 'card-title';
-      const b = document.createElement('b'); b.textContent = x.station;
+      const b = document.createElement('b'); b.textContent = String(x.station||'').replace(/[<>\u0000-\u001f]/g,'').slice(0,200);
       const state = document.createElement('span'); state.className = 'scan-state ' + (x.state || 'idle'); state.textContent = x.state || 'idle';
       title.appendChild(b); title.appendChild(state);
       card.appendChild(title);
@@ -738,7 +745,7 @@ function renderFeeds() {
 /* ---------- boot ---------- */
 // Route the initial hash only now: the map module's state is declared below
 // the router, so an early #map route would hit the temporal dead zone.
-if (location.hash && el('view-' + location.hash.slice(1))) showView(location.hash.slice(1));
+if (location.hash && el('view-' + location.hash.slice(1))) showView(location.hash.slice(1)); else showView('overview');
 refreshStatus(); refreshSats(); refreshGallery(); refreshStations(); refreshScans(); refreshActivity(); refreshFeeds();
 setInterval(refreshStatus, 5000);
 setInterval(refreshActivity, 4000);

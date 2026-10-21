@@ -117,6 +117,8 @@ type ScanMetrics struct {
 	BandwidthLimitMbps     float64      `json:"bandwidth_limit_mbps"`
 	TargetConcurrency      int          `json:"target_concurrency"`
 	Paused                 bool         `json:"paused"`
+	MemoryBytes            uint64       `json:"memory_bytes"`
+	OpenFDs                int          `json:"open_fds"`
 	Stations               []ScanStatus `json:"stations"`
 }
 
@@ -133,6 +135,7 @@ type Server struct {
 	monitor           *monitor.Monitor
 	feeds             *feeds.Manager
 	scans             []ScanStatus
+	scanIndex         map[string]int
 	scanMetrics       ScanMetrics
 	scanLog           []ScanStatus
 	scanLogSeq        uint64
@@ -155,7 +158,8 @@ func New(capturesDir, galleryDir string) *Server {
 	if galleryDir == "" {
 		galleryDir = filepath.Join(satnogs.CacheDir, "gallery")
 	}
-	s := &Server{capturesDir: capturesDir, galleryDir: galleryDir}
+	s := &Server{capturesDir: capturesDir, galleryDir: galleryDir, scanIndex: make(map[string]int)}
+	s.loadScanState()
 	s.loadGallery()
 	go s.galleryLoop()
 	s.loadPasses()
@@ -612,6 +616,31 @@ func (s *Server) handleFeeds(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, m.Snapshot(500))
 }
 
+func scanStateFile() string { return filepath.Join(os.TempDir(), "sdrstream-scan-state.json") }
+func (s *Server) loadScanState() {
+	b, err := os.ReadFile(scanStateFile())
+	if err != nil {
+		return
+	}
+	var items []ScanStatus
+	if json.Unmarshal(b, &items) != nil {
+		return
+	}
+	for _, item := range items {
+		s.UpsertScanStatus(item)
+	}
+}
+func (s *Server) persistScanStateLocked() {
+	b, err := json.Marshal(s.scans)
+	if err != nil {
+		return
+	}
+	tmp := scanStateFile() + ".tmp"
+	if os.WriteFile(tmp, b, 0600) == nil {
+		_ = os.Rename(tmp, scanStateFile())
+	}
+}
+
 // SetMonitor attaches a live monitor to the server.
 func (s *Server) SetScanStatuses(scans []ScanStatus) {
 	s.mu.Lock()
@@ -620,10 +649,14 @@ func (s *Server) SetScanStatuses(scans []ScanStatus) {
 	for _, item := range s.scans {
 		old[scanLogKey(item)] = item
 	}
+	if len(scans) > 500 {
+		scans = scans[len(scans)-500:]
+	}
 	s.scans = append([]ScanStatus(nil), scans...)
 	for _, item := range scans {
 		key := scanLogKey(item)
-		if prev, ok := old[key]; !ok || prev.State != item.State || prev.Result != item.Result {
+		prev, ok := old[key]
+		if !ok || prev.State != item.State || prev.Result != item.Result {
 			s.scanLogSeq++
 			s.scanLog = append(s.scanLog, item)
 			if len(s.scanLog) > 2000 {
@@ -631,6 +664,49 @@ func (s *Server) SetScanStatuses(scans []ScanStatus) {
 			}
 		}
 	}
+	s.persistScanStateLocked()
+}
+
+func (s *Server) UpsertScanStatus(item ScanStatus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.scanIndex == nil {
+		s.scanIndex = make(map[string]int, len(s.scans))
+		for i, x := range s.scans {
+			s.scanIndex[scanLogKey(x)] = i
+		}
+	}
+	key := scanLogKey(item)
+	idx, ok := s.scanIndex[key]
+	if ok && idx < len(s.scans) {
+		prev := s.scans[idx]
+		s.scans[idx] = item
+		if prev.State != item.State || prev.Result != item.Result {
+			s.scanLogSeq++
+			s.scanLog = append(s.scanLog, item)
+			if len(s.scanLog) > 2000 {
+				s.scanLog = append([]ScanStatus(nil), s.scanLog[len(s.scanLog)-2000:]...)
+			}
+		}
+		s.persistScanStateLocked()
+		return
+	}
+	if len(s.scans) >= 500 {
+		delete(s.scanIndex, scanLogKey(s.scans[0]))
+		s.scans = append(s.scans[1:], item)
+		for i, x := range s.scans {
+			s.scanIndex[scanLogKey(x)] = i
+		}
+	} else {
+		s.scanIndex[key] = len(s.scans)
+		s.scans = append(s.scans, item)
+	}
+	s.scanLogSeq++
+	s.scanLog = append(s.scanLog, item)
+	if len(s.scanLog) > 2000 {
+		s.scanLog = append([]ScanStatus(nil), s.scanLog[len(s.scanLog)-2000:]...)
+	}
+	s.persistScanStateLocked()
 }
 
 func scanLogKey(item ScanStatus) string {
@@ -657,6 +733,7 @@ func (s *Server) handleScanLog(w http.ResponseWriter, r *http.Request) {
 			items = append(items, map[string]any{"id": seq, "station": item.Station, "station_type": item.StationType, "frequency_hz": item.FrequencyHz, "mode": item.Mode, "state": item.State, "reason": item.Result, "updated_at": item.UpdatedAt})
 		}
 	}
+	sort.SliceStable(items, func(i, j int) bool { return fmt.Sprint(items[i]["updated_at"]) < fmt.Sprint(items[j]["updated_at"]) })
 	writeJSON(w, map[string]any{"items": items, "next_since": s.scanLogSeq})
 }
 
@@ -718,6 +795,12 @@ func (s *Server) ScanControl() (int, bool) {
 		target = s.scanMetrics.MaxConnections
 	}
 	return target, s.scanMetrics.Paused
+}
+
+func (s *Server) ScanControlManual() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.scanControlManual
 }
 
 func (s *Server) SetScanMetrics(metrics ScanMetrics) {

@@ -3,11 +3,13 @@ package web
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +43,15 @@ func (a *authState) init() {
 	}
 	if a.attempts == nil {
 		a.attempts = map[string]loginAttempt{}
+	}
+	if a.sessions == nil {
+		a.sessions = map[string]time.Time{}
+	}
+	if len(a.sessions) == 0 {
+		b, err := os.ReadFile(authSessionFile())
+		if err == nil {
+			_ = json.Unmarshal(b, &a.sessions)
+		}
 	}
 	a.mu.Unlock()
 }
@@ -131,6 +142,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	sessionValue := fmt.Sprintf("%x", session[:])
 	s.auth.mu.Lock()
 	s.auth.sessions[sessionValue] = time.Now().Add(sessionTTL)
+	s.persistSessionsLocked()
 	s.auth.mu.Unlock()
 	http.SetCookie(w, sessionCookie(sessionValue, 3600))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -148,6 +160,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie("sdrstream_session"); err == nil {
 		s.auth.mu.Lock()
 		delete(s.auth.sessions, cookie.Value)
+		s.persistSessionsLocked()
 		s.auth.mu.Unlock()
 	}
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -184,10 +197,12 @@ func (s *Server) wrapAuth(mux *http.ServeMux) http.Handler {
 		expires, ok := s.auth.sessions[cookie.Value]
 		if ok && time.Now().After(expires) {
 			delete(s.auth.sessions, cookie.Value)
+			s.persistSessionsLocked()
 			ok = false
 		}
 		if ok && time.Until(expires) < sessionRenewWindow {
 			s.auth.sessions[cookie.Value] = time.Now().Add(sessionTTL)
+			s.persistSessionsLocked()
 			renew = true
 		}
 		s.auth.mu.Unlock()
@@ -205,4 +220,16 @@ func (s *Server) wrapAuth(mux *http.ServeMux) http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func authSessionFile() string { return filepath.Join(os.TempDir(), "sdrstream-auth-sessions.json") }
+func (s *Server) persistSessionsLocked() {
+	b, err := json.Marshal(s.auth.sessions)
+	if err != nil {
+		return
+	}
+	tmp := authSessionFile() + ".tmp"
+	if os.WriteFile(tmp, b, 0600) == nil {
+		_ = os.Rename(tmp, authSessionFile())
+	}
 }
