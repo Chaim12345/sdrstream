@@ -363,6 +363,28 @@ async def _catalogue(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _kiwisdr(args: argparse.Namespace) -> int:
+    """List public KiwiSDR receivers, honoring each operator's API policy."""
+    from . import kiwisdr_directory
+
+    receivers = kiwisdr_directory.discover()
+    if not args.all:
+        receivers = kiwisdr_directory.api_permitted(receivers)
+    if args.frequency is not None:
+        receivers = kiwisdr_directory.for_frequency(args.frequency, receivers)
+    print("%d public KiwiSDR receiver(s)%s:"
+          % (len(receivers), "" if args.all else " allowing API clients"))
+    for receiver in receivers[:args.limit]:
+        where = ("%.2f, %.2f" % (receiver.latitude, receiver.longitude)
+                 if receiver.latitude is not None else
+                 (receiver.grid or receiver.location or "?")[:24])
+        low, high = receiver.bands[0] if receiver.bands else (0, 0)
+        print("  %-38s %5d/%d ch  %5.1f-%5.1f MHz  %s"
+              % (receiver.url[:38], receiver.users, receiver.users_max,
+                 low / 1e6, high / 1e6, where))
+    return 0
+
+
 async def _discover(args: argparse.Namespace) -> int:
     """Find OpenWebRX receivers that can hear a satellite downlink."""
     frequency = args.frequency
@@ -503,6 +525,15 @@ def build_parser() -> argparse.ArgumentParser:
     cat.add_argument("--band", default=None,
                      help="list receivers tagged for this band (2m, 70cm, ...)")
 
+    kwd = sub.add_parser("kiwisdr",
+                         help="list public KiwiSDR receivers from the mirror")
+    kwd.add_argument("--frequency", type=float, default=None,
+                     help="only receivers covering this frequency, in Hz")
+    kwd.add_argument("--limit", type=int, default=20,
+                     help="how many receivers to show (default: 20)")
+    kwd.add_argument("--all", action="store_true",
+                     help="include receivers that do not allow API clients")
+
     sats = sub.add_parser("satellites", help="list amateur satellites")
     sats.add_argument("satellite", nargs="?", default=None,
                       help="show details and receivers for one satellite")
@@ -575,6 +606,8 @@ def main(argv: List[str] | None = None) -> int:
         coro = _schedule(args)
     elif args.command == "catalogue":
         coro = _catalogue(args)
+    elif args.command == "kiwisdr":
+        coro = _kiwisdr(args)
     elif args.command == "fetch":
         coro = _fetch(args)
     elif args.command == "passes":
