@@ -151,7 +151,7 @@ class Scheduler:
 
     def due(self, within_seconds: float = 120.0) -> List[tuple]:
         """Jobs whose next pass starts within *within_seconds*, unrecorded."""
-        now = datetime.now(timezone.utc)
+        now = datetime.fromtimestamp(self._clock(), tz=timezone.utc)
         due_jobs = []
         for job in self.jobs():
             plan = self._plan(job)
