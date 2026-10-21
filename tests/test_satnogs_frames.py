@@ -40,10 +40,6 @@ def _patch_urlopen(responses):
     return calls, mock.patch("urllib.request.urlopen", side_effect=fake_urlopen)
 
 
-SATELLITE_BODY = json.dumps([
-    {"sat_id": "XSKZ-5603-1870-9019-3066", "norad_cat_id": 25544, "name": "ISS"},
-])
-
 FRAMES_BODY = json.dumps({
     "results": [
         {
@@ -82,10 +78,7 @@ class TelemetryFramesTest(unittest.TestCase):
         self.assertIn("SATNOGS_TOKEN", str(raised.exception))
 
     def test_fetches_frames_with_auth_header(self) -> None:
-        calls, patch = _patch_urlopen({
-            "/api/satellites/": SATELLITE_BODY,
-            "/api/telemetry/": FRAMES_BODY,
-        })
+        calls, patch = _patch_urlopen({"/api/telemetry/": FRAMES_BODY})
         with patch:
             frames = satnogs.telemetry_frames(25544, token="sekrit")
         self.assertEqual(len(frames), 1)
@@ -99,11 +92,22 @@ class TelemetryFramesTest(unittest.TestCase):
         telemetry_calls = [(u, h) for u, h in calls if "/api/telemetry/" in u]
         self.assertEqual(len(telemetry_calls), 1)
         url, headers = telemetry_calls[0]
-        self.assertIn("satellite=XSKZ-5603-1870-9019-3066", url)
+        # The endpoint's satellite filter takes the NORAD catalog number.
+        self.assertIn("satellite=25544", url)
         self.assertEqual(headers.get("Authorization"), "Token sekrit")
 
+    def test_satellite_uuid_filter(self) -> None:
+        calls, patch = _patch_urlopen({"/api/telemetry/": FRAMES_BODY})
+        with patch:
+            satnogs.telemetry_frames(sat_id="XSKZ-5603-1870-9019-3066",
+                                     token="tok")
+        url, _ = [(u, h) for u, h in calls if "/api/telemetry/" in u][0]
+        self.assertIn("sat_id=XSKZ-5603-1870-9019-3066", url)
+        self.assertNotIn("satellite=", url)
+
     def test_unknown_satellite_returns_empty(self) -> None:
-        _, patch = _patch_urlopen({"/api/satellites/": "[]"})
+        empty = json.dumps({"results": [], "next": None})
+        _, patch = _patch_urlopen({"/api/telemetry/": empty})
         with patch:
             frames = satnogs.telemetry_frames(999999, token="tok")
         self.assertEqual(frames, [])

@@ -298,8 +298,11 @@ class TelemetryFrame:
     def summary(self) -> str:
         when = self.timestamp.strftime("%Y-%m-%d %H:%M:%S") if self.timestamp else "?"
         size = len(self.frame or "") // 2 if self.frame else 0
-        return ("frame %-8d NORAD %-6d obs %-9d st %-5d %s  %3d bytes%s"
-                % (self.id, self.norad_id, self.observation_id or 0,
+        # The frames endpoint does not return a frame id, so the observation
+        # id leads the line and identifies the capture.
+        tag = ("frame %-8d " % self.id) if self.id else ""
+        return ("%sNORAD %-6d obs %-9d st %-5d %s  %3d bytes%s"
+                % (tag, self.norad_id, self.observation_id or 0,
                    self.station_id or 0, when, size,
                    "  (decoded)" if self.decoded else ""))
 
@@ -318,7 +321,7 @@ def api_token(explicit: Optional[str] = None) -> Optional[str]:
 def telemetry_frames(
     norad_id: Optional[int] = None,
     *,
-    satellite: Optional[str] = None,
+    sat_id: Optional[str] = None,
     transmitter: Optional[str] = None,
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,
@@ -332,8 +335,9 @@ def telemetry_frames(
     token (anonymous requests are rejected with an authentication error), so
     this needs ``token`` or ``SATNOGS_TOKEN`` in the environment. The frames
     are the community's raw captures — the deepest pool of amateur-satellite
-    telemetry that exists — filtered server-side by satellite, transmitter or
-    observation window. Results are newest first.
+    telemetry that exists — filtered server-side by satellite (NORAD catalog
+    number), the DB's own satellite UUID, transmitter or observation window.
+    Results are newest first.
 
     The endpoint is cursor-paginated; *limit* pages through it up to that
     many frames (capped at 500 to stay polite).
@@ -346,14 +350,11 @@ def telemetry_frames(
         )
     query: Dict[str, Any] = {"format": "json"}
     if norad_id is not None:
-        # The DB keys frames by its own UUID; look it up from the satellite
-        # record so the NORAD id the rest of this package uses still works.
-        found = _satellite_by_norad(norad_id, timeout=timeout)
-        if found is None:
-            return []
-        query["satellite"] = found
-    if satellite:
-        query["satellite"] = satellite
+        # The endpoint's satellite filter takes the NORAD catalog number
+        # directly; its sat_id filter takes the DB's own UUID.
+        query["satellite"] = norad_id
+    if sat_id:
+        query["sat_id"] = sat_id
     if transmitter:
         query["transmitter"] = transmitter
     if start is not None:
@@ -392,22 +393,6 @@ def _api_time(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _satellite_by_norad(norad_id: int, timeout: float = 30.0) -> Optional[str]:
-    """The DB's internal UUID for a NORAD catalog number."""
-    request = urllib.request.Request(
-        "%s/satellites/?norad_cat_id=%d&format=json" % (DB_API, norad_id),
-        headers={"User-Agent": USER_AGENT},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            found = json.loads(response.read().decode("utf-8", "replace"))
-    except (urllib.error.URLError, ValueError):
-        return None
-    if isinstance(found, list) and found:
-        return found[0].get("sat_id")
-    return None
 
 
 def _telemetry_frame(raw: Dict[str, Any]) -> TelemetryFrame:
