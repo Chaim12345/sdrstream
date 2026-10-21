@@ -385,6 +385,52 @@ async def _kiwisdr(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _transmitters(args: argparse.Namespace) -> int:
+    """List the transmitters SatNOGS knows for a satellite."""
+    from . import satnogs
+
+    sat = by_name(args.satellite)
+    records = satnogs.transmitter(sat.norad_id)
+    if not args.all:
+        records = [r for r in records if r.get("alive")]
+    print("%d transmitter(s) for %s (NORAD %d)%s:"
+          % (len(records), sat.name, sat.norad_id,
+             "" if args.all else ", alive only"))
+    for record in records:
+        downlink = record.get("downlink_low")
+        uplink = record.get("uplink_low")
+        baud = record.get("baud")
+        print("  %-28s %-8s  down %8.4f MHz%s%s"
+              % ((record.get("description") or "?")[:28],
+                 record.get("mode") or "-",
+                 (downlink or 0) / 1e6,
+                 "  up %.4f MHz" % (uplink / 1e6) if uplink else "",
+                 "  %d baud" % baud if baud else ""))
+    return 0
+
+
+async def _spacewx(args: argparse.Namespace) -> int:
+    """Show the current space weather from NOAA SWPC."""
+    from . import spacewx
+
+    print(spacewx.space_weather().summary())
+    return 0
+
+
+async def _aprs(args: argparse.Namespace) -> int:
+    """Collect live packets from the APRS-IS backbone."""
+    from . import aprs
+
+    print("listening on APRS-IS%s..."
+          % (" (filter %s)" % args.filter if args.filter else ""))
+    packets = aprs.listen(callsign=args.callsign, filter_spec=args.filter,
+                         max_packets=args.limit, seconds=args.seconds)
+    print("%d packet(s):" % len(packets))
+    for packet in packets:
+        print("  " + packet.summary())
+    return 0
+
+
 async def _discover(args: argparse.Namespace) -> int:
     """Find OpenWebRX receivers that can hear a satellite downlink."""
     frequency = args.frequency
@@ -534,6 +580,26 @@ def build_parser() -> argparse.ArgumentParser:
     kwd.add_argument("--all", action="store_true",
                      help="include receivers that do not allow API clients")
 
+    trx = sub.add_parser("transmitters",
+                         help="list a satellite's transmitters from SatNOGS")
+    trx.add_argument("satellite", help="satellite name, e.g. ISS")
+    trx.add_argument("--all", action="store_true",
+                     help="include transmitters that are no longer alive")
+
+    wx = sub.add_parser("spacewx",
+                        help="current space weather from NOAA SWPC")
+
+    apr = sub.add_parser("aprs",
+                         help="listen to live APRS traffic on the backbone")
+    apr.add_argument("--filter", default=None, metavar="FILTER",
+                    help="APRS-IS filter, e.g. r/32.79/34.99/100 or b/4X1UN")
+    apr.add_argument("--limit", type=int, default=10,
+                    help="how many packets to collect (default: 10)")
+    apr.add_argument("--seconds", type=float, default=30.0,
+                     help="how long to listen (default: 30)")
+    apr.add_argument("--callsign", default="N0CALL",
+                     help="callsign for the login line (default: N0CALL)")
+
     sats = sub.add_parser("satellites", help="list amateur satellites")
     sats.add_argument("satellite", nargs="?", default=None,
                       help="show details and receivers for one satellite")
@@ -608,6 +674,12 @@ def main(argv: List[str] | None = None) -> int:
         coro = _catalogue(args)
     elif args.command == "kiwisdr":
         coro = _kiwisdr(args)
+    elif args.command == "transmitters":
+        coro = _transmitters(args)
+    elif args.command == "spacewx":
+        coro = _spacewx(args)
+    elif args.command == "aprs":
+        coro = _aprs(args)
     elif args.command == "fetch":
         coro = _fetch(args)
     elif args.command == "passes":
