@@ -61,7 +61,10 @@ class ParsePacketTest(unittest.TestCase):
 class LoginLineTest(unittest.TestCase):
     def test_plain_login(self) -> None:
         line = aprs.login_line("N0CALL")
-        self.assertTrue(line.startswith("# login N0CALL pass -1"))
+        # APRS-IS only registers a client that logs in with the "user" form;
+        # a leading "#" would make the line a comment the server discards.
+        self.assertTrue(line.startswith("user N0CALL pass -1"))
+        self.assertFalse(line.startswith("#"))
         self.assertTrue(line.endswith("\r\n"))
 
     def test_filtered_login(self) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import unittest
 import urllib.error
+import urllib.parse
 from datetime import datetime, timezone
 from unittest import mock
 
@@ -111,6 +112,35 @@ class TelemetryFramesTest(unittest.TestCase):
         with patch:
             frames = satnogs.telemetry_frames(999999, token="tok")
         self.assertEqual(frames, [])
+
+    def test_pages_through_cursor(self) -> None:
+        # The API returns an absolute next-page URL, but the cursor parameter
+        # takes the token alone; sending the whole URL back is a 404.
+        cursor = "cD0yMDI2LTEwLTIwKzE3JTNBNTclM0ExNSUyQjAwJTNBMDA="
+        first = json.dumps({
+            "results": [{"id": 1, "norad_cat_id": 25544, "frame": "aa"}],
+            "next": "https://db.satnogs.org/api/telemetry/?cursor=%s&format=json"
+                    % urllib.parse.quote(cursor, safe=""),
+        })
+        second = json.dumps({
+            "results": [{"id": 2, "norad_cat_id": 25544, "frame": "bb"}],
+            "next": None,
+        })
+
+        def fake_urlopen(request, timeout=30.0):
+            url = getattr(request, "full_url", str(request))
+            calls.append(url)
+            return _FakeResponse(second if "cursor=" in url else first)
+
+        calls: list = []
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            frames = satnogs.telemetry_frames(25544, limit=10, token="tok")
+
+        self.assertEqual([f.id for f in frames], [1, 2])
+        self.assertEqual(len(calls), 2)
+        # The follow-up request must carry the bare token, not the whole URL.
+        self.assertIn("cursor=" + urllib.parse.quote(cursor, safe=""), calls[1])
+        self.assertNotIn("cursor=https", calls[1])
 
     def test_frame_summary(self) -> None:
         record = satnogs._telemetry_frame({

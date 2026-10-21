@@ -116,8 +116,13 @@ def _position(payload: str):
 
 
 def login_line(callsign: str = "N0CALL", filter_spec: Optional[str] = None) -> str:
-    """The APRS-IS login: a callsign, the receive passcode, and a filter."""
-    line = "# login %s pass -1" % callsign
+    """The APRS-IS login: a callsign, the receive passcode, and a filter.
+
+    The line must start with ``user`` (not ``#``, which marks a comment):
+    APRS-IS only registers a client that sends this form, and a receive-only
+    client passes the passcode ``-1``.
+    """
+    line = "user %s pass -1 vers sdrstream 0.1" % callsign
     if filter_spec:
         line += " filter %s" % filter_spec
     return line + "\r\n"
