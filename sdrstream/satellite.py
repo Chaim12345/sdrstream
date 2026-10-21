@@ -48,6 +48,10 @@ class ChasePlan:
     #: satellite's table name (which may differ from the catalogue name, as
     #: PO-101 does from DIWATA-2B) cannot lose the orbit.
     tle_text: Optional[str] = None
+    #: The element record the plan was built from, when GP/OMM data was used.
+    #: Preferred over ``tle_text`` by :func:`_record_pass` because it survives
+    #: the six-digit catalog numbers the TLE layout cannot hold.
+    orbit_record: Optional[object] = None
 
     def summary(self) -> str:
         lines = [
@@ -78,12 +82,19 @@ def plan_pass(
     lead_seconds: float = 90.0,
     tail_seconds: float = 60.0,
     tle_text: Optional[str] = None,
+    orbit_records: Optional[list] = None,
+    offline_tle: bool = False,
 ) -> ChasePlan:
     """Work out when and where to record *satellite*.
 
     The observer position comes from *receiver* when given, otherwise from
     *latitude* and *longitude*. With neither, the nearest known receiver that
     covers the downlink is used.
+
+    Element data comes from *orbit_records* when given, else from GP JSON
+    (``orbit_records`` omitted), else from *tle_text*, else from the amateur
+    TLE set. The GP path is preferred because it is the only one that carries
+    six-digit NORAD catalog numbers.
     """
     from . import tle as tle_module
 
@@ -112,8 +123,26 @@ def plan_pass(
                ", ".join(b.name for b in receiver.bands) or "none")
         )
 
-    text = tle_text if tle_text is not None else tle_module.load("amateur")
-    tracker = Tracker.from_tle_text(text, satellite.name)
+    text = tle_text
+    record = None
+    if orbit_records is not None:
+        tracker = Tracker.from_records(orbit_records, satellite.name)
+        for candidate in orbit_records:
+            if satellite.name.strip().upper() in candidate.name.upper():
+                record = candidate
+                break
+    else:
+        try:
+            records = tle_module.load_records("amateur", offline=offline_tle)
+            tracker = Tracker.from_records(records, satellite.name)
+            for candidate in records:
+                if satellite.name.strip().upper() in candidate.name.upper():
+                    record = candidate
+                    break
+        except Exception:
+            if text is None:
+                text = tle_module.load("amateur", offline=offline_tle)
+            tracker = Tracker.from_tle_text(text, satellite.name)
     passes = tracker.find_passes(
         latitude, longitude, start=start, hours=hours,
         min_elevation=min_elevation,
@@ -144,6 +173,7 @@ def plan_pass(
         start_frequency_hz=satellite.downlink_hz + (shifts[0] if shifts else 0.0),
         doppler_range_hz=(int(min(shifts)), int(max(shifts))) if shifts else (0, 0),
         tle_text=text,
+        orbit_record=record,
     )
 
 
@@ -193,8 +223,11 @@ async def chase(
     from . import tle as tle_module
 
     say = on_progress or (lambda message: None)
-    text = plan.tle_text or tle_module.load("amateur", offline=offline_tle)
-    tracker = Tracker.from_tle_text(text, plan.satellite.name)
+    if getattr(plan, "orbit_record", None) is not None:
+        tracker = Tracker.from_record(plan.orbit_record)
+    else:
+        text = plan.tle_text or tle_module.load("amateur", offline=offline_tle)
+        tracker = Tracker.from_tle_text(text, plan.satellite.name)
     latitude, longitude = plan.receiver.location
     nominal = plan.satellite.downlink_hz
 

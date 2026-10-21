@@ -34,6 +34,18 @@ GROUPS: Dict[str, tuple] = {
     ),
 }
 
+#: The same groups as General-Perturbations JSON. This is the format that
+#: still works for objects with six-digit NORAD catalog numbers: since the
+#: catalog passed 99,999 in July 2026, newly catalogued satellites are
+#: published only in the GP formats, never as TLE text.
+GP_GROUPS: Dict[str, str] = {
+    group: urls[0].replace("FORMAT=tle", "FORMAT=json")
+    for group, urls in GROUPS.items()
+    if urls[0].startswith("https://celestrak.org")
+}
+
+GP_CATNR_URL = ("https://celestrak.org/NORAD/elements/gp.php?CATNR=%d&FORMAT=json")
+
 DEFAULT_CACHE = Path(
     os.environ.get("SDRSTREAM_CACHE", Path.home() / ".cache" / "sdrstream")
 )
@@ -45,6 +57,11 @@ CATNR_URL = ("https://celestrak.org/NORAD/elements/gp.php?CATNR=%d&FORMAT=tle")
 
 def cache_path(group: str, cache_dir: Optional[Path] = None) -> Path:
     return (cache_dir or DEFAULT_CACHE) / ("tle_%s.txt" % group)
+
+
+def gp_cache_path(group: str, cache_dir: Optional[Path] = None) -> Path:
+    """Cache location for the GP-JSON variant of a group."""
+    return (cache_dir or DEFAULT_CACHE) / ("gp_%s.json" % group)
 
 
 def age_seconds(group: str, cache_dir: Optional[Path] = None) -> Optional[float]:
@@ -202,3 +219,111 @@ def load_catnr(norad_id: int, max_age_hours: float = 24.0,
         except Exception:
             return path.read_text() if path.exists() else None
     return text if "1 " in text else None
+
+
+def fetch_gp(group: str = "amateur", timeout: float = 30.0,
+            cache_dir: Optional[Path] = None) -> str:
+    """Download a group as CelesTrak GP JSON and cache it. Returns the raw text.
+
+    The GP formats are the only ones that carry objects with six-digit NORAD
+    catalog numbers, so this is the preferred element source.
+    """
+    if group not in GP_GROUPS:
+        raise KeyError("unknown group %r; known: %s"
+                       % (group, ", ".join(sorted(GP_GROUPS))))
+    url = GP_GROUPS[group]
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "sdrstream/0.1 (+satellite)"}
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        text = response.read().decode("utf-8", "replace")
+    if not text.lstrip().startswith("["):
+        raise ValueError("not a GP JSON array from %s" % url)
+    path = gp_cache_path(group, cache_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return text
+
+
+def gp_age_seconds(group: str, cache_dir: Optional[Path] = None) -> Optional[float]:
+    """Seconds since the cached GP set was fetched, or ``None`` if absent."""
+    path = gp_cache_path(group, cache_dir)
+    if not path.exists():
+        return None
+    return time.time() - path.stat().st_mtime
+
+
+def load_gp(group: str = "amateur", max_age_hours: float = 24.0,
+            cache_dir: Optional[Path] = None, offline: bool = False) -> str:
+    """GP JSON for a group, cached like :func:`load` caches TLE text."""
+    age = gp_age_seconds(group, cache_dir)
+    if age is not None and (offline or age < max_age_hours * 3600.0):
+        return gp_cache_path(group, cache_dir).read_text()
+    if offline:
+        raise FileNotFoundError(
+            "no cached GP set for %r; run without --offline once" % group
+        )
+    try:
+        return fetch_gp(group, cache_dir=cache_dir)
+    except Exception:
+        if age is not None:  # network down but a stale cache exists
+            return gp_cache_path(group, cache_dir).read_text()
+        raise
+
+
+def load_records(group: str = "amateur", max_age_hours: float = 24.0,
+                 cache_dir: Optional[Path] = None,
+                 offline: bool = False) -> "List":
+    """Element records for a group, preferring GP JSON over TLE text.
+
+    The GP path is tried first because it is the only one that can carry
+    six-digit catalog numbers; if it fails (network, CelesTrak hiccup) the
+    TLE path is used as a fallback so behaviour never regresses.
+    """
+    from .orbit import OrbitRecord, parse_omm_json, records_from_tle_text
+
+    try:
+        return parse_omm_json(load_gp(group, max_age_hours=max_age_hours,
+                                      cache_dir=cache_dir, offline=offline))
+    except Exception:
+        return records_from_tle_text(
+            load(group, max_age_hours=max_age_hours,
+                 cache_dir=cache_dir, offline=offline)
+        )
+
+
+def load_catnr_record(norad_id: int, max_age_hours: float = 24.0,
+                      cache_dir: Optional[Path] = None,
+                      offline: bool = False) -> Optional["OrbitRecord"]:
+    """A single object as an element record, or ``None`` if CelesTrak has none.
+
+    Uses the GP JSON endpoint, which works for every catalog number including
+    the six-digit IDs the TLE layout cannot hold.
+    """
+    from .orbit import from_omm, parse_omm_json
+
+    path = (cache_dir or DEFAULT_CACHE) / ("gp_catnr_%d.json" % norad_id)
+    age = None
+    if path.exists():
+        age = time.time() - path.stat().st_mtime
+    text: Optional[str] = None
+    if age is not None and (offline or age < max_age_hours * 3600.0):
+        text = path.read_text()
+    elif offline:
+        text = None
+    else:
+        url = GP_CATNR_URL % norad_id
+        request = urllib.request.Request(
+            url, headers={"User-Agent": "sdrstream/0.1 (+satellite)"}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30.0) as response:
+                text = response.read().decode("utf-8", "replace")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        except Exception:
+            text = path.read_text() if path.exists() else None
+    if not text or not text.lstrip().startswith("["):
+        return None
+    records = parse_omm_json(text)
+    return records[0] if records else None
