@@ -434,7 +434,13 @@ def make_navtex(message="ZCZC SA00\nTEST NAVTEX MESSAGE 123\nNNNN",
 
 
 def make_sstv_vis(vis, mode_name="test"):
-    """Render an SSTV VIS header: leader, break, start, 7 data bits, parity."""
+    """Render an SSTV VIS header the way real transmitters send it.
+
+    Header: 1900 Hz leader (300 ms), 1200 Hz break (10 ms), a second
+    1900 Hz leader (300 ms), then nine 30 ms signalling tones: 1100 Hz
+    start bit, seven data bits LSB first (1100 Hz = 1, 1300 Hz = 0), an
+    even-parity bit over the data bits, and a 1200 Hz stop bit.
+    """
     def tone(f, sec):
         out = []
         ph = 0.0
@@ -442,15 +448,16 @@ def make_sstv_vis(vis, mode_name="test"):
             out.append(0.6 * math.sin(ph))
             ph += 2 * math.pi * f / RATE
         return out
-    samples = tone(1200.0, 0.3)   # leader
-    samples += tone(1900.0, 0.01)  # break
-    samples += tone(1100.0, 0.03)  # start bit (0)
+    samples = tone(1900.0, 0.3)    # leader 1
+    samples += tone(1200.0, 0.01)  # break
+    samples += tone(1900.0, 0.3)   # leader 2
+    samples += tone(1100.0, 0.03)  # start bit (1)
     ones = 0
     for i in range(7):
         b = (vis >> i) & 1
         ones += b
-        samples += tone(1300.0 if b else 1100.0, 0.03)
-    samples += tone(1300.0 if ones % 2 else 1100.0, 0.03)  # even parity
+        samples += tone(1100.0 if b else 1300.0, 0.03)
+    samples += tone(1100.0 if ones % 2 else 1300.0, 0.03)  # even parity
     samples += tone(1200.0, 0.03)  # stop
     return [s + random.gauss(0, 0.01) for s in samples]
 

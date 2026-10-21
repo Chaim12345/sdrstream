@@ -9,15 +9,15 @@ import (
 // (Vertical Interval Signalling) header that names the mode, so a decoder
 // can tell a real image from noise before spending time on the picture.
 //
-// VIS format: a 1200 Hz leader (~300 ms), a 1900 Hz break (~10 ms), a
-// 1100 Hz start bit, seven data bits LSB first (1300 Hz = 1, 1100 Hz = 0),
-// an even-parity bit, then a 1200 Hz stop bit. Each of the start, data,
-// parity and stop bits lasts 30 ms.
+// VIS format: a 1900 Hz leader (~300 ms), a 1200 Hz break (~10 ms), a
+// second 1900 Hz leader (~300 ms), then nine 30 ms signalling tones: a
+// 1100 Hz start bit, seven data bits LSB first (1100 Hz = 1, 1300 Hz = 0),
+// an even-parity bit over the data bits, and a 1200 Hz stop bit.
 const (
-	sstvLeader = 1200.0
-	sstvBreak  = 1900.0
-	sstvBit0   = 1100.0
-	sstvBit1   = 1300.0
+	sstvLeader = 1900.0
+	sstvBreak  = 1200.0
+	sstvBit0   = 1300.0
+	sstvBit1   = 1100.0
 	sstvBitLen = 0.030 // seconds
 )
 
@@ -52,43 +52,47 @@ func SSTVDetect(samples []float64, rate int) []SSTVResult {
 		return nil
 	}
 	var out []SSTVResult
-	// Slide in 10 ms steps looking for the 1900 Hz break tone that follows
-	// the 1200 Hz leader.
-	step := rate / 100
+	// The calibration header is leader1(1900, ~300 ms), break(1200, 10 ms),
+	// leader2(1900, ~300 ms), then the VIS bits. A break candidate wins
+	// only when its own 10 ms window is pure 1200 Hz and both flanking
+	// 300 ms windows are pure 1900 Hz.
+	breakWindow := rate / 100 // 10 ms
+	leaderWindow := 3 * rate / 10
+	// Advance by an eighth of the break so some window is always at least
+	// 7/8 inside a 10 ms break, regardless of where it starts.
+	step := breakWindow / 8
 	if step < 1 {
 		step = 1
 	}
-	window := rate / 50 // 20 ms
-	// The leader must be present for roughly 300 ms before the break tone.
-	leaderWindow := 3 * rate / 10
-	for start := 0; start+window < len(samples); start += step {
-		seg := samples[start : start+window]
-		brk := goertzel(seg, rate, sstvBreak)
-		ldr := goertzel(seg, rate, sstvLeader)
-		if brk <= ldr*4 {
+	for start := breakWindow; start+breakWindow <= len(samples); start += step {
+		brk := samples[start : start+breakWindow]
+		var segPower float64
+		for _, s := range brk {
+			segPower += s * s
+		}
+		if segPower <= 0 {
 			continue
 		}
-		// The break tone must dominate the window; a real 1900 Hz burst is
-		// nearly the only energy present for its 10 ms.
-		var winPower float64
-		for _, s := range seg {
-			winPower += s * s
-		}
-		if winPower <= 0 || (brk*brk)/winPower < float64(len(seg))/8 {
+		g1200 := goertzel(brk, rate, sstvBreak)
+		g1900 := goertzel(brk, rate, sstvLeader)
+		if g1200 <= g1900*4 || (g1200*g1200)/segPower < float64(len(brk))/8 {
 			continue
 		}
-		// Require a preceding 1200 Hz leader; random audio rarely shows a
-		// sustained pure tone just before a strong 1900 Hz burst.
 		leadStart := start - leaderWindow
-		if leadStart < 0 {
-			leadStart = 0
-		}
-		lead := samples[leadStart:start]
-		if !hasLeader(lead, rate) {
+		if leadStart < 0 || start+leaderWindow >= len(samples) {
 			continue
 		}
-		// Found a break tone; read the bits that follow it.
-		base := start + window
+		// Both the leader1 block before and the leader2 block after must
+		// be dominated by 1900 Hz; random audio never shows two long pure
+		// tones around a 10 ms spawn.
+		if !hasLeader(samples[leadStart:start], rate, sstvLeader) {
+			continue
+		}
+		if !hasLeader(samples[start+breakWindow:start+leaderWindow+breakWindow], rate, sstvLeader) {
+			continue
+		}
+		// Found the header; the VIS bits start after leader 2.
+		base := start + breakWindow + leaderWindow
 		vis, ok := readVIS(samples, rate, base, bitSamples)
 		if !ok {
 			continue
@@ -108,14 +112,12 @@ func SSTVDetect(samples []float64, rate int) []SSTVResult {
 	return out
 }
 
-// hasLeader reports whether a segment is dominated by the 1200 Hz SSTV
-// leader tone, measured as the leader energy relative to the segment's
-// total energy.
-func hasLeader(seg []float64, rate int) bool {
+// hasLeader reports whether a segment is dominated by the given tone.
+func hasLeader(seg []float64, rate int, leaderFreq float64) bool {
 	if len(seg) < rate/50 {
 		return false
 	}
-	lead := goertzel(seg, rate, sstvLeader)
+	lead := goertzel(seg, rate, leaderFreq)
 	var power float64
 	for _, s := range seg {
 		power += s * s
@@ -129,8 +131,9 @@ func hasLeader(seg []float64, rate int) bool {
 	return ratio > float64(len(seg))/8
 }
 
-// readVIS reads a start bit, seven data bits LSB first and an even parity
-// bit starting at sample offset base. It returns the VIS code.
+// readVIS reads a 1100 Hz start bit, seven data bits LSB first, an even
+// parity bit and a 1200 Hz stop bit starting at sample offset base. It
+// returns the VIS code.
 func readVIS(samples []float64, rate, base, bitSamples int) (int, bool) {
 	readBit := func(i int) (int, bool) {
 		from := base + i*bitSamples
@@ -146,7 +149,7 @@ func readVIS(samples []float64, rate, base, bitSamples int) (int, bool) {
 		}
 		return 0, true
 	}
-	if start, ok := readBit(0); !ok || start != 0 {
+	if start, ok := readBit(0); !ok || start != 1 {
 		return 0, false
 	}
 	vis := 0
