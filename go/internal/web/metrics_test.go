@@ -1,10 +1,13 @@
 package web
 
 import (
+	"github.com/chaim12345/sdrstream/go/internal/feeds"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHealthzAndMetrics(t *testing.T) {
@@ -20,5 +23,29 @@ func TestHealthzAndMetrics(t *testing.T) {
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/api/metrics.json", nil))
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("metrics without session = %d, want 401", rr.Code)
+	}
+}
+
+func TestLedgerEndpointAndCSVInjectionGuard(t *testing.T) {
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "")
+	s := New(t.TempDir(), t.TempDir())
+	s.NoAuth = true
+	m := feeds.New(10, func(string, ...any) {})
+	l := feeds.NewLedger(filepath.Join(t.TempDir(), "l.jsonl"), 0)
+	m.SetLedger(l)
+	s.SetFeeds(m)
+	m.Add(feeds.Item{ID: "1", Source: "s", Kind: "k", Label: "=HYPERLINK(\"x\")", Time: time.Now()})
+	l.Close()
+	h := s.Handler()
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest("GET", "/api/ledger.csv", nil))
+	body := rr.Body.String()
+	if !strings.Contains(body, `'=HYPERLINK`) || strings.Contains(body, ",=HYPERLINK") {
+		t.Fatalf("csv not neutralised: %q", body)
+	}
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest("GET", "/api/ledger.json?source=s", nil))
+	if rr.Code != 200 || !strings.Contains(rr.Body.String(), `"decoded_by": "provider"`) {
+		t.Fatalf("json = %d %s", rr.Code, rr.Body.String())
 	}
 }

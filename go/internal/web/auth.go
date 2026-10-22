@@ -312,6 +312,9 @@ func (s *Server) wrapAuth(mux *http.ServeMux) http.Handler {
 // directory, never the shared OS temp dir itself: filenames there are
 // predictable and the directory is world-searchable, which would expose the
 // session table to other local users.
+// StateFile exposes the per-user state path for other packages' files.
+func StateFile(name string) string { return stateFile(name) }
+
 func stateFile(name string) string {
 	if dir := os.Getenv("SDRSTREAM_STATE_DIR"); dir != "" {
 		return filepath.Join(dir, name)

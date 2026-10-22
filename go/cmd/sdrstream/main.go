@@ -1498,6 +1498,9 @@ func cmdWeb(args []string) error {
 	server.NoAuth = *noAuth
 	if !*noFeeds {
 		feedsManager := feeds.New(0, nil)
+		ledger := feeds.NewLedger(web.StateFile("sdrstream-ledger.jsonl"), 0)
+		defer ledger.Close()
+		feedsManager.SetLedger(ledger)
 		server.SetFeeds(feedsManager)
 		feedsCtx, feedsCancel := context.WithCancel(ctx)
 		defer feedsCancel()

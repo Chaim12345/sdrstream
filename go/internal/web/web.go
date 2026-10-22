@@ -589,6 +589,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/scans.json", s.handleScans)
 	mux.HandleFunc("/api/feeds.json", s.handleFeeds)
 	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/api/ledger.json", s.handleLedger)
+	mux.HandleFunc("/api/ledger.csv", s.handleLedgerCSV)
 	mux.HandleFunc("/api/metrics.json", s.handleMetrics)
 	mux.HandleFunc("/api/sources.json", s.handleSources)
 	mux.HandleFunc("/api/bandconditions.json", s.handleBandConditions)
