@@ -30,12 +30,6 @@ const (
 	flagStereo      = 0x08
 	flagCompressed  = 0x10
 	flagLittleEndLs = 0x80
-
-	// tuneDrainWindow bounds how long Tune waits, after sending the SET
-	// line, swallowing audio that was still in flight from the previous
-	// frequency (review M4). Past that instant the frames that arrive
-	// are guaranteed post-tune, so the capture starts clean.
-	tuneDrainWindow = 250 * time.Millisecond
 )
 
 // maxFrameBytes caps one websocket frame. Kiwi audio and control frames are
@@ -111,10 +105,7 @@ type Client struct {
 	adpcm   adpcmState
 	curFreq int64
 	curMode string
-	// discardAudioUntil suppresses in-flight pre-tune samples without an
-	// extra timed websocket read (Gorilla makes read timeouts sticky).
-	discardAudioUntil time.Time
-	refused           error // set by handleText when the server refuses the session
+	refused error // set by handleText when the server refuses the session
 
 	// stateMu fronts rate and info: handleText (the socket reader) writes
 	// them while any listener can call SampleRate/InfoSnapshot (review
@@ -228,17 +219,7 @@ func (c *Client) tuneSend(freqHz int64, mode string) error {
 	line := fmt.Sprintf("SET mod=%s low_cut=%d high_cut=%d freq=%.3f",
 		mode, band[0], band[1], freqKHz)
 	c.ws.SetWriteDeadline(time.Now().Add(writeDeadline(c)))
-	err := c.ws.WriteMessage(websocket.TextMessage, []byte(line))
-	if err == nil {
-		// Suppress audio that may still be in flight from the previous
-		// frequency. Do not perform a timed websocket read here: Gorilla
-		// treats a read timeout as permanent for that connection, which
-		// would poison the next Record. Record continues reading normally
-		// and drops binary SND/WEFAX frames during this bounded settle window;
-		// text MSG frames are still processed for session state.
-		c.discardAudioUntil = time.Now().Add(tuneDrainWindow)
-	}
-	return err
+	return c.ws.WriteMessage(websocket.TextMessage, []byte(line))
 }
 
 func (c *Client) reconnectForTune() error {
@@ -361,9 +342,6 @@ func (c *Client) Record(ctx context.Context, duration time.Duration) ([]int16, i
 		}
 		if len(data) < 3 || string(data[:3]) != "SND" {
 			continue // W/F frames belong to the waterfall connection
-		}
-		if time.Now().Before(c.discardAudioUntil) {
-			continue
 		}
 		body := data[3:]
 		if len(body) < 7 {
