@@ -273,7 +273,9 @@ func TestPasswordLoginProtectsUIAndAPIs(t *testing.T) {
 		t.Fatalf("valid password status=%d, want 303", recorder.Code)
 	}
 	cookies := recorder.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != "sdrstream_session" || !cookies[0].HttpOnly || !cookies[0].Secure || cookies[0].SameSite != http.SameSiteStrictMode {
+	// Plain HTTP (no TLS, no local tunnel) must NOT mark the cookie
+	// Secure: the browser would refuse to send it and login would loop.
+	if len(cookies) != 1 || cookies[0].Name != "sdrstream_session" || !cookies[0].HttpOnly || cookies[0].Secure || cookies[0].SameSite != http.SameSiteStrictMode {
 		t.Fatalf("session cookie attributes are unsafe: %+v", cookies)
 	}
 
@@ -681,7 +683,7 @@ func TestScanCaptureMetadataSurvivesReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &Server{capturesDir: dir}
-	s.AddCaptureMetadata("APRS_144800kHz_aprs_jukebox_spdns_eu_test.wav", "aprs", "jukebox.spdns.eu:6166", "4X1RF>APRS:!abc", 144800000)
+	s.AddCaptureMetadata("APRS_144800kHz_aprs_jukebox_spdns_eu_test.wav", "aprs", "jukebox.spdns.eu:6166", "4X1RF>APRS:!abc", 144800000, true)
 	got := s.scanCaptures()
 	if len(got) != 1 || got[0].FrequencyHz != 144800000 || got[0].Mode != "aprs" || got[0].Receiver != "jukebox.spdns.eu:6166" || got[0].Decode != "4X1RF>APRS:!abc" {
 		t.Fatalf("capture metadata = %+v", got)

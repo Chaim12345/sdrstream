@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/chaim12345/sdrstream/go/internal/web"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/chaim12345/sdrstream/go/internal/decode"
 	"github.com/chaim12345/sdrstream/go/internal/kiwisdr"
+	"github.com/chaim12345/sdrstream/go/internal/web"
 )
 
 func TestStationBlocklistPersistsAcrossReload(t *testing.T) {
@@ -177,5 +181,56 @@ func TestAppendUsableKiwiStationsDedupesByHostPortAndSlots(t *testing.T) {
 	}
 	if got[2] != "KiwiSDR|http://free.example:8073" {
 		t.Fatalf("added station %q", got[2])
+	}
+}
+
+// TestJukeboxAPRSTempWAVRemoved: the jukebox APRS fast path writes a temp
+// WAV for the decoder; every outcome - including a successful decode that
+// records the capture - must remove it. Regression test for the leak where
+// the decoded-and-continued path skipped the remove.
+func TestJukeboxAPRSTempWAVRemoved(t *testing.T) {
+	samples, rate, err := decode.ReadWAV("../../../tests/data/ref_aprs.wav")
+	if err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	capturesDir := t.TempDir()
+	wavPath := filepath.Join(t.TempDir(), "sdrstream-aprs-test.wav")
+	server := &web.Server{}
+	states := []string{}
+	update := func(state, result string) { states = append(states, state) }
+
+	// The zero Server has no gallery directory, so AddLiveArtifact fails
+	// and the call reports not-recorded - but the APRS decode itself
+	// succeeded (the capture WAV proves it) and the temp file must still be
+	// gone. That is the path that used to leak.
+	tryJukeboxAPRS(server, samples, rate, wavPath, capturesDir, 144800000, "jukebox.spdns.eu", update)
+
+	if _, err := os.Stat(wavPath); !os.IsNotExist(err) {
+		t.Fatalf("temp WAV leaked: %v", err)
+	}
+	entries, err := os.ReadDir(capturesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), ".wav") {
+		t.Fatalf("capture not recorded: %v", entries)
+	}
+}
+
+// TestJukeboxAPRSNoSignalAlsoRemovesTemp: a recording without APRS packets
+// takes the early-exit path, which must remove the temp file too.
+func TestJukeboxAPRSNoSignalAlsoRemovesTemp(t *testing.T) {
+	samples := make([]float64, 8000)
+	capturesDir := t.TempDir()
+	wavPath := filepath.Join(t.TempDir(), "sdrstream-aprs-test.wav")
+	server := &web.Server{}
+	if tryJukeboxAPRS(server, samples, 8000, wavPath, capturesDir, 144800000, "jukebox.spdns.eu", func(string, string) {}) {
+		t.Fatal("silence reported as decoded")
+	}
+	if _, err := os.Stat(wavPath); !os.IsNotExist(err) {
+		t.Fatalf("temp WAV leaked on the no-decode path: %v", err)
+	}
+	if entries, _ := os.ReadDir(capturesDir); len(entries) != 0 {
+		t.Fatalf("silence produced captures: %v", entries)
 	}
 }
