@@ -284,6 +284,54 @@ func TestPasswordLoginProtectsUIAndAPIs(t *testing.T) {
 	}
 }
 
+func TestSessionsPersistAcrossRestart(t *testing.T) {
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "test-demo-password")
+	t.Setenv("SDRSTREAM_STATE_DIR", t.TempDir())
+
+	first := (&Server{}).Handler()
+	login := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("password=test-demo-password"))
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	first.ServeHTTP(recorder, login)
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("login status=%d, want 303", recorder.Code)
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("login set %d cookies, want 1", len(cookies))
+	}
+
+	// A brand new Server (as after a process restart) must accept the
+	// session the previous instance wrote to disk.
+	second := (&Server{}).Handler()
+	api := httptest.NewRequest(http.MethodGet, "/api/status.json", nil)
+	api.AddCookie(cookies[0])
+	recorder = httptest.NewRecorder()
+	second.ServeHTTP(recorder, api)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("restarted server rejected persisted session: status=%d, want 200", recorder.Code)
+	}
+}
+
+func TestExpiredSessionsAreDroppedOnLoad(t *testing.T) {
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "test-demo-password")
+	t.Setenv("SDRSTREAM_STATE_DIR", t.TempDir())
+	stale := map[string]time.Time{"dead-session": time.Now().Add(-time.Hour)}
+	b, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authSessionFile(), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{}
+	s.auth.init()
+	if _, ok := s.auth.sessions["dead-session"]; ok {
+		t.Fatalf("expired session survived reload: %v", s.auth.sessions)
+	}
+}
+
 func TestAddLiveArtifactPersistsAndServesVerifiedText(t *testing.T) {
 	dir := t.TempDir()
 	s := &Server{galleryDir: dir}

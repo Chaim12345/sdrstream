@@ -44,13 +44,17 @@ func (a *authState) init() {
 	if a.attempts == nil {
 		a.attempts = map[string]loginAttempt{}
 	}
-	if a.sessions == nil {
-		a.sessions = map[string]time.Time{}
-	}
 	if len(a.sessions) == 0 {
-		b, err := os.ReadFile(authSessionFile())
-		if err == nil {
-			_ = json.Unmarshal(b, &a.sessions)
+		if b, err := os.ReadFile(authSessionFile()); err == nil {
+			if loaded := map[string]time.Time{}; json.Unmarshal(b, &loaded) == nil {
+				// Drop sessions that expired while the process was down so a
+				// long-offline server does not reload dead entries.
+				for value, expires := range loaded {
+					if time.Now().Before(expires) {
+						a.sessions[value] = expires
+					}
+				}
+			}
 		}
 	}
 	a.mu.Unlock()
@@ -222,7 +226,12 @@ func (s *Server) wrapAuth(mux *http.ServeMux) http.Handler {
 	})
 }
 
-func authSessionFile() string { return filepath.Join(os.TempDir(), "sdrstream-auth-sessions.json") }
+func authSessionFile() string {
+	if dir := os.Getenv("SDRSTREAM_STATE_DIR"); dir != "" {
+		return filepath.Join(dir, "sdrstream-auth-sessions.json")
+	}
+	return filepath.Join(os.TempDir(), "sdrstream-auth-sessions.json")
+}
 func (s *Server) persistSessionsLocked() {
 	b, err := json.Marshal(s.auth.sessions)
 	if err != nil {
