@@ -32,6 +32,16 @@ func ReadWAV(path string) ([]float64, int, error) {
 		size := int(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
 		body := offset + 8
 		if id == "data" {
+			// A torn capture (disk full, crash mid-write) declares a data
+			// chunk longer than the file actually holds. Trust the bytes,
+			// not the header, or the sample loop below indexes past EOF
+			// and panics the decode wave.
+			if size < 0 || body+size > len(data) {
+				size = len(data) - body
+			}
+			if size < 0 {
+				size = 0
+			}
 			count := size / 2
 			if channels < 1 {
 				channels = 1

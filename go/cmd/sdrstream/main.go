@@ -2347,14 +2347,15 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 		select {
 		case <-ctx.Done():
 		case r := <-results:
-			if r.outcome.refused || r.outcome.timedOut {
+			receiverAtFault := (r.outcome.refused || r.outcome.timedOut) && !r.outcome.localResource
+			if receiverAtFault {
 				reason := "receiver refused or timed out"
 				blockStationIfEligible(ctx, server, r.host, reason, 30*time.Minute)
 			}
 			inFlight--
 			delete(activeStations, r.host)
 			delete(activeCancels, r.host)
-			if r.outcome.refused || r.outcome.timedOut {
+			if receiverAtFault {
 				d := backoffFor[r.host]
 				if d == 0 {
 					d = 30 * time.Second
@@ -2427,17 +2428,26 @@ func minDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
-type scanOutcome struct{ refused, timedOut bool }
+type scanOutcome struct{ refused, timedOut, localResource bool }
 
+// classifyScanFailure sorts a failed visit into what the receiver did
+// versus what this machine did. A local descriptor exhaustion (EMFILE/
+// ENFILE, usually "too many open files" above the default ulimit) says
+// nothing about the receiver: blocking it for half an hour would blacklist
+// every healthy host the scanner happened to touch during the spike.
 func classifyScanFailure(err error) scanOutcome {
 	if err == nil {
 		return scanOutcome{}
 	}
+	local := errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE)
 	var ne net.Error
 	isTimeout := errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) || strings.Contains(strings.ToLower(err.Error()), "timeout")
 	text := strings.ToLower(err.Error())
-	refused := strings.Contains(text, "refused") || strings.Contains(text, "rate limit") || strings.Contains(text, "too many") || strings.Contains(text, "429") || strings.Contains(text, "busy")
-	return scanOutcome{refused: refused, timedOut: isTimeout}
+	local = local || strings.Contains(text, "too many open files")
+	// "too many" also covers Kiwi-style "too many users" refusals, so it
+	// stays, but the local descriptor case never counts as a refusal.
+	refused := !local && (strings.Contains(text, "refused") || strings.Contains(text, "rate limit") || strings.Contains(text, "too many") || strings.Contains(text, "429") || strings.Contains(text, "busy"))
+	return scanOutcome{refused: refused, timedOut: isTimeout, localResource: local}
 }
 
 type resourceStatus struct {
@@ -2632,7 +2642,9 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		updateMetrics()
 		outcome := classifyScanFailure(err)
 		reason := err.Error()
-		blockStationIfEligible(ctx, server, host, reason, 30*time.Minute)
+		if outcome.refused || outcome.timedOut {
+			blockStationIfEligible(ctx, server, host, reason, 30*time.Minute)
+		}
 		return outcome
 	}
 	source, err := scanSourceFor(ctx, protocol, host, profile)
@@ -2648,7 +2660,9 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		active.Add(-1)
 		updateMetrics()
 		outcome := classifyScanFailure(err)
-		blockStationIfEligible(ctx, server, host, err.Error(), 30*time.Minute)
+		if outcome.refused || outcome.timedOut {
+			blockStationIfEligible(ctx, server, host, err.Error(), 30*time.Minute)
+		}
 		return outcome
 	}
 	if strings.EqualFold(stationType, "OpenWebRX") {
@@ -2842,7 +2856,12 @@ func scanFixedTargets(ctx context.Context, server *web.Server, source monitor.So
 				state = "timeout"
 			}
 			update(state, err.Error())
-			blockStationIfEligible(ctx, server, host, err.Error(), 30*time.Minute)
+			// Blocklisting is for receivers that actually pushed us away:
+			// a wrong tune or one bad frame says nothing about the host,
+			// and an EMFILE spike is this machine's problem.
+			if (result.refused || result.timedOut) && !result.localResource {
+				blockStationIfEligible(ctx, server, host, err.Error(), 30*time.Minute)
+			}
 			return result
 		}
 		if strings.Contains(strings.ToLower(host), "jukebox.spdns.eu") {

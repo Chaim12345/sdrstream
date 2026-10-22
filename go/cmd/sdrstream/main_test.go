@@ -6,13 +6,44 @@ import (
 	"fmt"
 	"github.com/chaim12345/sdrstream/go/internal/web"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/kiwisdr"
 )
+
+// A descriptor exhaustion on this machine must not look like a receiver
+// refusal: main.go used to blocklist every healthy host it dialled during
+// an EMFILE spike ("too many open files" matched the "too many" refusal
+// bait) and backed the concurrency ramp down on top of it.
+func TestClassifyScanFailureLocalResourceIsNotReceiverRefusal(t *testing.T) {
+	emfile := &net.OpError{Op: "dial", Err: syscall.EMFILE}
+	out := classifyScanFailure(emfile)
+	if out.refused || out.timedOut {
+		t.Fatalf("EMFILE classified as receiver failure: %+v", out)
+	}
+	if !out.localResource {
+		t.Fatalf("EMFILE not marked localResource: %+v", out)
+	}
+	if out = classifyScanFailure(fmt.Errorf("dial tcp 1.2.3.4:8073: bind: too many open files")); !out.localResource || out.refused {
+		t.Fatalf("textual EMFILE: %+v", out)
+	}
+	// Receiver-side refusals keep their meaning, including Kiwi-style
+	// "too many users".
+	if out = classifyScanFailure(errors.New("connection refused")); !out.refused || out.localResource {
+		t.Fatalf("refused: %+v", out)
+	}
+	if out = classifyScanFailure(errors.New("server busy: too many users")); !out.refused || out.localResource {
+		t.Fatalf("busy receiver: %+v", out)
+	}
+	if out = classifyScanFailure(fmt.Errorf("test")); out.refused || out.timedOut || out.localResource {
+		t.Fatalf("generic error: %+v", out)
+	}
+}
 
 func TestStationBlocklistPersistsAcrossReload(t *testing.T) {
 	dir := t.TempDir()
