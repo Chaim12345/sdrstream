@@ -1543,6 +1543,24 @@ func cmdDecode(args []string) error {
 	}
 	for _, path := range fs.Args() {
 		fmt.Printf("== %s\n", path)
+		if *mode == "acars" {
+			chs, rate, err := decode.ReadWAVChannels(path)
+			if err != nil {
+				fmt.Printf("   read: %v\n", err)
+				continue
+			}
+			n := 0
+			for c, ch := range chs {
+				for _, m := range decode.ACARSDecode(ch, rate, c) {
+					n++
+					fmt.Printf("   acars:  ch%d %.2fs %s\n", c, m.AtSec, m)
+				}
+			}
+			if n == 0 {
+				fmt.Println("   acars:  no CRC-valid blocks")
+			}
+			continue
+		}
 		samples, rate, err := decode.ReadWAV(path)
 		if err != nil {
 			fmt.Printf("   read: %v\n", err)
