@@ -40,11 +40,16 @@ func OpenWebRXSource(ctx context.Context, server, profile string) (Source, error
 	}
 	source := &openWebRXSource{client: client, name: server, profile: profile}
 	if profile != "" {
+		// A failed profile resolve/select would otherwise leak the live
+		// websocket: every rotated-profile visit against a server that
+		// dropped its profiles dripped one FD and one read-loop goroutine.
 		key, err := resolveProfile(client, profile)
 		if err != nil {
+			client.Close()
 			return nil, err
 		}
 		if err := client.SelectProfile(ctx, key); err != nil {
+			client.Close()
 			return nil, fmt.Errorf("monitor: select profile %q: %w", profile, err)
 		}
 		// Give the server a moment to switch profile and settle.

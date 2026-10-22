@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,5 +161,68 @@ func TestWavDurationSec(t *testing.T) {
 	}
 	if got := wavDurationSec(nil); got != 0 {
 		t.Fatalf("empty duration = %v, want 0", got)
+	}
+}
+
+// A failed removal must not freeze the prune accounting: for as long as a
+// file refuses to delete, its bytes must stay on the books, or the size
+// loop stops early and a full disk never drains while record-all keeps
+// writing.
+func TestPruneCapturesKeepsAccountingWhenRemoveFails(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	stuck := filepath.Join(dir, "stuck.wav")
+	data := []byte(strings.Repeat("x", 2048))
+	for _, f := range []struct {
+		name string
+		size int
+		mod  time.Time
+	}{{"stuck.wav", len(data), now.Add(-3 * time.Hour)}, {"old.wav", len(data), now.Add(-2 * time.Hour)}, {"new.wav", 100, now.Add(-time.Minute)}} {
+		body := make([]byte, f.size)
+		path := filepath.Join(dir, f.name)
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, f.mod, f.mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	remover := func(path string) error {
+		if path == stuck {
+			return errors.New("EBUSY: wedged mount")
+		}
+		return os.Remove(path)
+	}
+	removed, freed, err := pruneCapturesWith(dir, 0, 30*time.Minute, now, remover)
+	if err != nil {
+		t.Fatalf("pruneCapturesWith: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("removed = %d, want 1 (stuck.wav must fail and stay counted)", removed)
+	}
+	if freed != int64(len(data)) {
+		t.Errorf("freed = %d, want %d (only the successful removal frees bytes)", freed, len(data))
+	}
+	if _, err := os.Stat(stuck); err != nil {
+		t.Errorf("stuck.wav vanished: %v", err)
+	}
+	// Same limits with the size dimension: the stuck file's 2048 bytes
+	// stay on the books, so the loop keeps going over budget instead of
+	// stopping early as if the space were freed.
+	removed, freed, err = pruneCapturesWith(dir, 10, 30*time.Minute, now, remover)
+	if err != nil {
+		t.Fatalf("pruneCapturesWith size pass: %v", err)
+	}
+	if freed != 100 {
+		t.Errorf("size-pass freed = %d, want 100 (only new.wav; stuck.wav stays counted)", freed)
+	}
+	if removed != 1 {
+		t.Errorf("size-pass removed = %d, want 1", removed)
+	}
+	if _, err := os.Stat(stuck); err != nil {
+		t.Errorf("stuck.wav vanished: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "new.wav")); !os.IsNotExist(err) {
+		t.Errorf("new.wav survived the size pass: %v", err)
 	}
 }

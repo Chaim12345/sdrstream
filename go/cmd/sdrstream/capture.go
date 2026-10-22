@@ -214,6 +214,13 @@ func saveHFResultCapture(capturesDir, host string, result decode.HFResult, recor
 // directory is inside both limits. A zero limit disables that dimension.
 // It returns the number of WAVs removed and the bytes freed.
 func pruneCaptures(dir string, maxBytes int64, maxAge time.Duration, now time.Time) (int, int64, error) {
+	return pruneCapturesWith(dir, maxBytes, maxAge, now, os.Remove)
+}
+
+// pruneCapturesWith is pruneCaptures with the file removal injected, so
+// tests can exercise the failed-removal path (a file held open elsewhere,
+// a wedged FUSE mount) without root tricks.
+func pruneCapturesWith(dir string, maxBytes int64, maxAge time.Duration, now time.Time, removeFile func(path string) error) (int, int64, error) {
 	if strings.TrimSpace(dir) == "" || (maxBytes <= 0 && maxAge <= 0) {
 		return 0, 0, nil
 	}
@@ -240,21 +247,26 @@ func pruneCaptures(dir string, maxBytes int64, maxAge time.Duration, now time.Ti
 		total += info.Size()
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
-	remove := func(file item) {
-		_ = os.Remove(filepath.Join(dir, file.name))
-		_ = os.Remove(filepath.Join(dir, strings.TrimSuffix(file.name, ".wav")+".txt"))
-		total -= file.size
-	}
 	removed := 0
 	var freed int64
+	remove := func(file item) {
+		path := filepath.Join(dir, file.name)
+		if err := removeFile(path); err != nil {
+			// The file survived; keep its bytes in the accounting or the
+			// size loop stops early and a full disk never drains.
+			return
+		}
+		_ = os.Remove(filepath.Join(dir, strings.TrimSuffix(file.name, ".wav")+".txt"))
+		total -= file.size
+		removed++
+		freed += file.size
+	}
 	if maxAge > 0 {
 		for _, file := range files {
 			if now.Sub(file.mod) <= maxAge {
 				continue
 			}
 			remove(file)
-			removed++
-			freed += file.size
 		}
 	}
 	if maxBytes > 0 {
@@ -266,8 +278,6 @@ func pruneCaptures(dir string, maxBytes int64, maxAge time.Duration, now time.Ti
 				continue
 			}
 			remove(file)
-			removed++
-			freed += file.size
 		}
 	}
 	return removed, freed, nil

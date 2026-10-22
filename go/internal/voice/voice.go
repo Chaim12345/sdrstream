@@ -363,10 +363,19 @@ func WriteWAV(path string, samples []float64, rate int) error {
 	copy(header[36:], "data")
 	binary.LittleEndian.PutUint32(header[40:], uint32(len(data)))
 	if _, err := file.Write(header); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
 		return err
 	}
-	_, err = file.Write(data)
-	return err
+	if _, err := file.Write(data); err != nil {
+		// Disk full or IO error: a torn WAV is worse than no WAV, because
+		// gallery/accumulate paths treat existence as data. Remove it and
+		// surface the failure.
+		_ = file.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
 }
 
 // Envelope returns how strongly a recording is modulated: the coefficient

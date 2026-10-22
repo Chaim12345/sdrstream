@@ -12,6 +12,7 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -931,6 +932,11 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 				if m.opts.OnCapture != nil {
 					m.opts.OnCapture(candidate, path)
 				}
+			} else {
+				// WriteWAV already removed any partial file; the failure
+				// must not stay silent, or records-all archives quietly
+				// lose clips at the most interesting moment (disk full).
+				log.Printf("monitor: record activity %d: %v", activity.ID, err)
 			}
 		}
 		if kind == "noise" || kind == "silence" || kind == "unknown" {

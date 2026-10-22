@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -157,10 +158,13 @@ func decodeHF(target HFTarget, server string, samples16 []int16, rate int) HFRes
 		result.Text = text
 		result.Gate = verify.Text("rtty", text, target.Expect)
 	case "cw":
+		// MorseDecode reads from a file; the temp WAV must not survive the
+		// decode or a fleet of CW targets leaks one file per clip.
 		if tmp, err := writeTempWAV16(samples16, rate); err == nil {
 			if morse, derr := MorseDecode(tmp); derr == nil {
 				result.Text = morse.Text
 			}
+			_ = os.Remove(tmp)
 		}
 		result.Gate = verify.CW(result.Text, target.Expect)
 	case "navtex":

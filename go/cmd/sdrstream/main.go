@@ -1606,7 +1606,10 @@ func cmdWeb(args []string) error {
 	if *scanOpenDirectory || *scanKiwiDirectory {
 		initial, err := refreshStations(ctx)
 		if err != nil {
-			return err
+			// The directory must not stop the server: losing receiverbook
+			// would otherwise kill a web run that still has manual
+			// --scan-stations, and the refresh loop retries anyway.
+			log.Printf("scan: initial directory fetch failed, starting without it (%v)", err)
 		}
 		roster.SetDynamic(initial)
 		if *scanOpenDirectory && *scanHFServer == "" {
@@ -1614,7 +1617,10 @@ func cmdWeb(args []string) error {
 		}
 		roster.StartRefresh(ctx)
 	}
-	if len(roster.Snapshot()) > 0 {
+	// Start the scanner whenever the roster has any source of stations,
+	// not only after a successful initial fetch: with directory mode on,
+	// the refresh loop repopulates the list and the next pass scans it.
+	if len(roster.Snapshot()) > 0 || *scanOpenDirectory || *scanKiwiDirectory {
 		config, err := newScanConfig(*scanStart, *scanMax, *scanRamp, *scanGoodRate, *scanRefusalBackoff, *scanLoadAdvance, *scanLoadBackoff, *scanBandwidth, *scanStreamKbps, *scanTargetLimit, *scanStationSession)
 		if err != nil {
 			return err
