@@ -1,0 +1,9 @@
+recording 75.0s ...
+wrote /home/sandbox/hfdl/twente_5720.wav: 533120 samples @ 7119 Hz, peak=21142 rms=2616
+== /home/sandbox/hfdl/twente_5720.wav
+   hfdl:   300 bps single slot, mpdu downlink src=79 dst=3 train-BER=2% freq-err=3 Hz
+   hfdl:     LPDU type 0x1D
+   hfdl:     ACARS reg=EC-MXV label=SA blk=6 crc=true flight=IB0267 text="0EH225719VSH/"
+   hfdl:   300 bps single slot, mpdu downlink src=66 dst=3 train-BER=0% freq-err=10 Hz
+   hfdl:     LPDU type 0x0D
+   hfdl:     HFNPDU 0xD1 flight=ELY028 pos=47.142,-9.655 utc=22:57:28
