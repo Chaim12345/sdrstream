@@ -71,6 +71,9 @@ type SourceStatus struct {
 	Samples        []Item    `json:"samples,omitempty"`
 	DetailURL      string    `json:"detail_url,omitempty"`
 	Attribution    string    `json:"attribution,omitempty"`
+	License        string    `json:"license,omitempty"`
+	TermsNotes     string    `json:"terms_notes,omitempty"`
+	MaxAgeSeconds  int       `json:"max_age_seconds,omitempty"`
 }
 
 // Snapshot is the API payload for /api/feeds.json.
@@ -118,7 +121,18 @@ func (m *Manager) source(name, kind string, maxAge time.Duration) *sourceState {
 			st.status.DetailURL = "https://sondehub.org/"
 			st.status.Detail = "One bootstrap fetch, then live MQTT/WebSocket updates"
 		}
+		if t, ok := TermsFor(name); ok {
+			st.status.License = t.License
+			st.status.TermsNotes = t.Notes
+			if st.status.DetailURL == "" {
+				st.status.DetailURL = t.HomeURL
+			}
+		}
 		m.sources[name] = st
+	}
+	if maxAge > 0 {
+		st.maxAge = maxAge
+		st.status.MaxAgeSeconds = int(maxAge / time.Second)
 	}
 	return st
 }

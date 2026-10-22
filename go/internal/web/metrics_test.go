@@ -69,3 +69,12 @@ func TestFeedsNoteFlagsStaleSources(t *testing.T) {
 		t.Fatal("stale-source marker missing from app.js")
 	}
 }
+
+func TestUITermsLinePinned(t *testing.T) {
+	b, _ := staticFS.ReadFile("static/app.js")
+	for _, want := range []string{"'Licence: '", "terms_notes", "max_age_seconds"} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("app.js lacks %q", want)
+		}
+	}
+}
