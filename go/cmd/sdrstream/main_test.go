@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"github.com/chaim12345/sdrstream/go/internal/web"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -90,5 +94,25 @@ func TestRampUsesTimeoutsForAdvanceAndRefusalsForBackoff(t *testing.T) {
 	// only blocks the advance.
 	if got := nextRampStage(2, 3, .1, .1, .91, 2, cfg); got != 2 {
 		t.Fatalf("load step-down leaked into the window gate (guard owns it): %d", got)
+	}
+}
+
+func TestPreflightDirectoryStationIdentity(t *testing.T) {
+	tests := []struct {
+		kind, body string
+		ok         bool
+	}{
+		{"OpenWebRX", `<html><title>OpenWebRX</title></html>`, true},
+		{"OpenWebRX", `<html>plain site</html>`, false},
+		{"WebSDR", `<script src="websdr.js"></script>`, true},
+		{"WebSDR", `<html>plain site</html>`, false},
+	}
+	for _, tt := range tests {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, tt.body) }))
+		err := preflightDirectoryStation(context.Background(), tt.kind, server.URL)
+		server.Close()
+		if (err == nil) != tt.ok {
+			t.Errorf("%s body %q: err=%v, want ok=%t", tt.kind, tt.body, err, tt.ok)
+		}
 	}
 }

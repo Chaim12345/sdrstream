@@ -8,8 +8,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -2102,6 +2104,51 @@ func cmdKiwiPreflight(receivers []string) error {
 	return nil
 }
 
+var directoryPreflightSlots = make(chan struct{}, 16)
+
+func preflightDirectoryStation(ctx context.Context, stationType, rawURL string) error {
+	select {
+	case directoryPreflightSlots <- struct{}{}:
+		defer func() { <-directoryPreflightSlots }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	requestURL, err := common.NormalizeHTTPURL(rawURL)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("User-Agent", "sdrstream/1.0 receiver-preflight")
+	client := &http.Client{Timeout: 8 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("preflight HTTP: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 400 {
+		return fmt.Errorf("preflight HTTP status %s", response.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 512*1024))
+	if err != nil {
+		return fmt.Errorf("preflight read: %w", err)
+	}
+	page := strings.ToLower(string(body))
+	identified := false
+	switch strings.ToLower(stationType) {
+	case "openwebrx":
+		identified = strings.Contains(page, "openwebrx") || strings.Contains(page, "openwebrx+")
+	case "websdr":
+		identified = strings.Contains(page, "websdr") || strings.Contains(page, "/~~stream")
+	}
+	if !identified {
+		return fmt.Errorf("preflight reachable but server page did not identify as %s", stationType)
+	}
+	return nil
+}
+
 func scanStation(ctx context.Context, server *web.Server, stationType, host string, targetLimit int, multimonPath, direwolfPath string, active *atomic.Int64, updateMetrics func()) scanOutcome {
 	if strings.EqualFold(stationType, "KiwiSDR") || looksLikeKiwi(host) {
 		preflight := kiwiPreflight.Check(ctx, host)
@@ -2126,6 +2173,13 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		protocol = "openwebrx"
 	}
 	connectCtx, cancelConnect := context.WithTimeout(ctx, 10*time.Second)
+	if err := preflightDirectoryStation(connectCtx, stationType, host); err != nil {
+		cancelConnect()
+		active.Add(-1)
+		updateMetrics()
+		addScan(server, web.ScanStatus{StationType: stationType, Station: host, State: "refused/skipped", Result: err.Error(), UpdatedAt: time.Now()})
+		return classifyScanFailure(err)
+	}
 	source, err := monitor.SourceFor(connectCtx, protocol, host, "")
 	cancelConnect()
 	if err != nil {
