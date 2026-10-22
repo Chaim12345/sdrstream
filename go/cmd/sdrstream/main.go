@@ -2168,7 +2168,7 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 	}
 	active.Add(1)
 	updateMetrics()
-	results, _, err := decode.RunHFSession(ctx, host, targets, decode.SessionOptions{Listen: 8 * time.Second, MaxTargets: targetLimit, MaxSession: 5 * time.Minute, SkipInactive: true, WSPath: wsPath})
+	results, remaining, err := decode.RunHFSession(ctx, host, targets, decode.SessionOptions{Listen: 8 * time.Second, MaxTargets: targetLimit, MaxSession: 5 * time.Minute, SkipInactive: true, WSPath: wsPath})
 	active.Add(-1)
 	updateMetrics()
 	if err != nil {
@@ -2187,7 +2187,9 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 		}
 		return outcome
 	}
+	processed := make(map[string]bool, len(results))
 	for _, result := range results {
+		processed[result.Target.Name] = true
 		key := keys[result.Target.Name]
 		if key == "" {
 			continue
@@ -2206,6 +2208,14 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 			continue
 		}
 		setScanResult(server, key, "decoded", result.Gate.Reason)
+	}
+	for _, target := range remaining {
+		if processed[target.Name] {
+			continue
+		}
+		if key := keys[target.Name]; key != "" {
+			setScanResult(server, key, "deferred", "receiver session target/time cap; will retry next station visit")
+		}
 	}
 	return scanOutcome{}
 }
