@@ -129,6 +129,7 @@
       <button id="scan-pause" type="button" class="btn">Pause</button>
       <span id="scan-control-status" class="muted" aria-live="polite"></span>
     </div>
+    <div id="band-conditions" class="muted" aria-label="Advisory HF band conditions"></div>
     <h2>Connection log</h2>
     <div class="toolbar"><button class="chip on" data-scan-state="">All</button><button class="chip" data-scan-state="decoded">Decoded</button><button class="chip" data-scan-state="timeout">Timeouts</button><button class="chip" data-scan-state="error">Errors</button></div>
     <div id="scan-log" class="cards" aria-live="polite"><div class="empty">waiting for scan events</div></div>
@@ -150,6 +151,12 @@
     <div class="toolbar" role="group" aria-label="Feed sources" id="feeds-sources"></div>
     <div class="muted feeds-note" id="feeds-note"></div>
     <div class="feed feed-full" id="feeds-list" role="log" aria-live="polite" aria-label="Live public data"><div class="empty">connecting to feeds&hellip;</div></div>
+    <h2>Data sources</h2>
+    <div class="toolbar">
+      <button id="sources-refresh" type="button" class="btn">check now</button>
+      <span id="sources-note" class="muted"></span>
+    </div>
+    <div id="sources-list" class="cards" aria-label="External data source health"><div class="empty">no health check yet - press check now</div></div>
   </section>
 
 

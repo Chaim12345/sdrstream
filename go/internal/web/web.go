@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chaim12345/sdrstream/go/internal/bandcond"
 	"github.com/chaim12345/sdrstream/go/internal/catalogue"
 	"github.com/chaim12345/sdrstream/go/internal/directory"
 	"github.com/chaim12345/sdrstream/go/internal/feeds"
@@ -30,6 +31,7 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/relays"
 	"github.com/chaim12345/sdrstream/go/internal/satellites"
 	"github.com/chaim12345/sdrstream/go/internal/satnogs"
+	"github.com/chaim12345/sdrstream/go/internal/sources"
 	"github.com/chaim12345/sdrstream/go/internal/tle"
 	"github.com/chaim12345/sdrstream/go/internal/tracking"
 	"github.com/chaim12345/sdrstream/go/internal/verify"
@@ -102,6 +104,9 @@ type ScanStatus struct {
 	State       string    `json:"state"`
 	Result      string    `json:"result,omitempty"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	// BandCondition is the advisory HF band label (from the cached NOAA
+	// K-index) for scan targets inside an amateur HF band.
+	BandCondition string `json:"band_condition,omitempty"`
 }
 
 // ScanMetrics reports the bounded station-scan ramp and its current load.
@@ -142,6 +147,15 @@ type Server struct {
 	scanControlManual bool
 	stations          []directory.Station
 	stationsAt        time.Time
+	sourcesResults    []sources.Result
+	sourcesAt         time.Time
+	sourcesRunning    bool
+	cond              bandcond.Conditions
+	condAt            time.Time
+	condErr           string
+	// healthAll and fetchConditions are seams for the tests.
+	healthAll       func(ctx context.Context, opts sources.Options) []sources.Result
+	fetchConditions func(ctx context.Context) (bandcond.Conditions, error)
 	// fetchStations is directory.FetchStations in production and a seam
 	// for the tests, which cannot wait on the public directory.
 	fetchStations func(context.Context) ([]directory.Station, error)
@@ -421,6 +435,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/test-fixtures.json", s.handleTestFixtures)
 	mux.HandleFunc("/api/scans.json", s.handleScans)
 	mux.HandleFunc("/api/feeds.json", s.handleFeeds)
+	mux.HandleFunc("/api/sources.json", s.handleSources)
+	mux.HandleFunc("/api/bandconditions.json", s.handleBandConditions)
 	mux.HandleFunc("/api/scanlog.json", s.handleScanLog)
 	mux.HandleFunc("/api/scans/control", s.handleScanControl)
 	mux.HandleFunc("/api/activity.json", s.handleActivity)
@@ -742,6 +758,14 @@ func (s *Server) handleScans(w http.ResponseWriter, r *http.Request) {
 		metrics.TargetConcurrency = metrics.RampStep
 	}
 	metrics.Stations = append([]ScanStatus(nil), s.scans...)
+	if len(s.cond.Bands) > 0 && time.Since(s.condAt) < 3*time.Hour {
+		for i := range metrics.Stations {
+			if label, ok := s.cond.LabelForHz(metrics.Stations[i].FrequencyHz); ok {
+				band, _ := bandcond.BandForHz(metrics.Stations[i].FrequencyHz)
+				metrics.Stations[i].BandCondition = band + " " + label
+			}
+		}
+	}
 	writeJSON(w, metrics)
 }
 
@@ -1026,4 +1050,102 @@ func (s *Server) Serve(addr string) error {
 	log.Printf("web UI on http://%s", addr)
 	server := &http.Server{Addr: addr, Handler: s.Handler()}
 	return server.ListenAndServe()
+}
+
+// sourcesResponse is the on-demand data-source health table.
+type sourcesResponse struct {
+	UpdatedAt time.Time        `json:"updated_at"`
+	Running   bool             `json:"running"`
+	Results   []sources.Result `json:"results"`
+}
+
+// handleSources serves the last health sweep. A sweep starts on the first
+// request, or when ?refresh=1 arrives and the last sweep finished more than
+// 30s ago - never on a timer, so the external services are only probed when
+// someone actually asks.
+func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	stale := time.Since(s.sourcesAt) > 30*time.Second
+	if !s.sourcesRunning && stale && (r.URL.Query().Get("refresh") == "1" || len(s.sourcesResults) == 0) {
+		s.sourcesRunning = true
+		go s.runSourcesSweep()
+	}
+	response := sourcesResponse{
+		UpdatedAt: s.sourcesAt,
+		Running:   s.sourcesRunning,
+		Results:   append([]sources.Result(nil), s.sourcesResults...),
+	}
+	s.mu.Unlock()
+	if response.Results == nil {
+		response.Results = []sources.Result{}
+	}
+	writeJSON(w, response)
+}
+
+func (s *Server) runSourcesSweep() {
+	s.mu.Lock()
+	fn := s.healthAll
+	s.mu.Unlock()
+	if fn == nil {
+		fn = sources.HealthAll
+	}
+	results := fn(context.Background(), sources.Options{Timeout: 10 * time.Second, Concurrency: 4})
+	s.mu.Lock()
+	s.sourcesResults = results
+	s.sourcesAt = time.Now()
+	s.sourcesRunning = false
+	s.mu.Unlock()
+}
+
+// bandcondResponse serves the advisory band conditions; stale marks a cache
+// served after a failed NOAA refresh, error carries the failure.
+type bandcondResponse struct {
+	bandcond.Conditions
+	Stale bool   `json:"stale,omitempty"`
+	Err   string `json:"error,omitempty"`
+}
+
+// handleBandConditions serves the cached NOAA-derived band conditions,
+// refreshing at most every 30 minutes. NOAA failures never blank a good
+// cache; they mark it stale with the error attached.
+func (s *Server) handleBandConditions(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	stale := time.Since(s.condAt) > 30*time.Minute
+	s.mu.Unlock()
+	if stale {
+		s.mu.Lock()
+		fn := s.fetchConditions
+		s.mu.Unlock()
+		if fn == nil {
+			fn = func(ctx context.Context) (bandcond.Conditions, error) {
+				return bandcond.Fetch(ctx, "", 8*time.Second)
+			}
+		}
+		conditions, err := fn(r.Context())
+		s.mu.Lock()
+		if err != nil {
+			s.condErr = err.Error()
+			// Count a failure against the refresh window too, so an
+			// unreachable NOAA is retried later, not on every poll.
+			s.condAt = time.Now()
+		} else {
+			s.cond = conditions
+			s.condErr = ""
+			s.condAt = time.Now()
+		}
+		s.mu.Unlock()
+	}
+	s.mu.Lock()
+	response := bandcondResponse{Conditions: s.cond, Err: s.condErr}
+	cachedAt := s.condAt
+	s.mu.Unlock()
+	response.UpdatedAt = cachedAt
+	if response.Err != "" && len(response.Bands) > 0 {
+		response.Stale = true
+	}
+	if len(response.Bands) == 0 {
+		response.Bands = []bandcond.BandCondition{}
+		response.Advisory = true
+	}
+	writeJSON(w, response)
 }
