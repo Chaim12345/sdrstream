@@ -616,3 +616,12 @@ read from the `SDRSTREAM_AIS_KEY` environment variable (preferred, keeps it out
 of the process list) or `--ais-key`. The key is never stored on disk by
 sdrstream. Without it the AIS source shows as "disabled" with that hint and the
 other feeds are unaffected.
+
+### Whisper model choice for radio voice
+
+`SDRSTREAM_WHISPER_MODEL` can select a local whisper.cpp GGML model. The default
+model search still prefers `base.en`; a quantised `small.en-q5_1` can be chosen
+for an offline quality check on narrowband radio clips. The `.en` model is
+English-only. For non-English clips, use a multilingual small q5_1 model instead
+and compare transcripts against the saved audio before changing the live
+quality gate. Whisper output remains subject to the existing verification gate.
