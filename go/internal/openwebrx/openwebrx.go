@@ -97,6 +97,7 @@ type Client struct {
 
 	events      chan Event
 	audioEvents chan Event
+	eventsOnce  sync.Once
 	quit        chan struct{}
 	conn        *websocket.Conn
 	mu          sync.Mutex
@@ -180,12 +181,22 @@ func (c *Client) Connect(ctx context.Context) (Config, error) {
 	return c.Config, nil
 }
 
+// writeText sends one text frame with a bounded write deadline. Without it
+// a dead/blocked peer wedges the scanner worker forever on a TCP buffer
+// that will never drain (review H3); kiwisdr already does this.
+const openwebRXWriteTimeout = 10 * time.Second
+
+func writeText(conn *websocket.Conn, payload []byte) error {
+	_ = conn.SetWriteDeadline(time.Now().Add(openwebRXWriteTimeout))
+	return conn.WriteMessage(websocket.TextMessage, payload)
+}
+
 // handshake sends the client greeting, waits for the configuration, then
 // sends the pending tuning request and starts the DSP. The handshake completes
 // before the reader starts so only one goroutine ever reads from the socket.
 func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
 	greeting := fmt.Sprintf("SERVER DE CLIENT client=%s type=receiver", c.ClientName)
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(greeting)); err != nil {
+	if err := writeText(conn, []byte(greeting)); err != nil {
 		return err
 	}
 	// The configuration arrives as several config messages and only the last
@@ -210,7 +221,7 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
 				"params": map[string]interface{}{
 					"output_rate": c.outputRate, "hd_output_rate": c.hdRate}}
 			payload, _ := json.Marshal(params)
-			if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+			if err := writeText(conn, payload); err != nil {
 				return err
 			}
 			continue
@@ -235,13 +246,13 @@ func (c *Client) startDSP(ctx context.Context, conn *websocket.Conn) error {
 			message[key] = value
 		}
 		payload, _ := json.Marshal(message)
-		if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+		if err := writeText(conn, payload); err != nil {
 			return err
 		}
 	}
 	start := map[string]interface{}{"type": "dspcontrol", "action": "start"}
 	payload, _ := json.Marshal(start)
-	return conn.WriteMessage(websocket.TextMessage, payload)
+	return writeText(conn, payload)
 }
 
 func (c *Client) handleText(message string) bool {
@@ -476,7 +487,15 @@ func (c *Client) publish(event Event) {
 }
 
 func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
-	defer conn.Close()
+	defer func() {
+		conn.Close()
+		// Terminal state: a closed events channel tells consumers the
+		// receiver stopped, instead of a frozen spectrum that looks like
+		// scanning dead air forever (review H2). readLoop is the only
+		// publisher on this channel and it has just exited, so the close
+		// cannot race a send.
+		c.eventsOnce.Do(func() { close(c.events) })
+	}()
 	for {
 		select {
 		case <-c.quit:
@@ -540,14 +559,14 @@ func (c *Client) Tune(ctx context.Context, frequency *int64, modulation string, 
 		return nil
 	}
 	payload, _ := json.Marshal(message)
-	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+	if err := writeText(conn, payload); err != nil {
 		return err
 	}
 	// Some servers stop the demodulator when the tuning changes and then
 	// send no audio at all until the client asks for it again.
 	start := map[string]interface{}{"type": "dspcontrol", "action": "start"}
 	restart, _ := json.Marshal(start)
-	return conn.WriteMessage(websocket.TextMessage, restart)
+	return writeText(conn, restart)
 }
 
 // SelectProfile switches the receiver to another SDR profile. The argument
@@ -565,7 +584,7 @@ func (c *Client) SelectProfile(ctx context.Context, profile string) error {
 		"params": map[string]interface{}{"profile": profile},
 	}
 	payload, _ := json.Marshal(message)
-	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+	if err := writeText(conn, payload); err != nil {
 		return err
 	}
 	// A profile switch tears down the server's demodulator: no audio flows
@@ -573,7 +592,7 @@ func (c *Client) SelectProfile(ctx context.Context, profile string) error {
 	// still has to Tune, because the old frequency belongs to the old
 	// profile's span.
 	restart, _ := json.Marshal(map[string]interface{}{"type": "dspcontrol", "action": "start"})
-	return conn.WriteMessage(websocket.TextMessage, restart)
+	return writeText(conn, restart)
 }
 
 // Profile is one tunable SDR profile a server advertises over the socket.

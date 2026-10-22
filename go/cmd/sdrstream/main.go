@@ -1410,7 +1410,12 @@ func collectFrames(ctx context.Context, client *openwebrx.Client, n int, timeout
 	deadline := time.After(timeout)
 	for len(spectra) < n {
 		select {
-		case e := <-client.Events():
+		case e, ok := <-client.Events():
+			if !ok {
+				// Connection is done; fewer frames than asked for is
+				// better than spinning on a closed channel.
+				return spectra
+			}
 			if e.Type == "fft" && !e.Secondary {
 				if vals, ok := e.Value.([]float64); ok && len(vals) > 0 {
 					spectra = append(spectra, vals)
@@ -1431,7 +1436,10 @@ func awaitConfig(ctx context.Context, client *openwebrx.Client, timeout time.Dur
 	deadline := time.After(timeout)
 	for {
 		select {
-		case e := <-client.Events():
+		case e, ok := <-client.Events():
+			if !ok {
+				return openwebrx.Config{}, false
+			}
 			if e.Type == "config" {
 				if cfg, ok := e.Value.(openwebrx.Config); ok && cfg.CenterFreq != nil {
 					return cfg, true

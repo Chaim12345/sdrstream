@@ -211,3 +211,36 @@ func TestSelectProfileSendsRawKeyAndRestartsDemod(t *testing.T) {
 		t.Fatalf("message after selectprofile = %v, want dspcontrol action=start", restart)
 	}
 }
+
+// When the connection dies, Events() must close instead of freezing the
+// consumer on silent dead air (review H2): the monitor gates its spectrum
+// on the channel, and the scanner consumer treats a closed events channel
+// as terminal.
+func TestEventsCloseOnConnectionLoss(t *testing.T) {
+	server, _ := startMockServer(t)
+	client, err := New(server.URL, Options{OutputRate: 12000, HDOutputRate: 12000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	// Kill the connection the way a network drop does: hard local close.
+	client.mu.Lock()
+	if client.conn != nil {
+		_ = client.conn.UnderlyingConn().Close()
+	}
+	client.mu.Unlock()
+	deadline := time.After(20 * time.Second)
+	for {
+		select {
+		case _, ok := <-client.Events():
+			if !ok {
+				return
+			}
+		case <-deadline:
+			t.Fatal("events channel never closed after the socket died")
+		}
+	}
+}

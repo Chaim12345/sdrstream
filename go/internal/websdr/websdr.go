@@ -303,6 +303,9 @@ func (c *Client) Tune(ctx context.Context, frequencyKHz float64, mode string, ba
 	conn := c.conn
 	c.mu.Unlock()
 	if conn != nil {
+		// Bounded write: a dead peer must not wedge the scanner slot on
+		// a TCP buffer that never drains (review H3).
+		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		return conn.WriteMessage(websocket.TextMessage, []byte("GET /~~param?"+params))
 	}
 	return nil
@@ -316,6 +319,7 @@ func (c *Client) sendParam(ctx context.Context, params string) {
 	if conn == nil {
 		return
 	}
+	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	_ = conn.WriteMessage(websocket.TextMessage, []byte("GET /~~param?"+params))
 }
 

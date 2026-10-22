@@ -25,6 +25,12 @@ type openWebRXSource struct {
 	centre   float64
 	span     float64
 	haveSpec bool
+	// Freshness/gatekeeping: lastFFT is the newest spectrum frame's
+	// arrival; dead flips once the client's events channel closes. A
+	// frozen FFT from a dropped connection must not keep "scanning dead
+	// air" forever (review H2).
+	lastFFT time.Time
+	dead    bool
 }
 
 // OpenWebRXSource connects to an OpenWebRX server and starts collecting
@@ -109,6 +115,12 @@ func (s *openWebRXSource) pump(ctx context.Context) {
 			return
 		case event, ok := <-s.client.Events():
 			if !ok {
+				// The receiver connection is over (socket error, server
+				// restart). Keep serving the last known spectrum for a
+				// short grace period; Spectrum() now gates by freshness.
+				s.mu.Lock()
+				s.dead = true
+				s.mu.Unlock()
 				return
 			}
 			switch event.Type {
@@ -122,6 +134,7 @@ func (s *openWebRXSource) pump(ctx context.Context) {
 				if bins, ok := event.Value.([]float64); ok && len(bins) > 0 {
 					s.mu.Lock()
 					s.bins = bins
+					s.lastFFT = time.Now()
 					s.mu.Unlock()
 				}
 			case "config":
@@ -147,6 +160,16 @@ func (s *openWebRXSource) Spectrum() ([]float64, float64, float64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.bins) == 0 || s.span <= 0 {
+		return nil, s.centre, s.span, false
+	}
+	// Freshness gate: OpenWebRX pushes frames continuously while alive, so
+	// a frame older than a minute (connection down, readLoop expired)
+	// means the picture is frozen — scanning it would report hundreds of
+	// false "steady carrier" activities from one dead snapshot.
+	if s.dead && time.Since(s.lastFFT) > 10*time.Second {
+		return nil, s.centre, s.span, false
+	}
+	if time.Since(s.lastFFT) > time.Minute {
 		return nil, s.centre, s.span, false
 	}
 	return s.bins, s.centre, s.span, true
