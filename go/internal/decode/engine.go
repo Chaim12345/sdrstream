@@ -13,6 +13,7 @@ package decode
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,7 +120,11 @@ func FTXDecodeAuto(ctx context.Context, samples []float64, rate int, protocol st
 		}
 		// fall through to Go on any reference failure
 	}
-	return FTXDecode(samples, rate, strings.ToUpper(protocol)), "go", nil
+	msgs := FTXDecode(samples, rate, strings.ToUpper(protocol))
+	for i := range msgs {
+		msgs[i].Engine = string(EngineGo)
+	}
+	return msgs, string(EngineGo), nil
 }
 
 // WSPRDecodeAuto decodes one 2-minute WSPR window with the engine the policy
@@ -149,5 +154,96 @@ func WSPRDecodeAuto(ctx context.Context, samples []float64, rate int) ([]WSPRMes
 			}
 		}
 	}
-	return WSPRDecode(samples, rate), "go", nil
+	msgs := WSPRDecode(samples, rate)
+	for i := range msgs {
+		msgs[i].Engine = string(EngineGo)
+	}
+	return msgs, string(EngineGo), nil
+}
+
+// engineSummary joins the engine names that produced decodes, first-seen
+// order ("jt9", or "jt9+go" when a reference tool failed mid-stream and the
+// Go fallback covered the rest). empty when nothing decoded.
+func engineSummary(engines []string) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, e := range engines {
+		if e == "" || seen[e] {
+			continue
+		}
+		seen[e] = true
+		out = append(out, e)
+	}
+	return strings.Join(out, "+")
+}
+
+// FTXDecodeStreamAuto decodes a longer capture by cutting it at UTC slot
+// boundaries like FTXDecodeStream, then decoding each slot with the engine
+// the policy picks (FTXDecodeAuto). Every returned message carries its
+// SlotUnix and the Engine that decoded it; the second return value
+// summarises the engines that ran.
+func FTXDecodeStreamAuto(ctx context.Context, samples []float64, rate int, startUnix float64, protocol string) ([]FTXMessage, string, error) {
+	p := protoFT8
+	if strings.EqualFold(protocol, "FT4") {
+		p = protoFT4
+	}
+	slot := p.slotSec
+	first := math.Ceil(startUnix/slot) * slot
+	dur := float64(len(samples)) / float64(rate)
+	var out []FTXMessage
+	var engines []string
+	seen := map[string]bool{}
+	for t := first; t+slot <= startUnix+dur+0.001; t += slot {
+		i0 := int((t - startUnix) * float64(rate))
+		i1 := i0 + int(slot*float64(rate))
+		if i1 > len(samples) {
+			i1 = len(samples)
+		}
+		msgs, engine, err := FTXDecodeAuto(ctx, samples[i0:i1], rate, p.name)
+		if err != nil {
+			return out, engineSummary(engines), err
+		}
+		engines = append(engines, engine)
+		for _, m := range msgs {
+			key := fmt.Sprintf("%d|%s", int64(t), m.Text)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			m.SlotUnix = int64(t)
+			out = append(out, m)
+		}
+	}
+	return out, engineSummary(engines), nil
+}
+
+// WSPRWindowsAuto cuts a capture at even UTC minutes like WSPRWindows, then
+// decodes each window with the engine the policy picks (WSPRDecodeAuto).
+// Every returned message carries its WindowT and Engine; the second return
+// value summarises the engines that ran.
+func WSPRWindowsAuto(ctx context.Context, samples []float64, rate int, startUnix float64) ([]WSPRWindow, string, error) {
+	dur := float64(len(samples)) / float64(rate)
+	first := math.Ceil(startUnix/120) * 120
+	var out []WSPRWindow
+	var engines []string
+	for t := first; t+114 <= startUnix+dur; t += 120 {
+		i0 := int((t - startUnix) * float64(rate))
+		i1 := i0 + 120*rate
+		if i1 > len(samples) {
+			i1 = len(samples)
+		}
+		seg := samples[i0:i1]
+		w := WSPRWindow{Start: int64(t), Audio12k: resampleTo12k(seg, rate)}
+		msgs, engine, err := WSPRDecodeAuto(ctx, seg, rate)
+		if err != nil {
+			return out, engineSummary(engines), err
+		}
+		engines = append(engines, engine)
+		w.Messages = msgs
+		for k := range w.Messages {
+			w.Messages[k].WindowT = int64(t)
+		}
+		out = append(out, w)
+	}
+	return out, engineSummary(engines), nil
 }

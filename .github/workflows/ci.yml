@@ -24,4 +24,5 @@ jobs:
         run: |
           mkdir -p "$SDR_TOOLCHAIN/go/bin"
           ln -sf "$(command -v go)" "$SDR_TOOLCHAIN/go/bin/go"
+          . scripts/refdec.sh
           scripts/ci.sh

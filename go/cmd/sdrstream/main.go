@@ -3137,13 +3137,23 @@ func runDirectoryHFScan(ctx context.Context, server *web.Server, host string, ws
 			}
 			var lines []string
 			if target.Kind == "ft8" {
-				for _, m := range decode.FTXDecodeStream(f, rate, float64(start.UnixNano())/1e9, "FT8") {
-					lines = append(lines, fmt.Sprintf("%s FT8 %+.1f %.0f Hz %s", time.Unix(m.SlotUnix, 0).UTC().Format("150405"), m.SNR, m.FreqHz, m.Text))
+				msgs, _, derr := decode.FTXDecodeStreamAuto(ctx, f, rate, float64(start.UnixNano())/1e9, "FT8")
+				if derr != nil {
+					setScanResult(server, key, "error", "decode: "+derr.Error())
+					continue
+				}
+				for _, m := range msgs {
+					lines = append(lines, fmt.Sprintf("%s FT8 %+.1f %.0f Hz %s engine=%s", time.Unix(m.SlotUnix, 0).UTC().Format("150405"), m.SNR, m.FreqHz, m.Text, m.Engine))
 				}
 			} else {
-				for _, w := range decode.WSPRWindows(f, rate, float64(start.UnixNano())/1e9) {
+				windows, _, derr := decode.WSPRWindowsAuto(ctx, f, rate, float64(start.UnixNano())/1e9)
+				if derr != nil {
+					setScanResult(server, key, "error", "decode: "+derr.Error())
+					continue
+				}
+				for _, w := range windows {
 					for _, m := range w.Messages {
-						lines = append(lines, fmt.Sprintf("%s WSPR %+.0f %.1f %.1f Hz %s", time.Unix(w.Start, 0).UTC().Format("1504"), m.SNR, m.DT, m.FreqHz, m.Text))
+						lines = append(lines, fmt.Sprintf("%s WSPR %+.0f %.1f %.1f Hz %s engine=%s", time.Unix(w.Start, 0).UTC().Format("1504"), m.SNR, m.DT, m.FreqHz, m.Text, m.Engine))
 					}
 				}
 			}

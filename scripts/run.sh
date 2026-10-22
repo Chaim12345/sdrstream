@@ -8,6 +8,9 @@
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/env.sh" || exit 1
+# Reference decoders (jt9/wsprd) for the live FT8/FT4/WSPR path; optional -
+# the Go decoders are the fallback when this cannot install them.
+. "$here/refdec.sh" || true
 PORT="${PORT:-8000}"
 RUN_DIR="${RUN_DIR:-$HOME/sdrstream-run}"
 STATE_DIR="${SDRSTREAM_STATE_DIR:-$HOME/sdrstream-state}"
