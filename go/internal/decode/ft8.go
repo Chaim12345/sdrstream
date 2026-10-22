@@ -446,17 +446,29 @@ func FTXDecode(samples []float64, rate int, protocol string) []FTXMessage {
 	hashes := &callHashes{}
 	seen := map[[10]byte]bool{}
 	var out []FTXMessage
-	for _, c := range w.findCandidates() {
-		pl, crc, ok := w.decodeCandidate(c)
-		if !ok || seen[pl] {
-			continue
+	for pass := 0; pass < 3; pass++ {
+		var subtract []ftxCand
+		for _, c := range w.findCandidates() {
+			pl, crc, ok := w.decodeCandidate(c)
+			if !ok || seen[pl] {
+				continue
+			}
+			seen[pl] = true
+			subtract = append(subtract, c)
+			text, typ := unpackFTX(pl, hashes)
+			freq := (float64(w.minBin+c.freqOffset) + float64(c.freqSub)/ftxFreqOSR) / p.symbolSec
+			dt := (float64(c.timeOffset)+float64(c.timeSub)/ftxTimeOSR)*p.symbolSec - 0.5
+			out = append(out, FTXMessage{Protocol: p.name, Text: text, FreqHz: freq, DT: dt,
+				Score: c.score, SNR: float64(c.score) * 0.5, CRC: crc, Type: typ})
 		}
-		seen[pl] = true
-		text, typ := unpackFTX(pl, hashes)
-		freq := (float64(w.minBin+c.freqOffset) + float64(c.freqSub)/ftxFreqOSR) / p.symbolSec
-		dt := (float64(c.timeOffset)+float64(c.timeSub)/ftxTimeOSR)*p.symbolSec - 0.5
-		out = append(out, FTXMessage{Protocol: p.name, Text: text, FreqHz: freq, DT: dt,
-			Score: c.score, SNR: float64(c.score) * 0.5, CRC: crc, Type: typ})
+		if len(subtract) == 0 || p.name != "FT8" || pass == 2 {
+			break
+		}
+		source := *w
+		source.mag = append([]uint8(nil), w.mag...)
+		for _, c := range subtract {
+			w.suppress(c, &source)
+		}
 	}
 	return out
 }
@@ -771,6 +783,36 @@ func unpackFTX(p [10]byte, h *callHashes) (string, string) {
 			return "unpack error", "unsupported"
 		}
 		return joinFields(a, b, unpackGrid(ig, ir)), "std"
+	case i3 == 3:
+		// ARRL RTTY layout: TU(1), call(28), call(28), R(1),
+		// report(3), exchange(13), type(3). Protocol per WSJT-X packjt77.
+		bit := func(start, n int) uint32 {
+			var v uint32
+			for k := start; k < start+n; k++ {
+				v = v<<1 | uint32(p[k/8]>>(7-uint(k%8))&1)
+			}
+			return v
+		}
+		a, ok1 := unpack28(bit(1, 28), 0, 1, h)
+		b, ok2 := unpack28(bit(29, 28), 0, 1, h)
+		ex := int(bit(61, 13))
+		exchange := ""
+		if ex > 0 && ex < 8000 {
+			exchange = fmt.Sprintf("%04d", ex)
+		} else if ex > 8000 && ex <= 8171 {
+			exchange = rttyMultipliers[ex-8001]
+		}
+		if !ok1 || !ok2 || exchange == "" {
+			return "invalid RTTY exchange", "unsupported"
+		}
+		tu, r := "", ""
+		if bit(0, 1) != 0 {
+			tu = "TU;"
+		}
+		if bit(57, 1) != 0 {
+			r = "R"
+		}
+		return joinFields(tu, a, b, r, fmt.Sprintf("5%d9", int(bit(58, 3))+2), exchange), "rtty"
 	case i3 == 4:
 		n12 := uint32(p[0])<<4 | uint32(p[1])>>4
 		n58 := uint64(p[1]&0x0f)<<54 | uint64(p[2])<<46 | uint64(p[3])<<38 | uint64(p[4])<<30 |
@@ -826,3 +868,49 @@ func unpackFTX(p [10]byte, h *callHashes) (string, string) {
 	}
 	return fmt.Sprintf("unsupported message i3=%d n3=%d", i3, n3), "unsupported"
 }
+
+// suppress removes decoded tracks from the search waterfall, leaving the
+// local noise floor for a subsequent search. Only CRC-verified tracks enter.
+func (w *waterfall) suppress(c ftxCand, source *waterfall) {
+	plain, err := bpDecode(source.likelihood(c), ftxLDPCIter)
+	if err != 0 {
+		return
+	}
+	var tones [79]int
+	for i := 0; i < 79; i++ {
+		switch {
+		case i < 7:
+			tones[i] = ft8Costas[i]
+		case i >= 36 && i < 43:
+			tones[i] = ft8Costas[i-36]
+		case i >= 72:
+			tones[i] = ft8Costas[i-72]
+		default:
+			k := i - 7
+			if i >= 43 {
+				k = i - 14
+			}
+			tones[i] = ft8Gray[int(plain[k*3])*4+int(plain[k*3+1])*2+int(plain[k*3+2])]
+		}
+	}
+	for i, tone := range tones {
+		for dt := -1; dt <= 1; dt++ {
+			for df := -1; df <= 1; df++ {
+				time := (c.timeOffset+i)*ftxTimeOSR + c.timeSub + dt
+				freq := c.freqOffset*ftxFreqOSR + c.freqSub + tone*ftxFreqOSR + df
+				if time < 0 || time >= w.numBlocks*ftxTimeOSR || freq < ftxFreqOSR*2 || freq >= (w.numBins-2)*ftxFreqOSR {
+					continue
+				}
+				idx := (time*ftxFreqOSR+freq%ftxFreqOSR)*w.numBins + freq/ftxFreqOSR
+				a, b := w.mag[idx-2], w.mag[idx+2]
+				floor := (int(a) + int(b)) / 2
+				if int(w.mag[idx]) > floor {
+					w.mag[idx] = uint8(floor)
+				}
+			}
+		}
+	}
+}
+
+// RTTY exchange enumeration from the WSJT-X on-air protocol.
+var rttyMultipliers = strings.Fields("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY NB NS QC ON MB SK AB BC NWT NF LB NU YT PEI DC DR FR GD GR OV ZH ZL X01 X02 X03 X04 X05 X06 X07 X08 X09 X10 X11 X12 X13 X14 X15 X16 X17 X18 X19 X20 X21 X22 X23 X24 X25 X26 X27 X28 X29 X30 X31 X32 X33 X34 X35 X36 X37 X38 X39 X40 X41 X42 X43 X44 X45 X46 X47 X48 X49 X50 X51 X52 X53 X54 X55 X56 X57 X58 X59 X60 X61 X62 X63 X64 X65 X66 X67 X68 X69 X70 X71 X72 X73 X74 X75 X76 X77 X78 X79 X80 X81 X82 X83 X84 X85 X86 X87 X88 X89 X90 X91 X92 X93 X94 X95 X96 X97 X98 X99")

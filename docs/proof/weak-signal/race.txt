@@ -1,0 +1,42 @@
+?   	github.com/chaim12345/sdrstream/go/cmd/asreval	[no test files]
+?   	github.com/chaim12345/sdrstream/go/cmd/decoderegress	[no test files]
+?   	github.com/chaim12345/sdrstream/go/cmd/ftxdecode	[no test files]
+?   	github.com/chaim12345/sdrstream/go/cmd/hfcap	[no test files]
+?   	github.com/chaim12345/sdrstream/go/cmd/hfdecode	[no test files]
+?   	github.com/chaim12345/sdrstream/go/cmd/hfschedule	[no test files]
+?   	github.com/chaim12345/sdrstream/go/cmd/kiwiscan	[no test files]
+?   	github.com/chaim12345/sdrstream/go/cmd/nimasr	[no test files]
+?   	github.com/chaim12345/sdrstream/go/cmd/psk31scan	[no test files]
+ok  	github.com/chaim12345/sdrstream/go/cmd/sdrstream	(cached)
+?   	github.com/chaim12345/sdrstream/go/cmd/websdrprobe	[no test files]
+?   	github.com/chaim12345/sdrstream/go/cmd/wsprdecode	[no test files]
+?   	github.com/chaim12345/sdrstream/go/internal/adpcm	[no test files]
+ok  	github.com/chaim12345/sdrstream/go/internal/bandcond	(cached)
+?   	github.com/chaim12345/sdrstream/go/internal/catalogue	[no test files]
+?   	github.com/chaim12345/sdrstream/go/internal/common	[no test files]
+ok  	github.com/chaim12345/sdrstream/go/internal/decode	71.286s
+ok  	github.com/chaim12345/sdrstream/go/internal/directory	(cached)
+?   	github.com/chaim12345/sdrstream/go/internal/discovery	[no test files]
+?   	github.com/chaim12345/sdrstream/go/internal/dvbs2	[no test files]
+ok  	github.com/chaim12345/sdrstream/go/internal/feeds	(cached)
+ok  	github.com/chaim12345/sdrstream/go/internal/gallery	(cached)
+ok  	github.com/chaim12345/sdrstream/go/internal/hfdl	(cached)
+ok  	github.com/chaim12345/sdrstream/go/internal/hfschedule	1.092s
+ok  	github.com/chaim12345/sdrstream/go/internal/kiwisdr	(cached)
+?   	github.com/chaim12345/sdrstream/go/internal/military	[no test files]
+ok  	github.com/chaim12345/sdrstream/go/internal/monitor	(cached)
+ok  	github.com/chaim12345/sdrstream/go/internal/openwebrx	(cached)
+ok  	github.com/chaim12345/sdrstream/go/internal/regress	8.989s
+ok  	github.com/chaim12345/sdrstream/go/internal/relays	(cached)
+?   	github.com/chaim12345/sdrstream/go/internal/rivaspeech	[no test files]
+?   	github.com/chaim12345/sdrstream/go/internal/satellite	[no test files]
+?   	github.com/chaim12345/sdrstream/go/internal/satellites	[no test files]
+ok  	github.com/chaim12345/sdrstream/go/internal/satnogs	(cached)
+ok  	github.com/chaim12345/sdrstream/go/internal/sources	(cached)
+ok  	github.com/chaim12345/sdrstream/go/internal/tle	(cached)
+ok  	github.com/chaim12345/sdrstream/go/internal/tracking	(cached)
+ok  	github.com/chaim12345/sdrstream/go/internal/verify	(cached)
+ok  	github.com/chaim12345/sdrstream/go/internal/vocoder	(cached)
+ok  	github.com/chaim12345/sdrstream/go/internal/voice	(cached)
+ok  	github.com/chaim12345/sdrstream/go/internal/web	(cached)
+?   	github.com/chaim12345/sdrstream/go/internal/websdr	[no test files]

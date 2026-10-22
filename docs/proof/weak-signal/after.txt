@@ -1,0 +1,153 @@
+STATUS  CASE                     DECODER  EXPECTED  GOT  MATCHED  MISSED  EXTRA  BONUS  UNSUP  REFERENCE
+GAP     ft8_lib/191111_110115    ft8      1         0    0        1       0      0      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/191111_110130    ft8      5         4    4        1       0      0      0      WSJT-X decode list (ft8_lib .txt)
+PASS    ft8_lib/191111_110145    ft8      2         2    2        0       0      0      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/191111_110200    ft8      5         4    4        1       0      0      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/191111_110215    ft8      4         3    3        1       0      0      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/191111_110615    ft8      20        17   17       3       0      0      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/191111_110630    ft8      15        12   11       4       0      1      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/191111_110645    ft8      19        16   16       3       0      0      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/191111_110700    ft8      16        14   14       2       0      0      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/websdr_test1     ft8      18        14   14       4       0      0      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/websdr_test2     ft8      21        20   20       1       0      0      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/websdr_test3     ft8      11        9    9        2       0      0      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/websdr_test4     ft8      22        22   21       1       0      1      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/websdr_test5     ft8      27        19   19       8       0      0      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/websdr_test6     ft8      29        20   20       9       0      0      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/websdr_test7     ft8      27        19   18       9       0      1      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/websdr_test10    ft8      15        12   12       3       0      0      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/websdr_test11    ft8      21        12   12       9       0      0      0      WSJT-X decode list (ft8_lib .txt)
+GAP     ft8_lib/websdr_test12    ft8      14        8    7        7       0      1      0      WSJT-X decode list (ft8_lib .txt)
+PASS    ft8_lib/websdr_test13    ft8      13        15   13       0       0      2      0      WSJT-X decode list (ft8_lib .txt)
+PASS    wsjt/210703_133430       ft8      8         8    8        0       0      0      0      ft8_lib C decoder
+PASS    wsjt/181201_180245       ft8      14        14   14       0       0      0      0      ft8_lib C payloads; WSJT-X type-3 protocol unpack
+PASS    wsjt/170709_135615       ft8      0         0    0        0       0      0      0      ft8_lib C decoder
+INFO    wsjt/wspr_150426_0918    wspr     -         7    0        0       0      0      0      none (wsprd not available in CI)
+PASS    multimon-ng/pocsag-512   pocsag   1         1    1        0       0      0      0      multimon-ng 1.x POCSAG512
+PASS    multimon-ng/pocsag-1200  pocsag   1         1    1        0       0      0      0      multimon-ng 1.x POCSAG1200
+PASS    multimon-ng/pocsag-2400  pocsag   1         1    1        0       0      0      0      multimon-ng 1.x POCSAG2400
+PASS    multimon-ng/flex-p2000   flex     40        40   40       0       0      0      0      multimon-ng 1.x FLEX
+PASS    taunus/pocsag-512        pocsag   0         0    0        0       0      0      0      multimon-ng 1.x POCSAG512
+PASS    taunus/pocsag-1200       pocsag   20        20   20       0       0      0      0      multimon-ng 1.x POCSAG1200
+PASS    taunus/hfdl-300          hfdl     >=1       1    0        0       0      0      0      none (FCS-verified frames counted)
+PASS    taunus/hfdl-600          hfdl     >=1       1    0        0       0      0      0      none (FCS-verified frames counted)
+PASS    taunus/hfdl-1200         hfdl     >=1       1    0        0       0      0      0      none (FCS-verified frames counted)
+PASS    acarsdec/test.wav        acars    7         7    7        0       0      0      0      acarsdec output (jasonherald/sdr-acars fixture)
+PASS    local/aprs-wa8lmf-30s    aprs     11        11   11       0       0      0      0      multimon-ng 1.x AFSK1200
+PASS    local/wspr-utwente-0532  wspr     3         3    3        0       0      0      0      wsprd 1.x
+PASS    local/wspr-utwente-0542  wspr     6         6    6        0       0      0      0      wsprd 1.x
+GAP     local/wspr-utwente-0544  wspr     7         5    5        2       0      0      0      wsprd 1.x
+
+18 PASS, 19 GAP, 0 FAIL, 1 INFO, 0 SKIP
+
+[GAP] ft8_lib/191111_110115  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: GJ0KYZ RK9AX MO05
+
+[GAP] ft8_lib/191111_110130  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: TK4LS YC1MRF 73
+
+[GAP] ft8_lib/191111_110200  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: OH3NIV ZS6S RR73
+
+[GAP] ft8_lib/191111_110215  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: CQ DX Z33Z KN11
+
+[GAP] ft8_lib/191111_110615  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: CQ UB3AQS KO85
+  missed: G1XJM HA7JIV JN97
+  missed: SP7XIF JA2GQT -15
+
+[GAP] ft8_lib/191111_110630  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: <...> DF1XG JO53
+  missed: CQ JR5MJS PM74
+  missed: CQ OR18RSX
+  missed: JA2GQT F8NHF -10
+
+[GAP] ft8_lib/191111_110645  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: G1XJM HA7JIV JN97
+  missed: SP7XIF JA2GQT -13
+  missed: WB2QJ ES3AT KO18
+
+[GAP] ft8_lib/191111_110700  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: <...> IT9AAI JM67
+  missed: CQ M0NPT IO92
+
+[GAP] ft8_lib/websdr_test1  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: CQ EA1HTF IN52
+  missed: LZ1CWK DC8VA RR73
+  missed: R2ATW IZ0VLL -16
+  missed: YO7CGS A41ZZ -11
+
+[GAP] ft8_lib/websdr_test2  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: DM8PV GM7VFR RR73
+
+[GAP] ft8_lib/websdr_test3  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: LZ1LZ EA3FHP RR73
+  missed: YO7CGS A41ZZ -11
+
+[GAP] ft8_lib/websdr_test4  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: CQ DK2TS JO31
+
+[GAP] ft8_lib/websdr_test5  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: CQ DO1RPK JO32
+  missed: CQ ON7PM JO20
+  missed: DB4BU DK5OK RR73
+  missed: EA2AA S56ECR JN65
+  missed: LZ2KV SV8LMQ 73
+  missed: ON6OM DL8FBD 73
+  missed: OZ0JD SM5NAS R-08
+  missed: SP2EWQ DL8TG R+07
+
+[GAP] ft8_lib/websdr_test6  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: CQ DK2TS JO31
+  missed: CQ DX DO4TP JO31
+  missed: CQ E74BYZ JN84
+  missed: CQ IK2YCW JN55
+  missed: CQ UT9LB KN89
+  missed: EA8TH F8DBF R-04
+  missed: ON4FG UT8UU 73
+  missed: PE0TS LZ2KV -25
+  missed: SM2EKA SV9FBN KM25
+
+[GAP] ft8_lib/websdr_test7  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: <...> PA0PIW
+  missed: CQ DL8FBD JO40
+  missed: CQ DO6AZ JO50
+  missed: CU2DX DO1KHW JO30
+  missed: CU2DX SP6DXH -19
+  missed: DK7LE DO5HOK JO42
+  missed: DM1YS GW1YQM IO82
+  missed: EA8PP JH0INP PM96
+  missed: RA6FSD SP2EWQ -07
+
+[GAP] ft8_lib/websdr_test10  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: AE0XI R7CA -15
+  missed: K1GUY NA4RR EM61
+  missed: SA6SKA KN4PHS EM64
+
+[GAP] ft8_lib/websdr_test11  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: CQ 2E0PKK IO90
+  missed: CQ N2BJ EN61
+  missed: F4DFQ F5LOW IN95
+  missed: G3PXT HA5MG R+01
+  missed: K3ZK IK2ZDT RR73
+  missed: KC8MUE V51MA RRR
+  missed: M0LMR IW1AYD 73
+  missed: OK1AW G3JFS R+02
+  missed: PD3JO IZ2ODN JN55
+
+[GAP] ft8_lib/websdr_test12  ft8_lib test/wav (kgoba/ft8_lib, MIT)
+  missed: CQ G0RQL IO70
+  missed: DH0KAI IZ0MQN -20
+  missed: LU3DW EA8BEV R-03
+  missed: OE5WRO SV2BRT KN10
+  missed: SV2FPI KA5M EM32
+  missed: VE9FI R7EL -12
+  missed: YO9HP K6DRY CM98
+
+[INFO] wsjt/wspr_150426_0918  WSJT sample archive, sourceforge.net/projects/wsjt/files/samples/WSPR
+  note: decoded: DJ6OL JO52 37; KI7CI DM09 37; ND6P DM04 30; NM7J DM26 30; W3HH EL89 30; W5BIT EL09 17; WD4LHT EL89 30
+
+[GAP] local/wspr-utwente-0544  Twente WebSDR 7038.6 kHz live capture 2026-10-22
+  missed: EB5RCA IM98 23
+  missed: ES1RCG KO29 27

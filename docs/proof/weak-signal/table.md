@@ -1,0 +1,23 @@
+| Recording | Expected | Before matched | After matched |
+| --- | ---: | ---: | ---: |
+| ft8_lib/191111_110115 | 1 | 0 | 0 |
+| ft8_lib/191111_110130 | 5 | 4 | 4 |
+| ft8_lib/191111_110145 | 2 | 2 | 2 |
+| ft8_lib/191111_110200 | 5 | 4 | 4 |
+| ft8_lib/191111_110215 | 4 | 3 | 3 |
+| ft8_lib/191111_110615 | 20 | 17 | 17 |
+| ft8_lib/191111_110630 | 15 | 11 | 11 |
+| ft8_lib/191111_110645 | 19 | 16 | 16 |
+| ft8_lib/191111_110700 | 16 | 14 | 14 |
+| ft8_lib/websdr_test1 | 18 | 13 | 14 |
+| ft8_lib/websdr_test2 | 21 | 19 | 20 |
+| ft8_lib/websdr_test3 | 11 | 9 | 9 |
+| ft8_lib/websdr_test4 | 22 | 20 | 21 |
+| ft8_lib/websdr_test5 | 27 | 17 | 19 |
+| ft8_lib/websdr_test6 | 29 | 20 | 20 |
+| ft8_lib/websdr_test7 | 27 | 17 | 18 |
+| ft8_lib/websdr_test10 | 15 | 12 | 12 |
+| ft8_lib/websdr_test11 | 21 | 12 | 12 |
+| ft8_lib/websdr_test12 | 14 | 6 | 7 |
+| ft8_lib/websdr_test13 | 13 | 11 | 13 |
+| Total | 305 | 227 | 236 |
