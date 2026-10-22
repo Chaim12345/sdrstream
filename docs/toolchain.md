@@ -26,7 +26,9 @@ scripts/run.sh stop                     # stops only processes it started (pid f
 ```
 Env: `PORT` (8000), `RUN_DIR` (`~/sdrstream-run`, holds logs, pid files, binary,
 captures), `EXTRA_ARGS` (extra `sdrstream web` flags, for example
-`--scan-stations ...`), `CLOUDFLARED` (default `$SDR_TOOLCHAIN/cloudflared`).
+`--scan-stations ...`), `CLOUDFLARED` (default `$SDR_TOOLCHAIN/cloudflared`),
+`SDRSTREAM_STATE_DIR` (default `~/sdrstream-state`, holds auth sessions and scan
+state across restarts; keep it on a persistent home/volume).
 Optional: `SDRSTREAM_AIS_KEY`, `SDRSTREAM_WHISPER`, `SDRSTREAM_WHISPER_MODEL`.
 
 The app binds 127.0.0.1 only; the tunnel is the public path, and it prints the

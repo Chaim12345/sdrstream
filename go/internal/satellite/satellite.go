@@ -31,11 +31,11 @@ const SegmentSeconds = 20.0
 
 // ChasePlan describes what a pass-chasing recording will do.
 type ChasePlan struct {
-	Satellite  satellites.Sat
-	Receiver   catalogue.Receiver
-	Passes     []tracking.Pass
-	Start      time.Time
-	End        time.Time
+	Satellite   satellites.Sat
+	Receiver    catalogue.Receiver
+	Passes      []tracking.Pass
+	Start       time.Time
+	End         time.Time
 	StartFreqHz float64
 	DopplerLow  int64
 	DopplerHigh int64

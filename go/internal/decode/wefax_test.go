@@ -23,7 +23,7 @@ func encodeWEFAX(rate float64, lines, pixelsPerLine int) []float64 {
 			grey = 1.0 // phasing wedge: white
 		default:
 			px := float64(inLine) / float64(lineSamples)
-			if (px-float64(line)/float64(lines)) > 0.5 {
+			if (px - float64(line)/float64(lines)) > 0.5 {
 				grey = 1.0
 			}
 		}

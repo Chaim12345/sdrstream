@@ -1359,6 +1359,7 @@ func cmdWeb(args []string) error {
 	capturesDir := fs.String("captures-dir", "../captures", "directory of saved WAV captures to list and serve")
 	galleryDir := fs.String("gallery-dir", "", "directory for SatNOGS gallery artefacts (default: cache/gallery)")
 	scanStations := fs.String("scan-stations", "", "comma-separated public receivers for bounded parallel scan (one connection per receiver)")
+	kiwiPreflightOnly := fs.Bool("kiwi-preflight", false, "preflight Kiwi receivers and print first-pass verdict counts, then exit")
 	scanStart := fs.Int("scan-start-connections", 49, "initial scanner concurrency ramp step")
 	scanMax := fs.Int("scan-max-connections", 100, "integrator scanner maximum concurrency (hard limit 1000)")
 	scanRamp := fs.String("scan-ramp", "49,100", "comma-separated ramp steps, capped by --scan-max-connections")
@@ -1408,6 +1409,9 @@ func cmdWeb(args []string) error {
 	feedsLon := fs.Float64("feeds-lon", 34.78, "feeds center longitude")
 	aisKey := fs.String("ais-key", os.Getenv("SDRSTREAM_AIS_KEY"), "aisstream.io key; prefer SDRSTREAM_AIS_KEY")
 	fs.Parse(args)
+	if *kiwiPreflightOnly {
+		return cmdKiwiPreflight(strings.Split(*scanStations, ","))
+	}
 	if *monitorMultimon != "" && decode.MultimonBinary(*monitorMultimon) == "" {
 		return fmt.Errorf("-monitor-multimon: %q is not an executable file", *monitorMultimon)
 	}
@@ -2051,6 +2055,28 @@ func openFDCount() int {
 		return 0
 	}
 	return len(entries)
+}
+
+// cmdKiwiPreflight checks a bounded receiver list and prints aggregate verdicts.
+func cmdKiwiPreflight(receivers []string) error {
+	counts := map[string]int{}
+	for _, raw := range receivers {
+		parts := strings.SplitN(strings.TrimSpace(raw), "|", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(parts[0]), "KiwiSDR") && !looksLikeKiwi(parts[1]) {
+			continue
+		}
+		st := kiwiPreflight.Check(context.Background(), strings.TrimSpace(parts[1]))
+		counts[st.Verdict]++
+		fmt.Printf("%s %s users=%d/%d ws=%s\n", strings.TrimSpace(parts[1]), st.Verdict, st.Users, st.UsersMax, st.WSPath)
+	}
+	fmt.Printf("preflight counts: %+v\n", counts)
+	if diagnostic := kiwiPreflight.EgressDiagnostic(); diagnostic != "" {
+		fmt.Println(diagnostic)
+	}
+	return nil
 }
 
 func scanStation(ctx context.Context, server *web.Server, stationType, host string, targetLimit int, multimonPath, direwolfPath string, active *atomic.Int64, updateMetrics func()) scanOutcome {

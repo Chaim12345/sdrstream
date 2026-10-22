@@ -61,11 +61,11 @@ type Event struct {
 
 // Options configures a Client.
 type Options struct {
-	Reconnect           bool
-	ReconnectInitial    time.Duration
-	ReconnectMax        time.Duration
-	OpenTimeout         time.Duration
-	IdleTimeout         time.Duration
+	Reconnect        bool
+	ReconnectInitial time.Duration
+	ReconnectMax     time.Duration
+	OpenTimeout      time.Duration
+	IdleTimeout      time.Duration
 }
 
 // DefaultOptions are polite defaults for a public server.
@@ -87,14 +87,14 @@ type Client struct {
 	Samplerate int
 	LastError  error
 
-	mu         sync.Mutex
-	conn       *websocket.Conn
-	events     chan Event
-	quit       chan struct{}
-	vocoder    *vocoder.Vocoder
-	sequence   int
-	tuning     string
-	closeOnce  sync.Once
+	mu        sync.Mutex
+	conn      *websocket.Conn
+	events    chan Event
+	quit      chan struct{}
+	vocoder   *vocoder.Vocoder
+	sequence  int
+	tuning    string
+	closeOnce sync.Once
 }
 
 // New builds a client for a WebSDR server URL. The page URL may carry a
@@ -123,12 +123,12 @@ func New(rawURL string, options Options) (*Client, error) {
 		options.OpenTimeout = 15 * time.Second
 	}
 	return &Client{
-		URL:      streamURL,
-		Origin:   origin,
-		Options:  options,
-		events:   make(chan Event, 256),
-		quit:     make(chan struct{}),
-		vocoder:  vocoder.New(),
+		URL:     streamURL,
+		Origin:  origin,
+		Options: options,
+		events:  make(chan Event, 256),
+		quit:    make(chan struct{}),
+		vocoder: vocoder.New(),
 	}, nil
 }
 

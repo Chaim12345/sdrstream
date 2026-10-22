@@ -31,15 +31,15 @@ type Downlink struct {
 // GovernmentSatellite is a government or military spacecraft with a published
 // downlink.
 type GovernmentSatellite struct {
-	Name       string
-	Operator   string
-	DownlinkHz int64
-	Mode       string
-	Category   string // "comms", "weather", "early-warning", "navigation", "reconnaissance"
-	Encryption string // "open", "encrypted" or "beacon"
-	Notes      string
-	Source     string
-	NoradID    int
+	Name           string
+	Operator       string
+	DownlinkHz     int64
+	Mode           string
+	Category       string // "comms", "weather", "early-warning", "navigation", "reconnaissance"
+	Encryption     string // "open", "encrypted" or "beacon"
+	Notes          string
+	Source         string
+	NoradID        int
 	ExtraDownlinks []Downlink
 	Constellation  bool
 }
@@ -90,7 +90,7 @@ var Table = []GovernmentSatellite{
 			"which in practice is often unlicensed third-party traffic. The most " +
 			"widely heard military downlink in the world. 255.550 is the famous " +
 			"channel; a 25 kHz transponder sits on FLTSATCOM 8 at 15W.",
-		Source: "mattblaze.org/misc/uhf-sats",
+		Source:         "mattblaze.org/misc/uhf-sats",
 		ExtraDownlinks: []Downlink{{255_250_000, "NFM"}, {253_850_000, "NFM"}},
 		Constellation:  true,
 	},
@@ -190,9 +190,9 @@ var Table = []GovernmentSatellite{
 // OutOfReach belongs on a "military" list but no public SDR can reach it: EHF
 // and X-band need dishes and hardware the receivers here do not have.
 var OutOfReach = map[string]string{
-	"Milstar / AEHF":       "20/44 GHz EHF; needs a dish and an EHF terminal.",
-	"Lacrosse / Onyx":      "X-band radar imaging, around 9.6 GHz; dish required.",
-	"KH-11 (Crystal)":      "Data relayed through other spacecraft, not broadcast.",
+	"Milstar / AEHF":  "20/44 GHz EHF; needs a dish and an EHF terminal.",
+	"Lacrosse / Onyx": "X-band radar imaging, around 9.6 GHz; dish required.",
+	"KH-11 (Crystal)": "Data relayed through other spacecraft, not broadcast.",
 	"GPS (military M-code)": "M-code is encrypted and on a different signal " +
 		"from the open L1/L2 C/A that civil receivers use.",
 }

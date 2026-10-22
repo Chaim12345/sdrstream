@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Start sdrstream web under nohup plus a cloudflared quick tunnel, then health check.
 #   SDRSTREAM_UI_PASSWORD   required (never written to disk or logs)
-#   PORT (8000)  RUN_DIR ($HOME/sdrstream-run)  EXTRA_ARGS (more `sdrstream web` flags)
+#   PORT (8000) RUN_DIR ($HOME/sdrstream-run) STATE_DIR ($HOME/sdrstream-state)
+#   EXTRA_ARGS (more `sdrstream web` flags)
 # Optional env: SDRSTREAM_AIS_KEY, SDRSTREAM_WHISPER, SDRSTREAM_WHISPER_MODEL
 # Usage: scripts/run.sh start|stop|status
 set -uo pipefail
@@ -9,8 +10,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/env.sh" || exit 1
 PORT="${PORT:-8000}"
 RUN_DIR="${RUN_DIR:-$HOME/sdrstream-run}"
+STATE_DIR="${SDRSTREAM_STATE_DIR:-$HOME/sdrstream-state}"
 CLOUDFLARED="${CLOUDFLARED:-$SDR_TOOLCHAIN/cloudflared}"
-mkdir -p "$RUN_DIR" "$RUN_DIR/captures"
+mkdir -p "$RUN_DIR" "$RUN_DIR/captures" "$STATE_DIR"
+SDRSTREAM_STATE_DIR="$STATE_DIR"
+export SDRSTREAM_STATE_DIR
 APP_PID="$RUN_DIR/app.pid"; TUN_PID="$RUN_DIR/tunnel.pid"
 alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 

@@ -3,9 +3,9 @@ package main
 
 import (
 	"flag"
-	"os"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/chaim12345/sdrstream/go/internal/decode"
 )

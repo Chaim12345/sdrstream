@@ -3,8 +3,8 @@
 package tracking
 
 import (
-	"math"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +20,7 @@ const C = 299792458.0
 type LookAngle struct {
 	Time         time.Time
 	Azimuth      float64
-	Elevation     float64
+	Elevation    float64
 	RangeKm      float64
 	RangeRateKmS float64
 	Latitude     float64
@@ -45,10 +45,10 @@ func (l LookAngle) CorrectedFrequency(frequencyHz float64) float64 {
 
 // Pass is a single pass of a satellite over an observer.
 type Pass struct {
-	Rise         time.Time
-	Peak         LookAngle
-	Set          time.Time
-	DurationSec  float64
+	Rise        time.Time
+	Peak        LookAngle
+	Set         time.Time
+	DurationSec float64
 }
 
 // MaxElevation is the peak elevation of the pass, in degrees.
@@ -122,10 +122,10 @@ func (tr *Tracker) lookAngleAt(t time.Time, lat, lon, altKm float64) (LookAngle,
 	}
 	lat2, lon2, alt2 := eci.ToGeodetic()
 	return LookAngle{
-		Time:         t,
-		Azimuth:      observation.LookAngles.Azimuth,
-		Elevation:    observation.LookAngles.Elevation,
-		RangeKm:      observation.LookAngles.Range,
+		Time:      t,
+		Azimuth:   observation.LookAngles.Azimuth,
+		Elevation: observation.LookAngles.Elevation,
+		RangeKm:   observation.LookAngles.Range,
 		// The library's RangeRate field is unreliable (verified off by two
 		// orders of magnitude against a finite-difference of its own range),
 		// so it is computed here from the ECI vectors.
