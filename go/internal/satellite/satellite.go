@@ -66,17 +66,20 @@ func (p ChasePlan) Summary() string {
 // General-Perturbations records and falling back to TLE text. GP records
 // are the modern element format: since the NORAD catalog passed 99,999 in
 // July 2026, new satellites are published only there, never as TLE text.
-func loadTracker(name, tleText string, offline bool) (*tracking.Tracker, error) {
+func loadTracker(name, group, tleText string, offline bool) (*tracking.Tracker, error) {
 	if tleText != "" {
 		return tracking.FromTLEText(tleText, name)
 	}
-	gp, err := tle.LoadGP("amateur", 24, offline, 60*time.Second)
+	if group == "" {
+		group = "amateur"
+	}
+	gp, err := tle.LoadGP(group, 24, offline, 60*time.Second)
 	if err == nil {
 		if tracker, gpErr := tracking.FromGPText(gp, name); gpErr == nil {
 			return tracker, nil
 		}
 	}
-	text, err := tle.Load("amateur", 24, offline, 60*time.Second)
+	text, err := tle.Load(group, 24, offline, 60*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +118,7 @@ func PlanPass(sat satellites.Sat, receiver *catalogue.Receiver,
 	}
 
 	text := tleText
-	tracker, err := loadTracker(sat.Name, text, offline)
+	tracker, err := loadTracker(sat.Name, sat.Group, text, offline)
 	if err != nil {
 		return ChasePlan{}, err
 	}
@@ -277,7 +280,7 @@ func Chase(ctx context.Context, plan ChasePlan, outPath string,
 		say = func(string) {}
 	}
 	text := plan.TLEText
-	tracker, err := loadTracker(plan.Satellite.Name, text, offline)
+	tracker, err := loadTracker(plan.Satellite.Name, plan.Satellite.Group, text, offline)
 	if err != nil {
 		return 0, err
 	}

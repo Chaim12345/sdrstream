@@ -17,6 +17,9 @@ type Sat struct {
 	Status     string
 	Notes      string
 	Beacons    []int64
+	// Group names the CelesTrak element group that carries this satellite
+	// ("amateur" when empty). Weather birds live in "weather".
+	Group string
 }
 
 // Table lists the satellites most likely to be heard. Frequencies follow
@@ -42,6 +45,25 @@ var Table = []Sat{
 	{Name: "IO-117", NoradID: 53109, DownlinkHz: 435310000, Mode: "USB", UplinkHz: int64Ptr(145925000), ToneHz: nil, Status: "active", Notes: "GreenCube. 9k6 digipeater; downlink 435.310.", Beacons: []int64{435310000}},
 	{Name: "AO-123", NoradID: 61781, DownlinkHz: 435400000, Mode: "FM", UplinkHz: int64Ptr(145850000), ToneHz: float64Ptr(67.0), Status: "active", Notes: "ASRTU-1. FM repeater.", Beacons: []int64{435400000}},
 	{Name: "SONATE-2", NoradID: 59112, DownlinkHz: 145880000, Mode: "FM", UplinkHz: int64Ptr(435950000), ToneHz: nil, Status: "active", Notes: "FM repeater and APRS digipeater.", Beacons: []int64{145880000}},
+}
+
+// WeatherTable lists the 137 MHz weather-satellite downlinks. NOAA 15, 18 and
+// 19 were all decommissioned in 2025 (NOAA OSPO status page, last updated
+// 2025-08-19) but their APT transmitters were left on and hobbyists kept
+// receiving them; the notes carry the official status and the decoder
+// confirms what is actually on the air.
+var WeatherTable = []Sat{
+	{Name: "NOAA 15", NoradID: 25338, DownlinkHz: 137620000, Mode: "FM", Status: "active", Group: "weather", Notes: "Decommissioned 2025-08-19 per NOAA OSPO; APT still reported on air. APT 137.620 MHz, wide FM (~34 kHz)."},
+	{Name: "NOAA 18", NoradID: 28654, DownlinkHz: 137912500, Mode: "FM", Status: "active", Group: "weather", Notes: "Decommissioned 2025-06-06 per NOAA OSPO; APT still reported on air. APT 137.9125 MHz, wide FM (~34 kHz)."},
+	{Name: "NOAA 19", NoradID: 33591, DownlinkHz: 137100000, Mode: "FM", Status: "active", Group: "weather", Notes: "Decommissioned 2025-08-13 per NOAA OSPO; APT still reported on air. APT 137.100 MHz, wide FM (~34 kHz)."},
+}
+
+// All returns the amateur table plus the weather table as one slice.
+func All() []Sat {
+	out := make([]Sat, 0, len(Table)+len(WeatherTable))
+	out = append(out, Table...)
+	out = append(out, WeatherTable...)
+	return out
 }
 
 func int64Ptr(value int64) *int64 { return &value }
