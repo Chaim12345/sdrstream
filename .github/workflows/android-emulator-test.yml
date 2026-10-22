@@ -19,7 +19,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      - name: Accept SDK licenses and install platform 34
+        run: |
+          yes | sudo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          sudo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" >/dev/null
       - name: Cross-compile Go engine (arm64 + x86_64 for the emulator)
         run: ./android/fetch-engine.sh arm64 x86_64
       - name: Build fat test APK (arm64-v8a + x86_64)
