@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/chaim12345/sdrstream/go/internal/common"
 )
 
 // SND frame flag values interpreted from observed KiwiSDR stream headers.
@@ -28,6 +30,11 @@ const (
 	flagCompressed  = 0x10
 	flagLittleEndLs = 0x80
 )
+
+// maxFrameBytes caps one websocket frame. Kiwi audio and control frames are
+// a few KB; 1 MiB leaves generous headroom while bounding a hostile or
+// broken peer (the review asks for a 1-4 MiB read limit on every dial).
+const maxFrameBytes = 1 << 20
 
 // Passbands the browser client uses per mode, in Hz around the tuned centre.
 var DefaultPassbands = map[string][2]int{
@@ -52,6 +59,9 @@ type Options struct {
 	Waterfall    bool   // also open the /W/F waterfall connection
 	WSPath       string // preflight-selected path style: "/ws/kiwi" or "legacy"
 	WriteTimeout time.Duration
+	// AllowPrivate permits dialing loopback/private hosts (local receivers,
+	// tests). Leave false for directory-sourced stations.
+	AllowPrivate bool
 }
 
 // DefaultOptions are the values the CLI is happy with.
@@ -134,6 +144,9 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 	uri := fmt.Sprintf("%s://%s%s/%d/SND", scheme, c.base, path, timestamp)
 	dialer := websocket.Dialer{HandshakeTimeout: c.opts.OpenTimeout}
+	if !c.opts.AllowPrivate {
+		dialer.NetDialContext = common.PublicDialContext(c.opts.OpenTimeout)
+	}
 	ws, response, err := dialer.DialContext(ctx, uri, nil)
 	if err != nil {
 		if response != nil {
@@ -147,6 +160,7 @@ func (c *Client) Connect(ctx context.Context) error {
 		return fmt.Errorf("kiwisdr: %s: %w", c.base, err)
 	}
 	c.ws = ws
+	c.ws.SetReadLimit(maxFrameBytes)
 	c.adpcm = adpcmState{}
 	write := func(line string) error {
 		_ = ws.SetWriteDeadline(time.Now().Add(writeDeadline(c)))
@@ -208,75 +222,121 @@ func (c *Client) InfoSnapshot() Info { return c.info }
 // SampleRate is the negotiated decode rate, only valid once audio flows.
 func (c *Client) SampleRate() int { return int(math.Round(c.rate)) }
 
-// Record collects duration of audio and returns samples plus rate.
+// Record collects duration of audio and returns samples plus rate. The
+// returned context and duration deadlines are honoured throughout, including
+// while waiting to reconnect; reconnects are capped so a flapping server
+// cannot keep a recording slot alive forever.
 func (c *Client) Record(ctx context.Context, duration time.Duration) ([]int16, int, error) {
 	if c.ws == nil {
 		return nil, 0, fmt.Errorf("kiwisdr: not connected")
 	}
-	deadline := time.After(duration)
+	deadline := time.NewTimer(duration)
+	defer deadline.Stop()
+	end := time.Now().Add(duration)
 	keepalive := time.NewTicker(time.Second)
 	defer keepalive.Stop()
 	var out []int16
 	rate := 12000
+	reconnects := 0
 	for {
 		if c.refused != nil {
 			err := c.refused
 			c.refused = nil
 			return out, rate, err
 		}
+		// ReadMessage blocks, so check the caller's deadlines before
+		// committing to another read.
 		select {
 		case <-ctx.Done():
 			return out, rate, ctx.Err()
+		case <-deadline.C:
+			return out, rate, nil
 		case <-keepalive.C:
 			c.ws.SetWriteDeadline(time.Now().Add(writeDeadline(c)))
 			_ = c.ws.WriteMessage(websocket.TextMessage, []byte("SET keepalive"))
-		case <-deadline:
-			return out, rate, nil
 		default:
-			c.ws.SetReadDeadline(time.Now().Add(c.opts.IdleTimeout))
-			kind, data, err := c.ws.ReadMessage()
-			if err != nil {
-				if websocket.IsUnexpectedCloseError(err) && c.opts.Reconnect {
-					time.Sleep(500 * time.Millisecond)
-					if err2 := c.Connect(ctx); err2 == nil {
-						continue
-					}
+		}
+		// Bound the read by the nearest caller deadline too, so a silent
+		// server cannot park Record past ctx or the requested duration.
+		readTimeout := c.opts.IdleTimeout
+		if d, ok := ctx.Deadline(); ok {
+			if until := time.Until(d); until < readTimeout {
+				readTimeout = until
+			}
+		}
+		if until := time.Until(end); until < readTimeout {
+			readTimeout = until
+		}
+		if readTimeout < 50*time.Millisecond {
+			readTimeout = 50 * time.Millisecond
+		}
+		c.ws.SetReadDeadline(time.Now().Add(readTimeout))
+		kind, data, err := c.ws.ReadMessage()
+		if err != nil {
+			if ctx.Err() != nil {
+				return out, rate, ctx.Err()
+			}
+			select {
+			case <-deadline.C:
+				return out, rate, nil
+			default:
+			}
+			if websocket.IsUnexpectedCloseError(err) && c.opts.Reconnect && reconnects < maxRecordReconnects {
+				reconnects++
+				wait := time.NewTimer(500 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					wait.Stop()
+					return out, rate, ctx.Err()
+				case <-deadline.C:
+					wait.Stop()
+					return out, rate, nil
+				case <-wait.C:
 				}
-				return out, rate, err
-			}
-			if kind == websocket.TextMessage {
-				c.handleText(string(data))
-				continue
-			}
-			if len(data) >= 4 && string(data[:3]) == "MSG" {
-				// Control packets arrive as tagged binary frames: the marker,
-				// one spare byte, then "name=value name=value …" as text.
-				c.handleText("MSG " + string(data[4:]))
-				continue
-			}
-			if len(data) < 3 || string(data[:3]) != "SND" {
-				continue // W/F frames belong to the waterfall connection
-			}
-			body := data[3:]
-			if len(body) < 7 {
-				continue
-			}
-			flags := body[0]
-			seq := binary.LittleEndian.Uint32(body[1:5])
-			smeter10 := int(binary.BigEndian.Uint16(body[5:7])) // raw is 10*(dBm+127)
-			smeter := smeter10 - 127*10
-			chunk := decodeSampleBlock(flags, body[7:], &c.adpcm)
-			if len(chunk.Samples) > 0 {
-				if rate == 12000 {
-					rate = int(math.Round(c.rate))
+				if err2 := c.Connect(ctx); err2 == nil {
+					continue
 				}
-				chunk.Sequence = seq
-				chunk.SMeterDBM = float64(smeter) / 10
-				out = append(out, chunk.Samples...)
 			}
+			return out, rate, err
+		}
+		reconnects = 0
+		if kind == websocket.TextMessage {
+			c.handleText(string(data))
+			continue
+		}
+		if len(data) >= 4 && string(data[:3]) == "MSG" {
+			// Control packets arrive as tagged binary frames: the marker,
+			// one spare byte, then "name=value name=value …" as text.
+			c.handleText("MSG " + string(data[4:]))
+			continue
+		}
+		if len(data) < 3 || string(data[:3]) != "SND" {
+			continue // W/F frames belong to the waterfall connection
+		}
+		body := data[3:]
+		if len(body) < 7 {
+			continue
+		}
+		flags := body[0]
+		seq := binary.LittleEndian.Uint32(body[1:5])
+		smeter10 := int(binary.BigEndian.Uint16(body[5:7])) // raw is 10*(dBm+127)
+		smeter := smeter10 - 127*10
+		chunk := decodeSampleBlock(flags, body[7:], &c.adpcm)
+		if len(chunk.Samples) > 0 {
+			if rate == 12000 {
+				rate = int(math.Round(c.rate))
+			}
+			chunk.Sequence = seq
+			chunk.SMeterDBM = float64(smeter) / 10
+			out = append(out, chunk.Samples...)
 		}
 	}
 }
+
+// maxRecordReconnects bounds consecutive mid-record reconnects. A server
+// that drops every session right after connect must surface as an error,
+// not keep the receiver slot busy retrying.
+const maxRecordReconnects = 3
 
 // Close shuts the socket down.
 func (c *Client) Close() error {
