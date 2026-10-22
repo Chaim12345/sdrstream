@@ -1049,7 +1049,6 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, info)
 }
 
-
 // handleTune parks the monitor on a frequency the user clicked in the
 // waterfall and queues an immediate listen there (click-to-tune).
 func (s *Server) handleTune(w http.ResponseWriter, r *http.Request) {
