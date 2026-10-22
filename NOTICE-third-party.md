@@ -35,6 +35,16 @@ license. See `LICENSE` for the GNU Affero General Public License.
   specified CRC calculation; no LGPL-only MSK demodulator or copied ACARS
   implementation is included. No ACARS recording is distributed in this tree.
 
+## External reference tools (subprocess only, not linked or redistributed)
+
+- WSJT-X `jt9` and `wsprd` (GPL-2.0-or-later, Joe Taylor K1JT and
+  contributors), `multimon-ng` (GPL-2.0-or-later, Elias Oenal and
+  contributors) and `acarsdec` (LGPL-2.0, Thierry Leconte F4DWV) may be
+  invoked as unmodified child processes on WAV files (mere aggregation);
+  no code from these tools is copied into sdrstream. `decode_ft8` from
+  kgoba/ft8_lib (MIT, Karlis Goba) may be used the same way. See
+  `go/docs/EXTERNAL-DECODERS.md`.
+
 ## MIT and Apache-2.0 components
 
 - `go/internal/decode/ft8.go`, `go/internal/decode/ftx_tables.go`: Go port of
