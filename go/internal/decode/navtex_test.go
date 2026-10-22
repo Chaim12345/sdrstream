@@ -74,8 +74,14 @@ func syntheticNAVTEX(rate int, center, baud float64, message string) []float64 {
 	symbols = append(symbols, ccirREP, ccirREP, ccirREP)
 	var bits []byte
 	for i, symbol := range symbols {
-		for _, code := range []byte{symbols[max(0, i-3)], symbol} {
-			for bit := 6; bit >= 0; bit-- {
+		// DX slot carries the symbol, RX slot the one sent two DX slots
+		// earlier, so every repeat lands five slots after the original.
+		rx := byte(ccirREP)
+		if i >= 2 {
+			rx = symbols[i-2]
+		}
+		for _, code := range []byte{symbol, rx} {
+			for bit := 0; bit < 7; bit++ {
 				bits = append(bits, (code>>uint(bit))&1)
 			}
 		}
@@ -96,4 +102,35 @@ func syntheticNAVTEX(rate int, center, baud float64, message string) []float64 {
 		}
 	}
 	return samples
+}
+
+func TestNAVTEXQuietChunksAndDrift(t *testing.T) {
+	const rate = 22050
+	msg := "ZCZC SA00 TEST NAVTEX MESSAGE 123 NNNN"
+	// 50 s of silence (a skipped quiet chunk), then the message at a drifted clock.
+	var samples []float64
+	samples = append(samples, make([]float64, 50*rate)...)
+	samples = append(samples, syntheticNAVTEX(rate, 1700, 99.6, msg)...)
+	msgs := NAVTEXDecode(samples, rate, 1700)
+	if len(msgs) != 1 || msgs[0].Text != "TEST NAVTEX MESSAGE 123" {
+		t.Fatalf("got %+v", msgs)
+	}
+}
+
+func TestNAVTEXMergeUsesRepeat(t *testing.T) {
+	// slot 0 DX = A (corrupted), repeat of A sits in RX slot 5.
+	good := byte(0x47)
+	chars := []byte{0x00, 0x01, ccirREP, ccirREP, ccirREP, good, ccirREP}
+	// With a corrupted DX the RX repeat (phase 0, j=0 -> index 5) must win.
+	if got := navtexMerge(chars, 0); len(got) == 0 || got[0] != good {
+		t.Fatalf("repeat not used: %v", got)
+	}
+}
+
+func TestNAVTEXLSBFirst(t *testing.T) {
+	// 'A' = 0x47 = 1000111; LSB-first on the wire is 1,1,1,0,0,0,1.
+	dec := []byte{1, 1, 1, 0, 0, 0, 1}
+	if c := navtexChars(dec, 0, 1, false); len(c) != 1 || c[0] != 0x47 {
+		t.Fatalf("got %v", c)
+	}
 }

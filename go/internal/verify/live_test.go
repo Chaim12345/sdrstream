@@ -108,3 +108,12 @@ func TestTextMarginalCapture(t *testing.T) {
 		t.Errorf("marginal capture passed: %s", r.Reason)
 	}
 }
+
+func TestMaritimeWordHitsDoesNotLoosenGate(t *testing.T) {
+	if n := MaritimeWordHits("GALE WARNING NORTH SEA"); n < 3 {
+		t.Errorf("hits = %d", n)
+	}
+	if r := Text("navtex", "ZCZC FA01 GALE WARNING SEA STORM WIND NNNN", ""); r.Live {
+		t.Error("maritime words alone must not satisfy the NAVAREA/METAREA anchor")
+	}
+}
