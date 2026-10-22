@@ -11,24 +11,26 @@ var maxAges = map[string]time.Duration{
 	"aprs-is":     time.Hour,
 	"pskreporter": 30 * time.Minute,
 	"rbn":         30 * time.Minute,
+	"dxcluster":   30 * time.Minute,
+	"pota":        time.Hour,
+	"sota":        time.Hour,
+	"wspr.live":   30 * time.Minute,
 	"aisstream":   10 * time.Minute,
 	"wsprnet":     24 * time.Hour,
 	"noaa-swpc":   12 * time.Hour,
-	"wspr.live":   30 * time.Minute,
 	"sondehub":    2 * time.Hour,
 	"digitraffic": 30 * time.Minute,
 }
 
 // Start launches every feed against the manager until ctx ends.
 func Start(ctx context.Context, m *Manager, lat, lon float64, aisKey string) {
-	pollers := []Poller{&ADSB{Lat: lat, Lon: lon, Radius: 250},
-		&PublicJSON{Source: "noaa-swpc"}, &PublicJSON{Source: "wspr.live"},
-		&PublicJSON{Source: "digitraffic"}}
+	pollers := []Poller{&ADSB{Lat: lat, Lon: lon, Radius: 250}, &POTA{}, &SOTA{}, &WSPRLive{}, &PublicJSON{Source: "noaa-swpc"}, &PublicJSON{Source: "digitraffic"}}
 	streams := []StreamSource{
 		&SondeHub{},
 		&APRSIS{Lat: lat, Lon: lon, Radius: 400},
 		&PSKReporter{},
 		&RBN{},
+		&DXCluster{},
 	}
 	if aisKey == "" {
 		m.Disable("aisstream", "ais", "needs a free aisstream.io API key (OAuth signup at aisstream.io), then set SDRSTREAM_AIS_KEY (or pass --ais-key) and restart; optional, all other feeds run without it")
