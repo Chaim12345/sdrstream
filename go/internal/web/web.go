@@ -491,6 +491,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/bandconditions.json", s.handleBandConditions)
 	mux.HandleFunc("/api/scanlog.json", s.handleScanLog)
 	mux.HandleFunc("/api/scans/control", s.handleScanControl)
+	mux.HandleFunc("/api/monitor/control", s.handleMonitorControl)
 	mux.HandleFunc("/api/activity.json", s.handleActivity)
 	mux.HandleFunc("/api/spectrum.json", s.handleSpectrum)
 	mux.HandleFunc("/api/live.json", s.handleLive)
@@ -861,6 +862,73 @@ func (s *Server) handleScanControl(w http.ResponseWriter, r *http.Request) {
 	metrics := s.scanMetrics
 	s.mu.Unlock()
 	writeJSON(w, map[string]any{"target_concurrency": metrics.TargetConcurrency, "paused": metrics.Paused})
+}
+
+// monitorModes and monitorSteps are the only values the control endpoint
+// accepts: anything else is a client bug or an attack, not a mode.
+var monitorModes = map[string]bool{
+	"auto": true, "nfm": true, "fm": true, "wfm": true,
+	"am": true, "usb": true, "lsb": true, "cw": true,
+}
+var monitorSteps = map[float64]bool{
+	1000: true, 2500: true, 5000: true, 10000: true,
+	12500: true, 25000: true, 50000: true, 100000: true,
+}
+
+// handleMonitorControl applies the live receiver knobs (squelch threshold,
+// dial step, listening mode) from the Receiver panel. Same-origin POST only,
+// like the scan control; the monitor picks the values up on its next pass.
+func (s *Server) handleMonitorControl(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("Origin") != "https://"+r.Host && r.Header.Get("Origin") != "http://"+r.Host {
+		http.Error(w, "same-origin required", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	instance := s.monitor
+	s.mu.Unlock()
+	if instance == nil {
+		http.Error(w, "no monitor is running", http.StatusNotFound)
+		return
+	}
+	var controls monitor.Controls
+	if raw := r.FormValue("threshold_db"); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil || v < 1 || v > 60 {
+			http.Error(w, "threshold_db must be 1..60", http.StatusBadRequest)
+			return
+		}
+		controls.ThresholdDB = v
+	}
+	if raw := r.FormValue("step_hz"); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil || !monitorSteps[v] {
+			http.Error(w, "step_hz must be one of the listed steps", http.StatusBadRequest)
+			return
+		}
+		controls.StepHz = v
+	}
+	if raw := r.FormValue("mode"); raw != "" {
+		if !monitorModes[raw] {
+			http.Error(w, "unknown mode", http.StatusBadRequest)
+			return
+		}
+		controls.Mode = raw
+	}
+	instance.SetControls(controls)
+	info := instance.Live()
+	writeJSON(w, map[string]interface{}{
+		"threshold_db": info.ThresholdDB,
+		"step_hz":      info.StepHz,
+		"mode":         info.Mode,
+	})
 }
 
 func (s *Server) ScanControl() (int, bool) {
