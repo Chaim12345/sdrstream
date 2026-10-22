@@ -200,7 +200,6 @@ func (m *Monitor) Spectrum() ([]float64, float64, float64, bool) {
 	return m.spectrum, m.centreHz, m.spanHz, m.spectrumOK
 }
 
-
 // OnAirPeak is a transmission currently visible in the spectrum.
 type OnAirPeak struct {
 	FrequencyHz float64 `json:"frequency_hz"`
@@ -236,7 +235,7 @@ func (m *Monitor) Live() LiveInfo {
 		Name: m.opts.Name, Label: m.opts.Label, Strategy: m.opts.Strategy,
 		SpectrumOK: ok, CentreHz: centre, SpanHz: span,
 		ThresholdDB: m.opts.ThresholdDB, UpdatedAt: time.Now(),
-		OnAir:       []OnAirPeak{},
+		OnAir: []OnAirPeak{},
 	}
 	if !ok || len(bins) == 0 {
 		return info

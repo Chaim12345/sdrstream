@@ -920,7 +920,6 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, instance.Activities())
 }
 
-
 // handleLive returns the monitor's point-in-time view: receiver identity,
 // noise floor, peak level and the on-air peaks above the threshold. The
 // live UI polls it every second; available:false means no monitor runs.
