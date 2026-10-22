@@ -30,44 +30,128 @@ func (r HFResult) Live() bool { return r.Gate.Live }
 // connection per server at a time, and keeps listen short; this function
 // always closes its connection, including on error paths.
 func RunHFTarget(ctx context.Context, server string, target HFTarget, listen time.Duration) (HFResult, error) {
-	result := HFResult{Target: target, Server: server, Started: time.Now().UTC()}
+	started := time.Now().UTC()
 	opts := kiwisdr.DefaultOptions()
 	opts.OpenTimeout = 10 * time.Second
 	opts.IdleTimeout = 13 * time.Second
 	client, err := kiwisdr.New(server, opts)
 	if err != nil {
-		return result, err
+		return HFResult{Target: target, Server: server, Started: started}, err
 	}
 	defer client.Close()
 	if err := client.Connect(ctx); err != nil {
-		return result, fmt.Errorf("connect %s: %w", server, err)
+		return HFResult{Target: target, Server: server, Started: started}, fmt.Errorf("connect %s: %w", server, err)
 	}
 	if err := client.Tune(ctx, int64(target.DialKHz*1000), target.Mode); err != nil {
-		return result, fmt.Errorf("tune: %w", err)
+		return HFResult{Target: target, Server: server, Started: started}, fmt.Errorf("tune: %w", err)
 	}
 	samples16, rate, err := client.Record(ctx, listen)
 	if err != nil {
-		return result, fmt.Errorf("record: %w", err)
+		return HFResult{Target: target, Server: server, Started: started}, fmt.Errorf("record: %w", err)
 	}
+	result := decodeHF(target, server, samples16, rate)
+	result.Started = started
+	result.AudioWAV = WriteWAV16(samples16, rate)
+	return result, nil
+}
+
+// SessionOptions controls a multi-target visit to one receiver. The
+// politeness contract is encoded here: one connection, sequential targets,
+// short listens, and a total session time under the receiver's own limit
+// (KiwiSDR servers kick long sessions, so default 5 minutes).
+type SessionOptions struct {
+	Listen          time.Duration // per-target listen; default 12s
+	MaxTargets      int           // per connection; default 20
+	MaxSession      time.Duration // per connection; default 5 min
+	SkipInactive    bool          // skip targets whose schedule says off-air
+	RecordFullAudio bool          // keep AudioWAV on every result, not only failures
+}
+
+func (o *SessionOptions) defaults() {
+	if o.Listen <= 0 {
+		o.Listen = 12 * time.Second
+	}
+	if o.MaxTargets <= 0 {
+		o.MaxTargets = 20
+	}
+	if o.MaxSession <= 0 {
+		o.MaxSession = 5 * time.Minute
+	}
+}
+
+// RunHFSession visits one server once and works through targets in order,
+// one connection per server, retuning between targets. It stops at
+// MaxTargets or when MaxSession would be exceeded, whichever comes first;
+// remaining targets are returned so the caller can reconnect later.
+// Connection failures and refusals end the session: the caller backs off
+// and skips this station rather than retrying inside the session.
+func RunHFSession(ctx context.Context, server string, targets []HFTarget, opts SessionOptions) (results []HFResult, remaining []HFTarget, err error) {
+	opts.defaults()
+	now := time.Now()
+	if opts.SkipInactive {
+		active := targets[:0]
+		for _, t := range targets {
+			if t.ActiveNow(now) {
+				active = append(active, t)
+			}
+		}
+		targets = active
+	}
+	if len(targets) > opts.MaxTargets {
+		remaining = append(remaining, targets[opts.MaxTargets:]...)
+		targets = targets[:opts.MaxTargets]
+	}
+	client, err := kiwisdr.New(server, kiwisdr.DefaultOptions())
+	if err != nil {
+		return nil, targets, err
+	}
+	if err := client.Connect(ctx); err != nil {
+		return nil, targets, fmt.Errorf("connect %s: %w", server, err)
+	}
+	defer client.Close()
+	sessionStart := time.Now()
+	for i, target := range targets {
+		if time.Since(sessionStart)+opts.Listen > opts.MaxSession {
+			remaining = append(remaining, targets[i:]...)
+			break
+		}
+		if err := client.Tune(ctx, int64(target.DialKHz*1000), target.Mode); err != nil {
+			remaining = append(remaining, targets[i:]...)
+			return results, remaining, fmt.Errorf("tune: %w", err)
+		}
+		samples16, rate, rerr := client.Record(ctx, opts.Listen)
+		if rerr != nil {
+			remaining = append(remaining, targets[i:]...)
+			return results, remaining, fmt.Errorf("record: %w", rerr)
+		}
+		result := decodeHF(target, server, samples16, rate)
+		if !result.Gate.Live || opts.RecordFullAudio {
+			result.AudioWAV = WriteWAV16(samples16, rate)
+		}
+		results = append(results, result)
+	}
+	return results, remaining, nil
+}
+
+// decodeHF runs the decoder and gate for one captured target. Kinds
+// without a built-in decoder (voice, dsc, hfdl, ft8, wspr) are real
+// captures but must never publish: the gate rejects them here.
+func decodeHF(target HFTarget, server string, samples16 []int16, rate int) HFResult {
+	result := HFResult{Target: target, Server: server, Started: time.Now().UTC()}
 	samples := make([]float64, len(samples16))
 	for i, s := range samples16 {
 		samples[i] = float64(s) / 32768.0
 	}
-	result.AudioWAV = WriteWAV16(samples16, rate)
-
 	switch target.Kind {
 	case "rtty":
 		text, _ := RTTYDecodeAuto(samples, rate, target.MarkHz, target.SpaceHz, target.Baud)
 		result.Text = text
 		result.Gate = verify.Text("rtty", text, target.Expect)
 	case "cw":
-		tmp, err := writeTempWAV16(samples16, rate)
-		if err != nil {
-			return result, err
-		}
-		morse, err := MorseDecode(tmp)
-		if err == nil {
-			result.Text = morse.Text
+		if tmp, err := writeTempWAV16(samples16, rate); err == nil {
+			if morse, derr := MorseDecode(tmp); derr == nil {
+				result.Text = morse.Text
+			}
 		}
 		result.Gate = verify.CW(result.Text, target.Expect)
 	case "navtex":
@@ -77,16 +161,16 @@ func RunHFTarget(ctx context.Context, server string, target HFTarget, listen tim
 		}
 		result.Gate = verify.Text("navtex", result.Text, target.Expect)
 	case "wefax":
-		pngData, err := WEFAXImage(samples, rate, target.LinesPerMin, target.IOC)
-		if err != nil {
-			return result, err
+		if pngData, err := WEFAXImage(samples, rate, target.LinesPerMin, target.IOC); err == nil {
+			result.ImagePNG = pngData
+			result.Gate = verify.Image("wefax", pngData)
+		} else {
+			result.Gate = verify.Result{Live: false, Reason: err.Error()}
 		}
-		result.ImagePNG = pngData
-		result.Gate = verify.Image("wefax", pngData)
 	default:
-		return result, fmt.Errorf("unsupported target kind %q", target.Kind)
+		result.Gate = verify.Result{Live: false, Reason: "no backend for kind " + target.Kind}
 	}
-	return result, nil
+	return result
 }
 
 // WriteWAV16 renders mono 16-bit PCM as a RIFF/WAVE file body.
