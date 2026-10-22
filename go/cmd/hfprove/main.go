@@ -11,8 +11,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/decode"
@@ -111,10 +113,15 @@ func main() {
 	pskFreq := flag.Float64("psk", 0, "PSK31 listen kHz (default per band)")
 	cwFreq := flag.Float64("cw", 0, "CW listen kHz (default per band)")
 	skip := flag.String("skip", "", "comma list: ft8,wspr,psk,cw")
+	crosscheck := flag.Bool("crosscheck", false, "cross-check decodes against PSKReporter (FT8) and wspr.live (WSPR)")
+	ledger := flag.String("ledger", "", "append proof-ledger JSONL items (with audio paths) to this file")
+	grace := flag.Duration("grace", 75*time.Second, "wait after the WSPR window before querying wspr.live (spot upload lag)")
 	flag.Parse()
 	if *server == "" {
 		log.Fatal("-server required")
 	}
+	httpClient := &http.Client{Timeout: 20 * time.Second}
+	var ledgerItems []ledgerItem
 	skipped := map[string]bool{}
 	for _, s := range splitComma(*skip) {
 		skipped[s] = true
@@ -195,12 +202,62 @@ func main() {
 						fmt.Printf("  saved %s\n", p)
 					}
 				}
-				msgs := decode.FTXDecodeStream(toF64(samples), rate, float64(start.Unix())+float64(start.Nanosecond())/1e9, "FT8")
+				msgs, engine, derr := decode.FTXDecodeAuto(ctx, toF64(samples), rate, "FT8")
+				if derr != nil {
+					log.Printf("ft8 decode: %v", derr)
+				}
 				for _, m := range msgs {
 					fmt.Printf("  %s %s %+5.1f dB %+4.1f s %4.0f Hz  %s\n",
-						time.Unix(m.SlotUnix, 0).UTC().Format("150405"), m.Protocol, m.SNR, m.DT, m.FreqHz, m.Text)
+						start.UTC().Format("150405"), m.Protocol, m.SNR, m.DT, m.FreqHz, m.Text)
 				}
-				fmt.Printf("  FT8: %d messages decoded from live audio\n", len(msgs))
+				fmt.Printf("  FT8: %d messages decoded from live audio (engine: %s)\n", len(msgs), engine)
+				if *crosscheck || *ledger != "" {
+					audio := ""
+					if *out != "" {
+						audio = filepath.Join(*out, "ft8_"+start.Format("150405")+"Z.wav")
+					}
+					seen := map[string]bool{}
+					spots := map[string][]string{}
+					if *crosscheck {
+						for _, m := range msgs {
+							for _, c := range ft8Senders(m.Text) {
+								if seen[c] || len(seen) >= 10 {
+									continue
+								}
+								seen[c] = true
+								if rc, err := pskrSpots(ctx, httpClient, c, 15*time.Minute); err == nil {
+									spots[c] = rc
+								} else {
+									log.Printf("pskreporter %s: %v", c, err)
+								}
+								time.Sleep(300 * time.Millisecond)
+							}
+						}
+					}
+					for _, m := range msgs {
+						verified := "unverified"
+						ref := ""
+						if *crosscheck {
+							for _, c := range ft8Senders(m.Text) {
+								if len(spots[c]) > 0 {
+									verified = "verified live"
+									ref = fmt.Sprintf("pskreporter: %s heard by %s", c, strings.Join(spots[c][:min(3, len(spots[c]))], ","))
+								}
+							}
+						}
+						fmt.Printf("    [%s] %s\n", verified, m.Text)
+						ledgerItems = append(ledgerItems, ledgerItem{
+							Source: "sdrstream-hfprove", Kind: "digimode",
+							ID:        fmt.Sprintf("hfprove|ft8|%d|%s", start.Unix(), m.Text),
+							Label:     m.Text,
+							Detail:    fmt.Sprintf("FT8 %.3f MHz %+.1f dB %+.1f s %.0f Hz via %s", *ft8Freq/1000, m.SNR, m.DT, m.FreqHz, *server),
+							ProviderT: start.UTC().Format(time.RFC3339),
+							FetchedAt: time.Now().UTC().Format(time.RFC3339),
+							DecodedBy: "sdrstream/" + engine,
+							Ref:       ref, Verified: verified, Audio: audio,
+						})
+					}
+				}
 			}
 		}
 	}
@@ -221,16 +278,59 @@ func main() {
 						fmt.Printf("  saved %s\n", p)
 					}
 				}
-				wins := decode.WSPRWindows(toF64(samples), rate, float64(start.Unix())+float64(start.Nanosecond())/1e9)
-				n := 0
-				for _, w := range wins {
-					for _, m := range w.Messages {
-						fmt.Printf("  %s %+4.0f dB %+4.1f  %4.0f Hz  %s\n",
-							time.Unix(w.Start, 0).UTC().Format("1504"), m.SNR, m.DT, m.FreqHz, m.Text)
-						n++
+				wmsgs, wengine, derr := decode.WSPRDecodeAuto(ctx, toF64(samples), rate)
+				if derr != nil {
+					log.Printf("wspr decode: %v", derr)
+				}
+				for _, m := range wmsgs {
+					fmt.Printf("  %s %+4.0f dB %+4.1f  %4.0f Hz  %s\n",
+						start.UTC().Format("1504"), m.SNR, m.DT, m.FreqHz, m.Text)
+				}
+				fmt.Printf("  WSPR: %d messages decoded from live audio (engine: %s)\n", len(wmsgs), wengine)
+				if *crosscheck || *ledger != "" {
+					audio := ""
+					if *out != "" {
+						audio = filepath.Join(*out, "wspr_"+start.Format("150405")+"Z.wav")
+					}
+					var spots map[string]int
+					if *crosscheck && len(wmsgs) > 0 {
+						if wait := time.Until(start.Add(120 * time.Second).Add(*grace)); wait > 0 {
+							fmt.Printf("  waiting %s for wspr.live spot uploads\n", wait.Round(time.Second))
+							time.Sleep(wait)
+						}
+						var calls []string
+						seen := map[string]bool{}
+						for _, m := range wmsgs {
+							if c := wsprSender(m.Text); c != "" && !seen[c] {
+								seen[c] = true
+								calls = append(calls, c)
+							}
+						}
+						var err error
+						if spots, err = wsprLiveSpots(ctx, httpClient, calls, start.Add(-30*time.Second)); err != nil {
+							log.Printf("wspr.live: %v", err)
+						}
+					}
+					for _, m := range wmsgs {
+						verified := "unverified"
+						ref := ""
+						if *crosscheck && spots[wsprSender(m.Text)] > 0 {
+							verified = "verified live"
+							ref = fmt.Sprintf("wspr.live: %d spot(s) for %s", spots[wsprSender(m.Text)], wsprSender(m.Text))
+						}
+						fmt.Printf("    [%s] %s\n", verified, m.Text)
+						ledgerItems = append(ledgerItems, ledgerItem{
+							Source: "sdrstream-hfprove", Kind: "digimode",
+							ID:        fmt.Sprintf("hfprove|wspr|%d|%s", start.Unix(), m.Text),
+							Label:     m.Text,
+							Detail:    fmt.Sprintf("WSPR %.4f MHz %+.0f dB %+.1f s %.0f Hz via %s", *wsprFreq/1000, m.SNR, m.DT, m.FreqHz, *server),
+							ProviderT: start.UTC().Format(time.RFC3339),
+							FetchedAt: time.Now().UTC().Format(time.RFC3339),
+							DecodedBy: "sdrstream/" + wengine,
+							Ref:       ref, Verified: verified, Audio: audio,
+						})
 					}
 				}
-				fmt.Printf("  WSPR: %d messages in %d windows from live audio\n", n, len(wins))
 			}
 		}
 	}
@@ -290,6 +390,13 @@ func main() {
 					}
 				}
 			}
+		}
+	}
+	if *ledger != "" {
+		if err := appendLedger(*ledger, ledgerItems); err != nil {
+			log.Printf("ledger: %v", err)
+		} else {
+			fmt.Printf("\nledger: %d items appended to %s\n", len(ledgerItems), *ledger)
 		}
 	}
 	fmt.Println("\ndone - all decodes above are from live over-the-air audio")
