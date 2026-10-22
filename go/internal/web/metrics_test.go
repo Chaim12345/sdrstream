@@ -49,3 +49,16 @@ func TestLedgerEndpointAndCSVInjectionGuard(t *testing.T) {
 		t.Fatalf("json = %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestFeedCardsShowProofDetails(t *testing.T) {
+	b, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(b)
+	for _, want := range []string{"pb.textContent='proof'", "decoded by", "fetched_at"} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js lacks %q", want)
+		}
+	}
+}
