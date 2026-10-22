@@ -37,6 +37,7 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/satellite"
 	"github.com/chaim12345/sdrstream/go/internal/satellites"
 	"github.com/chaim12345/sdrstream/go/internal/satnogs"
+	"github.com/chaim12345/sdrstream/go/internal/sources"
 	"github.com/chaim12345/sdrstream/go/internal/verify"
 	"github.com/chaim12345/sdrstream/go/internal/voice"
 	"github.com/chaim12345/sdrstream/go/internal/web"
@@ -55,6 +56,7 @@ commands:
   satrecord    record a pass, tracking Doppler
   discover     find OpenWebRX receivers for a downlink
   stations     list every public receiver in the directory
+  sources      health-check every external data source (live/stale/unreachable)
   monitor      watch a receiver for any traffic and decode it
   undocumented satellites heard by SatNOGS but missing from the table
   military     government downlinks a public receiver can reach
@@ -93,6 +95,8 @@ func main() {
 		err = cmdDiscover(args)
 	case "stations":
 		err = cmdStations(args)
+	case "sources":
+		err = cmdSources(args)
 	case "monitor":
 		err = cmdMonitor(args)
 	case "undocumented":
@@ -2343,4 +2347,53 @@ func plausibleBroadcastText(text string) bool {
 		return false
 	}
 	return spaces >= 2
+}
+
+// cmdSources health-checks every registered external data source and prints
+// an honest per-source status table: live, stale, unreachable, restricted or
+// needs-key.
+func cmdSources(args []string) error {
+	fs := flag.NewFlagSet("sources", flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "print JSON")
+	timeout := fs.Float64("timeout", 10, "per-request timeout in seconds")
+	concurrency := fs.Int("concurrency", 4, "global in-flight cap (per-host stays 1)")
+	kind := fs.String("kind", "", "only this kind (comma-separated), e.g. receiver-directory,spots")
+	fs.Parse(args)
+	var kinds []string
+	if *kind != "" {
+		kinds = strings.Split(*kind, ",")
+	}
+	results := sources.HealthAll(context.Background(), sources.Options{
+		Timeout:     time.Duration(*timeout * float64(time.Second)),
+		Concurrency: *concurrency,
+		Kinds:       kinds,
+	})
+	if *asJSON {
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", " ")
+		return encoder.Encode(results)
+	}
+	counts := map[sources.Status]int{}
+	for _, result := range results {
+		counts[result.Status]++
+		detail := result.Detail
+		if result.Note != "" {
+			if detail != "" {
+				detail += "; "
+			}
+			detail += result.Note
+		}
+		fmt.Printf("%-18s %-18s %-11s %6dms  %s\n",
+			result.Name, result.Kind, result.Status, result.LatencyMs, detail)
+	}
+	order := []sources.Status{sources.StatusLive, sources.StatusStale, sources.StatusUnreachable,
+		sources.StatusRestricted, sources.StatusNeedsKey}
+	var summary []string
+	for _, status := range order {
+		if counts[status] > 0 {
+			summary = append(summary, fmt.Sprintf("%d %s", counts[status], status))
+		}
+	}
+	fmt.Printf("sources: %s\n", strings.Join(summary, ", "))
+	return nil
 }
