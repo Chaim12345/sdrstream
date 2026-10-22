@@ -1452,8 +1452,8 @@ func cmdWeb(args []string) error {
 	_ = sstvImageHelp
 	noAuth := fs.Bool("no-auth", false, "run the web UI without a password (INSECURE: required for non-loopback binds when SDRSTREAM_UI_PASSWORD is unset)")
 	noFeeds := fs.Bool("no-feeds", false, "disable public data feeds")
-	feedsLat := fs.Float64("feeds-lat", 32.08, "feeds center latitude")
-	feedsLon := fs.Float64("feeds-lon", 34.78, "feeds center longitude")
+	feedsLat := fs.Float64("feeds-lat", 31.8, "feeds center latitude")
+	feedsLon := fs.Float64("feeds-lon", 35.0, "feeds center longitude")
 	aisKey := fs.String("ais-key", os.Getenv("SDRSTREAM_AIS_KEY"), "aisstream.io key; prefer SDRSTREAM_AIS_KEY")
 	fs.Parse(args)
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
