@@ -1688,8 +1688,14 @@ func cmdDecode(args []string) error {
 			}
 		}
 		if *mode == "rtty" || wantAll {
-			if s := decode.RTTYDecode(samples, rate, 0, 0, 0); s != "" {
-				fmt.Printf("   rtty:   %s\n", strings.TrimSpace(s))
+			// Auto mark/space polarity: DWD-style F1B services key mark
+			// low, amateurs key mark high.
+			if s, inverted := decode.RTTYDecodeAuto(samples, rate, 0, 0, 0); s != "" {
+				note := ""
+				if inverted {
+					note = " [inverted mark/space]"
+				}
+				fmt.Printf("   rtty:   %s%s\n", strings.TrimSpace(s), note)
 			} else if *mode == "rtty" {
 				fmt.Println("   rtty:   nothing")
 			}
