@@ -41,6 +41,8 @@ public class MainActivity extends Activity {
     private static final int MAX_WAIT_ATTEMPTS = 120;
     private static final int REQ_NOTIFICATIONS = 42;
     private WebView webView;
+    private AlertDialog batteryDialog;
+    private Thread waitThread;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -61,7 +63,7 @@ public class MainActivity extends Activity {
         webView.setWebViewClient(new WebViewClient());
         setContentView(webView);
         showCrashReportIfAny();
-        loadWhenUp(0);
+        loadWhenUp();
     }
 
     private void startEngineService() {
@@ -104,18 +106,35 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Poll /healthz: the engine takes a moment to bind its port. */
-    private void loadWhenUp(final int attempt) {
-        webView.postDelayed(() -> {
-            if (isFinishing()) return;
-            if (portOpen()) {
-                webView.loadUrl(UI_URL);
-            } else if (attempt < MAX_WAIT_ATTEMPTS) {
-                loadWhenUp(attempt + 1);
-            } else {
-                showDiagnostics("The sdrstream engine did not start within two minutes.");
+    /**
+     * Poll /healthz until the engine binds its port. The socket probe must
+     * run on a background thread: doing it on the main thread throws
+     * NetworkOnMainThreadException and kills the app at launch (the 0.1.0
+     * crash). Only the WebView calls hop back to the main thread.
+     */
+    private void loadWhenUp() {
+        waitThread = new Thread(() -> {
+            for (int attempt = 0; attempt < MAX_WAIT_ATTEMPTS; attempt++) {
+                if (isFinishing()) return;
+                try {
+                    Thread.sleep(attempt == 0 ? 300 : 1000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                if (portOpen()) {
+                    webView.post(() -> {
+                        if (!isFinishing()) webView.loadUrl(UI_URL);
+                    });
+                    return;
+                }
             }
-        }, attempt == 0 ? 300 : 1000);
+            webView.post(() -> {
+                if (!isFinishing()) {
+                    showDiagnostics("The sdrstream engine did not start within two minutes.");
+                }
+            });
+        }, "engine-wait");
+        waitThread.start();
     }
 
     private boolean portOpen() {
@@ -167,7 +186,7 @@ public class MainActivity extends Activity {
         try {
             PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
             if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
-                new AlertDialog.Builder(this)
+                batteryDialog = new AlertDialog.Builder(this)
                         .setTitle("Keep monitoring in the background")
                         .setMessage("Android battery saving can suspend the monitor. " +
                                 "Exempt sdrstream so scanning continues with the screen off.")
@@ -250,6 +269,8 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (batteryDialog != null && batteryDialog.isShowing()) batteryDialog.dismiss();
+        if (waitThread != null) waitThread.interrupt();
         if (webView != null) webView.destroy();
         super.onDestroy();
     }
