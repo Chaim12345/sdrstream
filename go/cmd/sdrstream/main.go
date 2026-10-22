@@ -55,6 +55,7 @@ const usage = `record and stream from public SDR servers
 usage: sdrstream <command> [flags]
 
 commands:
+  icecast      ingest Icecast/Shoutcast and NOAA Weather Radio streams
   record       record audio from a server to a WAV file
   info         show a server's capabilities
   satellites   list the amateur satellite catalogue
@@ -126,6 +127,8 @@ func main() {
 		err = cmdFeeds(args)
 	case "avmarine":
 		err = cmdAVMarine(args)
+	case "icecast":
+		err = cmdIcecast(args)
 	case "decode":
 		err = cmdDecode(args)
 	case "scan":

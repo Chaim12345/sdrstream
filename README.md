@@ -726,3 +726,17 @@ and `--no-feeds` to disable public-data panels. Run
 `go run ./cmd/sdrstream web -h` for the full current flag list. Never place
 secrets in command-line arguments or documentation; pass them through the
 process environment or a secret manager.
+
+## Icecast / Shoutcast and NOAA Weather Radio streams (Go)
+
+```bash
+cd go
+go run ./cmd/sdrstream icecast list -nwr                 # live NWR relays from noaaweatherradio.org
+go run ./cmd/sdrstream icecast list -genre weather       # dir.xiph.org directory (cached 24 h)
+go run ./cmd/sdrstream icecast listen -url https://wxradio.org/GA-Athens-WXK56 -dur 60s
+go run ./cmd/sdrstream icecast sweep -nwr -max 20 -dur 15s   # one stream at a time, SAME scan
+```
+
+Streams are decoded with ffmpeg and go through the existing speech recognition and decoders. SAME
+headers are found with `decode.SAMEScan` (per-burst demodulation, 3-repeat voting, strict FCC field
+validation) and are also tried by the monitor (`--monitor-kind icecast`, the stream URL as server).
