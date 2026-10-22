@@ -55,3 +55,11 @@ with GPL-3.0-or-later.
 Test audio is not part of this repository. The tests read public recordings
 from signals.taunus.de when `HFDL_SAMPLES` points at them.
 
+
+go/internal/decode/wspr.go and wspr_tables.go are a Go port of the single-pass
+path of wsprd from WSJT-X (GNU GPL v3; Copyright 2001-2018 Joe Taylor K1JT,
+2014-2018 Steven Franke K9AN; Fano decoder Copyright 1994 Phil Karn KA9Q),
+read from github.com/pavel-demin/wsprd. These files are GPL v3, so a binary
+that includes them is GPL v3. Reference oracle for tests: wsprd built from
+the same source.
+

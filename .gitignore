@@ -4,6 +4,7 @@ venv/
 !tests/data/*.wav
 !go/internal/decode/testdata/*.wav
 !go/internal/decode/testdata/ft8/*.wav
+!go/internal/decode/testdata/wspr/*.wav
 *.raw
 .pytest_cache/
 .mypy_cache/

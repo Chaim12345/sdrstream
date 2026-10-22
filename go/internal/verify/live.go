@@ -210,3 +210,19 @@ func FTX(count int, verifiedProtocol bool, text string) Result {
 }
 
 var callsignLike = regexp.MustCompile(`\b[A-Z0-9]{1,3}[0-9][A-Z]{1,4}\b`)
+
+// WSPR gates WSPR spots. The WSPR code has no CRC, so one decode could in
+// principle be a false positive. Publish only when a window yields at least
+// two distinct spots that each carry a plausible callsign.
+func WSPR(count int, text string) Result {
+	if count == 0 {
+		return Result{false, "no WSPR spots"}
+	}
+	if count < 2 {
+		return Result{false, "single WSPR spot, no CRC to confirm it"}
+	}
+	if len(callsignLike.FindAllString(text, -1)) < 2 {
+		return Result{false, "fewer than two callsigns in decoded spots"}
+	}
+	return Result{true, fmt.Sprintf("%d WSPR spots with callsigns", count)}
+}
