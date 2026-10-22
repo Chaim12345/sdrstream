@@ -150,7 +150,7 @@ func main() {
 	ctx := context.Background()
 	var rec recorder
 	if *kind == "websdr" {
-		c, err := websdr.New(*server, websdr.DefaultOptions())
+		c, err := websdr.New(*server, func() websdr.Options { o := websdr.DefaultOptions(); o.AllowPrivate = true; return o }())
 		if err != nil {
 			log.Fatalf("new: %v", err)
 		}
@@ -161,7 +161,7 @@ func main() {
 		rec = webRec{c}
 		fmt.Printf("connected to WebSDR %s\n", *server)
 	} else {
-		c, err := kiwisdr.New(*server, kiwisdr.DefaultOptions())
+		c, err := kiwisdr.New(*server, func() kiwisdr.Options { o := kiwisdr.DefaultOptions(); o.AllowPrivate = true; return o }())
 		if err != nil {
 			log.Fatalf("new: %v", err)
 		}

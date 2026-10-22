@@ -18,6 +18,10 @@ func newTest(c *clock) *Preflighter {
 	p := NewPreflighter()
 	p.Now = c.now
 	p.Timeout = 500 * time.Millisecond
+	// Tests run against loopback httptest servers, which the SSRF guard
+	// (covered separately in internal/common) refuses by default.
+	p.AllowPrivate = true
+	p.HTTP = &http.Client{Timeout: 500 * time.Millisecond}
 	return p
 }
 

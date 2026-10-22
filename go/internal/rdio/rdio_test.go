@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -133,5 +134,28 @@ func TestQueueUploadsAndCounts(t *testing.T) {
 	}
 	if len(received) != 3 {
 		t.Fatalf("server received %d calls, want 3", len(received))
+	}
+}
+
+// Enqueue racing Close used to panic with send-on-closed-channel
+// immediately at shutdown; the scanner goroutines are not joined, so an
+// upload hook can still fire while the queue is closing.
+func TestEnqueueAfterCloseDoesNotPanic(t *testing.T) {
+	for range 50 {
+		q := NewQueue(Options{BaseURL: "http://127.0.0.1:1/apitest", APIKey: "k"}, nil)
+		var wg sync.WaitGroup
+		wg.Add(3)
+		for worker := range 3 {
+			go func(worker int) {
+				defer wg.Done()
+				for i := range 200 {
+					q.Enqueue(Call{AudioPath: fmt.Sprintf("/tmp/x-%d-%d.wav", worker, i)})
+				}
+			}(worker)
+		}
+		q.Close()
+		wg.Wait()
+		// Also straight-line: a call after Close must be a silent drop.
+		q.Enqueue(Call{AudioPath: "/tmp/late.wav"})
 	}
 }

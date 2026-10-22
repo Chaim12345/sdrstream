@@ -151,3 +151,20 @@ func TestWSPRGate(t *testing.T) {
 		t.Fatal(r.Reason)
 	}
 }
+
+func TestTextAcceptsAccentedNavtexAndSpacedAnchors(t *testing.T) {
+	// Accented real traffic used to fail the printable/bytes ratio (the
+	// gate mixed rune counts with byte counts).
+	result := Text("navtex", "ZCZC GA57 BARCELONA METEOROLÓGICO ÁREA GALE WARNING FORECAST NNNN", "")
+	if !result.Live {
+		t.Fatalf("accented navtex rejected: %+v", result)
+	}
+	// Anchors must survive decoder spacing quirks.
+	result = Text("voice", "VOZ  DE  GIJON meteorológico routine forecast valid", "VOZ DE GIJON")
+	if !result.Live {
+		t.Fatalf("spaced anchor rejected: %+v", result)
+	}
+	if result := Text("rtty", "SHIP SHORE BROADCAST BUT NO ANCHOR WORD MATCHES", "ELBE 1"); result.Live {
+		t.Fatalf("missing anchor accepted: %+v", result)
+	}
+}

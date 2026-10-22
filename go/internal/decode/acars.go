@@ -415,6 +415,9 @@ func ReadWAVChannels(path string) ([][]float64, int, error) {
 	if ch < 1 || binary.LittleEndian.Uint16(data[34:36]) != 16 {
 		return nil, 0, fmt.Errorf("%s: only 16-bit PCM is supported", path)
 	}
+	if rate <= 0 {
+		return nil, 0, fmt.Errorf("%s: bad sample rate %d", path, rate)
+	}
 	off := 12
 	for off+8 <= len(data) {
 		id := string(data[off : off+4])

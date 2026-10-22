@@ -142,6 +142,7 @@ func TestRecordReportsSlotLimitAndPasswordRefusal(t *testing.T) {
 	for _, tc := range cases {
 		srv := refusingServer(t, tc.frame)
 		opts := DefaultOptions()
+		opts.AllowPrivate = true // loopback test server
 		opts.Reconnect = false
 		c, err := New(srv.URL, opts)
 		if err != nil {
@@ -167,6 +168,7 @@ func TestBadpZeroIsNotARefusal(t *testing.T) {
 	srv := refusingServer(t, "badp=0")
 	defer srv.Close()
 	opts := DefaultOptions()
+	opts.AllowPrivate = true // loopback test server
 	opts.Reconnect = false
 	c, _ := New(srv.URL, opts)
 	if err := c.Connect(context.Background()); err != nil {

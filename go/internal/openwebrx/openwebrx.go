@@ -47,6 +47,14 @@ const (
 // in every FFT frame (COMPRESS_FFT_PAD_N in upstream openwebrx.js).
 const fftPadN = 10
 
+// maxFrameBytes caps one websocket frame (review: 1-4 MiB read limit on
+// every dial). FFT frames carry a float32 per bin, so 4 MiB.
+const maxFrameBytes = 4 << 20
+
+// writeTimeout bounds every control write (handshake, tune, profile
+// select, DSP start) so a stuck peer cannot wedge the writer.
+const writeTimeout = 10 * time.Second
+
 // DefaultOutputRate is the audio rate most servers deliver.
 const DefaultOutputRate = 12000
 
@@ -97,6 +105,7 @@ type Client struct {
 
 	events      chan Event
 	audioEvents chan Event
+	eventsOnce  sync.Once
 	quit        chan struct{}
 	conn        *websocket.Conn
 	mu          sync.Mutex
@@ -108,6 +117,7 @@ type Client struct {
 	closeOnce   sync.Once
 	outputRate  int
 	hdRate      int
+	options     Options
 }
 
 // Options configures a Client.
@@ -117,6 +127,9 @@ type Options struct {
 	Reconnect    bool
 	OpenTimeout  time.Duration
 	IdleTimeout  time.Duration
+	// AllowPrivate permits dialing loopback/private hosts (local receivers,
+	// tests). Leave false for directory-sourced stations.
+	AllowPrivate bool
 }
 
 // DefaultOptions returns polite defaults.
@@ -150,6 +163,7 @@ func New(rawURL string, options Options) (*Client, error) {
 		tuning:     map[string]interface{}{},
 		outputRate: options.OutputRate,
 		hdRate:     options.HDOutputRate,
+		options:    options,
 	}, nil
 }
 
@@ -160,10 +174,14 @@ func (c *Client) Events() <-chan Event { return c.events }
 // returns the server's configuration.
 func (c *Client) Connect(ctx context.Context) (Config, error) {
 	dialer := &websocket.Dialer{HandshakeTimeout: 15 * time.Second}
+	if !c.options.AllowPrivate {
+		dialer.NetDialContext = common.PublicDialContext(15 * time.Second)
+	}
 	conn, _, err := dialer.DialContext(ctx, c.URL, http.Header{})
 	if err != nil {
 		return Config{}, err
 	}
+	conn.SetReadLimit(maxFrameBytes)
 	c.mu.Lock()
 	c.conn = conn
 	c.mu.Unlock()
@@ -180,12 +198,22 @@ func (c *Client) Connect(ctx context.Context) (Config, error) {
 	return c.Config, nil
 }
 
+// writeText sends one text frame with a bounded write deadline. Without it
+// a dead/blocked peer wedges the scanner worker forever on a TCP buffer
+// that will never drain (review H3); kiwisdr already does this.
+const openwebRXWriteTimeout = 10 * time.Second
+
+func writeText(conn *websocket.Conn, payload []byte) error {
+	_ = conn.SetWriteDeadline(time.Now().Add(openwebRXWriteTimeout))
+	return conn.WriteMessage(websocket.TextMessage, payload)
+}
+
 // handshake sends the client greeting, waits for the configuration, then
 // sends the pending tuning request and starts the DSP. The handshake completes
 // before the reader starts so only one goroutine ever reads from the socket.
 func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
 	greeting := fmt.Sprintf("SERVER DE CLIENT client=%s type=receiver", c.ClientName)
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(greeting)); err != nil {
+	if err := writeText(conn, []byte(greeting)); err != nil {
 		return err
 	}
 	// The configuration arrives as several config messages and only the last
@@ -210,7 +238,7 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
 				"params": map[string]interface{}{
 					"output_rate": c.outputRate, "hd_output_rate": c.hdRate}}
 			payload, _ := json.Marshal(params)
-			if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+			if err := writeText(conn, payload); err != nil {
 				return err
 			}
 			continue
@@ -235,13 +263,13 @@ func (c *Client) startDSP(ctx context.Context, conn *websocket.Conn) error {
 			message[key] = value
 		}
 		payload, _ := json.Marshal(message)
-		if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+		if err := writeText(conn, payload); err != nil {
 			return err
 		}
 	}
 	start := map[string]interface{}{"type": "dspcontrol", "action": "start"}
 	payload, _ := json.Marshal(start)
-	return conn.WriteMessage(websocket.TextMessage, payload)
+	return writeText(conn, payload)
 }
 
 func (c *Client) handleText(message string) bool {
@@ -476,7 +504,15 @@ func (c *Client) publish(event Event) {
 }
 
 func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
-	defer conn.Close()
+	defer func() {
+		conn.Close()
+		// Terminal state: a closed events channel tells consumers the
+		// receiver stopped, instead of a frozen spectrum that looks like
+		// scanning dead air forever (review H2). readLoop is the only
+		// publisher on this channel and it has just exited, so the close
+		// cannot race a send.
+		c.eventsOnce.Do(func() { close(c.events) })
+	}()
 	for {
 		select {
 		case <-c.quit:
@@ -488,8 +524,21 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
 		_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		messageType, data, err := conn.ReadMessage()
 		if err != nil {
+			select {
+			case <-c.quit:
+				return
+			case <-ctx.Done():
+				return
+			default:
+			}
 			c.LastError = err
 			c.publish(Event{Type: "error", Value: err})
+			// The recorder listens on audioEvents only; without an error
+			// there it waits out its whole duration and reports silence.
+			select {
+			case c.audioEvents <- Event{Type: "error", Value: err}:
+			default:
+			}
 			return
 		}
 		if messageType == websocket.BinaryMessage {
@@ -540,14 +589,33 @@ func (c *Client) Tune(ctx context.Context, frequency *int64, modulation string, 
 		return nil
 	}
 	payload, _ := json.Marshal(message)
-	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+	if err := writeText(conn, payload); err != nil {
 		return err
 	}
 	// Some servers stop the demodulator when the tuning changes and then
 	// send no audio at all until the client asks for it again.
 	start := map[string]interface{}{"type": "dspcontrol", "action": "start"}
 	restart, _ := json.Marshal(start)
-	return conn.WriteMessage(websocket.TextMessage, restart)
+	if err := writeText(conn, restart); err != nil {
+		return err
+	}
+	c.drainAudio()
+	return nil
+}
+
+// drainAudio drops buffered audio from before the current tuning. A retune
+// does not flush the socket, so the first chunks after Tune are still the
+// PREVIOUS frequency's voice; without this, clip starts bleed the old
+// broadcast into every capture (review M4).
+func (c *Client) drainAudio() {
+	for {
+		select {
+		case <-c.audioEvents:
+			continue
+		default:
+			return
+		}
+	}
 }
 
 // SelectProfile switches the receiver to another SDR profile. The argument
@@ -565,7 +633,7 @@ func (c *Client) SelectProfile(ctx context.Context, profile string) error {
 		"params": map[string]interface{}{"profile": profile},
 	}
 	payload, _ := json.Marshal(message)
-	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+	if err := writeText(conn, payload); err != nil {
 		return err
 	}
 	// A profile switch tears down the server's demodulator: no audio flows
@@ -573,7 +641,11 @@ func (c *Client) SelectProfile(ctx context.Context, profile string) error {
 	// still has to Tune, because the old frequency belongs to the old
 	// profile's span.
 	restart, _ := json.Marshal(map[string]interface{}{"type": "dspcontrol", "action": "start"})
-	return conn.WriteMessage(websocket.TextMessage, restart)
+	if err := writeText(conn, restart); err != nil {
+		return err
+	}
+	c.drainAudio()
+	return nil
 }
 
 // Profile is one tunable SDR profile a server advertises over the socket.
@@ -597,13 +669,15 @@ func (c *Client) ProfileList() []Profile {
 	return out
 }
 
-// Record collects audio for duration and returns the chunks received.
+// Record collects audio for duration and returns the chunks received. A
+// reader failure is returned instead of being reported as clean silence.
 func (c *Client) Record(ctx context.Context, duration time.Duration) ([]AudioChunk, error) {
 	var chunks []AudioChunk
-	deadline := time.After(duration)
+	deadline := time.NewTimer(duration)
+	defer deadline.Stop()
 	for {
 		select {
-		case <-deadline:
+		case <-deadline.C:
 			return chunks, nil
 		case <-ctx.Done():
 			return chunks, ctx.Err()
@@ -611,6 +685,24 @@ func (c *Client) Record(ctx context.Context, duration time.Duration) ([]AudioChu
 			if event.Type == "audio" {
 				chunks = append(chunks, event.Value.(AudioChunk))
 			}
+			if event.Type == "error" {
+				if err, ok := event.Value.(error); ok {
+					return chunks, err
+				}
+			}
+		}
+	}
+}
+
+// DrainAudio discards buffered audio chunks. Call it after Tune: audio
+// captured at the old frequency would otherwise pollute the start of the
+// next recording.
+func (c *Client) DrainAudio() {
+	for {
+		select {
+		case <-c.audioEvents:
+		default:
+			return
 		}
 	}
 }

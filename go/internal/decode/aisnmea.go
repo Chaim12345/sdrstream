@@ -15,9 +15,11 @@ package decode
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // AISMessage is one decoded AIS message. Which fields are populated depends
@@ -61,6 +63,19 @@ type AISMessage struct {
 type bitReader struct {
 	data  []byte // six usable bits per byte, value 0..63
 	nbits int
+}
+
+// newBitReader clamps the declared bit count to what the de-armoured
+// payload actually holds, so a bad fill-bit count can never push reads
+// past the data slice or below zero.
+func newBitReader(arm []byte, nbits int) *bitReader {
+	if nbits < 0 {
+		nbits = 0
+	}
+	if nbits > len(arm)*6 {
+		nbits = len(arm) * 6
+	}
+	return &bitReader{data: arm, nbits: nbits}
 }
 
 // unarmour converts the AIS payload characters to their six-bit values.
@@ -151,15 +166,38 @@ func nmeaFields(sentence string) ([]string, error) {
 	return strings.Split(s[:st], ","), nil
 }
 
+// maxAISPendingSeqs caps how many incomplete multi-fragment sequences the
+// assembler remembers. Without a cap, fragments whose companions never
+// arrive (or a hostile sender cycling sequence ids) grow the maps without
+// bound. The oldest pending sequence is evicted first.
+const maxAISPendingSeqs = 64
+
 // AISAssembler reassembles multi-sentence AIS messages. It is safe for
 // concurrent use.
+//
+// A radio hears fragments from ships it cannot decode to the end (bad CRC,
+// a sentence lost mid-burst, or a transmitter that changes its own seq id
+// mid-message), and every incomplete message would otherwise park its
+// fragments in the maps forever. Assemblies carry a first-seen timestamp
+// and are evicted once stale; the map is also capped so a noisy channel
+// full of fragments cannot grow it without bound.
 type AISAssembler struct {
 	mu     sync.Mutex
 	parts  map[string]map[int]string // key: channel+seq id -> fragment number -> payload
 	fill   map[string]int
 	total  map[string]int
 	rawLog map[string][]string
+	order  []string // pending keys, oldest first, for eviction
+	seen   map[string]time.Time
 }
+
+const (
+	// aisMaxInFlight caps concurrent partial assemblies.
+	aisMaxInFlight = 64
+	// aisStaleAfter is how long fragments survive before the assembly is
+	// abandoned; a full multi-sentence burst completes in seconds.
+	aisStaleAfter = 5 * time.Minute
+)
 
 func NewAISAssembler() *AISAssembler {
 	return &AISAssembler{
@@ -167,6 +205,56 @@ func NewAISAssembler() *AISAssembler {
 		fill:   make(map[string]int),
 		total:  make(map[string]int),
 		rawLog: make(map[string][]string),
+		seen:   make(map[string]time.Time),
+	}
+}
+
+// dropLocked removes one assembly entirely. Caller holds a.mu.
+func (a *AISAssembler) dropLocked(key string) {
+	delete(a.parts, key)
+	delete(a.fill, key)
+	delete(a.total, key)
+	delete(a.rawLog, key)
+	delete(a.seen, key)
+	for i, k := range a.order {
+		if k == key {
+			a.order = append(a.order[:i], a.order[i+1:]...)
+			break
+		}
+	}
+}
+
+// evictStaleLocked drops assemblies whose newest fragment is older than
+// aisStaleAfter. Caller holds a.mu.
+func (a *AISAssembler) evictStaleLocked(now time.Time) {
+	cutoff := now.Add(-aisStaleAfter)
+	for key, at := range a.seen {
+		if at.Before(cutoff) {
+			a.dropLocked(key)
+		}
+	}
+}
+
+// capLocked enforces the in-flight bound: stale assemblies go first, then
+// the oldest first-seen assembly, so a broken transmitter cannot starve
+// legitimate multi-sentence traffic. Caller holds a.mu.
+func (a *AISAssembler) capLocked(now time.Time) {
+	if len(a.parts) < aisMaxInFlight {
+		return
+	}
+	a.evictStaleLocked(now)
+	for len(a.parts) >= aisMaxInFlight {
+		oldestKey := ""
+		var oldestAt time.Time
+		for key, at := range a.seen {
+			if oldestKey == "" || at.Before(oldestAt) {
+				oldestKey, oldestAt = key, at
+			}
+		}
+		if oldestKey == "" {
+			return
+		}
+		a.dropLocked(oldestKey)
 	}
 }
 
@@ -185,26 +273,39 @@ func (a *AISAssembler) Feed(sentence string) (*bitReader, string, error) {
 	}
 	nfrag, err1 := strconv.Atoi(fields[1])
 	fnum, err2 := strconv.Atoi(fields[2])
-	if err1 != nil || err2 != nil || nfrag < 1 || fnum < 1 || fnum > nfrag {
+	// AIS never spans more than 9 sentences; reject bigger counts before
+	// they size the pending-fragment allocations below.
+	if err1 != nil || err2 != nil || nfrag < 1 || nfrag > 9 || fnum < 1 || fnum > nfrag {
 		return nil, "", fmt.Errorf("bad fragment numbers %q/%q", fields[1], fields[2])
 	}
 	seqID, channel := fields[3], fields[4]
 	payload := fields[5]
-	fill, _ := strconv.Atoi(fields[6])
+	// Fill bits pad the final six-bit character: only 0..5 is meaningful,
+	// anything else would mis-count (or negate) the message length.
+	fill, err := strconv.Atoi(fields[6])
+	if err != nil || fill < 0 || fill > 5 {
+		return nil, "", fmt.Errorf("bad fill bits %q", fields[6])
+	}
 	if nfrag == 1 {
 		arm, err := unarmour(payload)
 		if err != nil {
 			return nil, "", err
 		}
-		return &bitReader{data: arm, nbits: len(arm)*6 - fill}, sentence, nil
+		return newBitReader(arm, len(arm)*6-fill), sentence, nil
 	}
 
 	key := channel + "|" + seqID
 	a.mu.Lock()
+	now := time.Now()
+	if a.parts[key] == nil {
+		a.capLocked(now)
+	}
+	a.seen[key] = now
 	if a.parts[key] == nil {
 		a.parts[key] = make(map[int]string)
 		a.total[key] = nfrag
 		a.rawLog[key] = make([]string, 0, nfrag)
+		a.order = append(a.order, key)
 	}
 	if a.total[key] != nfrag || len(a.parts[key]) >= nfrag {
 		// A reused sequence id or a stutter: start over for this key.
@@ -232,16 +333,13 @@ func (a *AISAssembler) Feed(sentence string) (*bitReader, string, error) {
 	}
 	raw := strings.Join(a.rawLog[key], "\n")
 	totbits := len(sb.String())*6 - a.fill[key]
-	delete(a.parts, key)
-	delete(a.fill, key)
-	delete(a.total, key)
-	delete(a.rawLog, key)
+	a.dropLocked(key)
 	a.mu.Unlock()
 	arm, err := unarmour(sb.String())
 	if err != nil {
 		return nil, "", err
 	}
-	return &bitReader{data: arm, nbits: totbits}, raw, nil
+	return newBitReader(arm, totbits), raw, nil
 }
 
 // DecodeAIS decodes one complete AIS message (after reassembly).
@@ -304,11 +402,21 @@ func (m *AISMessage) decodeLatLon(b *bitReader, start int) {
 	lon := b.s(start, 28)
 	lat := b.s(start+28, 27)
 	if lon != 0x6791AC0 && lat != 0x3412140 { // 181/91 degrees = unavailable
-		m.Lon = float64(lon) / 600000
-		m.Lat = float64(lat) / 600000
-		m.HasPos = true
+		nlon := float64(lon) / 600000
+		nlat := float64(lat) / 600000
+		// A corrupted payload can still produce an in-range-looking but
+		// out-of-range position; clamp instead of plotting a ship in
+		// the middle of nowhere (or worse, at NaN after angle math).
+		if lonInRange(nlon) && latInRange(nlat) {
+			m.Lon = nlon
+			m.Lat = nlat
+			m.HasPos = true
+		}
 	}
 }
+
+func lonInRange(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= -180 && v <= 180 }
+func latInRange(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= -90 && v <= 90 }
 
 // decodeStatic handles message type 5 (ship static and voyage data).
 func (m *AISMessage) decodeStatic(b *bitReader) {

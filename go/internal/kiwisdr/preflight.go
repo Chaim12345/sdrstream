@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/chaim12345/sdrstream/go/internal/common"
 )
 
 // Preflight verdicts.
@@ -66,6 +68,10 @@ type Preflighter struct {
 	Password string
 	ProbeWS  bool
 	Timeout  time.Duration
+	// AllowPrivate permits preflighting loopback/private hosts (local
+	// receivers, tests). Leave it false for directory-sourced stations:
+	// those are untrusted input and must not reach internal addresses.
+	AllowPrivate bool
 
 	mu         sync.Mutex
 	cache      map[string]Status
@@ -80,7 +86,7 @@ type Preflighter struct {
 // NewPreflighter builds one with sane defaults.
 func NewPreflighter() *Preflighter {
 	return &Preflighter{
-		HTTP:       &http.Client{Timeout: 8 * time.Second},
+		HTTP:       common.PublicHTTPClient(8 * time.Second),
 		Now:        time.Now,
 		Timeout:    8 * time.Second,
 		cache:      map[string]Status{},
@@ -223,7 +229,16 @@ func (p *Preflighter) Check(ctx context.Context, host string) Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	switch st.Verdict {
-	case VerdictOK, VerdictBusy:
+	case VerdictOK:
+		// A successful probe proves the host reachable: clear the failure
+		// state and the daily attempt budget, so one good session reopens
+		// a host that burned through earlier attempts.
+		p.fails[host] = 0
+		delete(p.until, host)
+		delete(p.attempts, host)
+		p.allTO = 0
+		p.okSeen = true
+	case VerdictBusy:
 		// A reachable node is not a failure; busy just means try later.
 		p.fails[host] = 0
 		delete(p.until, host)
@@ -340,10 +355,14 @@ func (p *Preflighter) probe(ctx context.Context, host string) Status {
 
 func (p *Preflighter) defaultDial(ctx context.Context, uri string) error {
 	d := websocket.Dialer{HandshakeTimeout: p.Timeout}
+	if !p.AllowPrivate {
+		d.NetDialContext = common.PublicDialContext(p.Timeout)
+	}
 	ws, _, err := d.DialContext(ctx, uri, nil)
 	if err != nil {
 		return err
 	}
+	ws.SetReadLimit(maxFrameBytes)
 	pw := p.Password
 	if pw != "" {
 		pw = MD5Auth(pw)

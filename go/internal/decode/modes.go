@@ -144,11 +144,15 @@ func DecodeModeS(frame string) (*ModeSMessage, error) {
 		m.CPRLon = float64(getbits(me, 39, 17)) / 131072.0
 		m.HasCPR = true
 	case tc >= 5 && tc <= 8:
-		// Surface position.
-		mv := int(getbits(me, 8, 7))
+		// Surface position. The ME layout is: movement at bits 5..11,
+		// ground-track status at bit 12, ground track at bits 13..19,
+		// then the time flag (20) and CPR format (21) before the CPR
+		// latitude/longitude. (The airborne altitude offsets do not
+		// apply here.)
+		mv := int(getbits(me, 5, 7))
 		m.GroundSpeedKt = surfaceSpeed(mv)
-		if getbits(me, 20, 1) == 1 {
-			m.SurfaceTrack = float64(getbits(me, 21, 7)) * 360.0 / 128.0
+		if getbits(me, 12, 1) == 1 {
+			m.SurfaceTrack = float64(getbits(me, 13, 7)) * 360.0 / 128.0
 		}
 		m.CPROdd = getbits(me, 21, 1) == 1
 		m.CPRLat = float64(getbits(me, 22, 17)) / 131072.0
@@ -159,47 +163,67 @@ func DecodeModeS(frame string) (*ModeSMessage, error) {
 		sub := int(me[0] & 7)
 		if sub == 1 || sub == 2 {
 			// Ground speed subtypes: east-west and north-south velocities.
-			ewSign := getbits(me, 13, 1)
-			ew := int64(getbits(me, 14, 10)) - 1
-			nsSign := getbits(me, 24, 1)
-			ns := int64(getbits(me, 25, 10)) - 1
-			if ewSign == 1 {
-				ew = -ew
+			// A velocity field of 0 means the information is not
+			// available; otherwise the value is offset by 1. Subtype 2 is
+			// the supersonic scale, 4 kt per count.
+			ewRaw := int64(getbits(me, 14, 10))
+			nsRaw := int64(getbits(me, 25, 10))
+			if ewRaw != 0 && nsRaw != 0 {
+				scale := float64(1)
+				if sub == 2 {
+					scale = 4
+				}
+				ew := float64(ewRaw - 1)
+				ns := float64(nsRaw - 1)
+				if getbits(me, 13, 1) == 1 {
+					ew = -ew
+				}
+				if getbits(me, 24, 1) == 1 {
+					ns = -ns
+				}
+				m.SpeedKt = math.Hypot(ew, ns) * scale
+				hdg := math.Atan2(ew, ns) * 180 / math.Pi
+				if hdg < 0 {
+					hdg += 360
+				}
+				m.TrackDeg = hdg
+				m.VertRate = tc19VertRate(me)
+				m.HasVel = true
 			}
-			if nsSign == 1 {
-				ns = -ns
-			}
-			v := math.Hypot(float64(ew), float64(ns))
-			m.SpeedKt = v
-			hdg := math.Atan2(float64(ew), float64(ns)) * 180 / math.Pi
-			if hdg < 0 {
-				hdg += 360
-			}
-			m.TrackDeg = hdg
-			vrSign := getbits(me, 36, 1)
-			vr := int64(getbits(me, 37, 9)) - 1
-			if vrSign == 1 {
-				vr = -vr
-			}
-			m.VertRate = int(vr) * 64
-			m.HasVel = true
 		} else if sub == 3 || sub == 4 {
-			hdgStatus := getbits(me, 13, 1)
-			if hdgStatus == 1 {
-				m.TrackDeg = float64(getbits(me, 14, 10)) * 360.0 / 1024.0
+			// Airspeed subtypes: heading plus a single airspeed field,
+			// again 0 = not available and offset by 1.
+			asRaw := int64(getbits(me, 25, 10))
+			if asRaw != 0 {
+				if getbits(me, 13, 1) == 1 {
+					m.TrackDeg = float64(getbits(me, 14, 10)) * 360.0 / 1024.0
+				}
+				scale := float64(1)
+				if sub == 4 {
+					scale = 4
+				}
+				m.SpeedKt = float64(asRaw-1) * scale
+				m.VertRate = tc19VertRate(me)
+				m.HasVel = true
 			}
-			m.SpeedKt = float64(getbits(me, 25, 10))
-			vrSign := getbits(me, 36, 1)
-			vr := int64(getbits(me, 37, 9)) - 1
-			if vrSign == 1 {
-				vr = -vr
-			}
-			m.VertRate = int(vr) * 64
-			m.HasVel = true
 		}
 	}
 	m.Summary = m.Describe()
 	return m, nil
+}
+
+// tc19VertRate decodes the TC19 vertical-rate field (ME bits 36..45).
+// A zero field means no vertical-rate information, reported as 0.
+func tc19VertRate(me []byte) int {
+	raw := int64(getbits(me, 37, 9))
+	if raw == 0 {
+		return 0
+	}
+	vr := raw - 1
+	if getbits(me, 36, 1) == 1 {
+		vr = -vr
+	}
+	return int(vr) * 64
 }
 
 // surfaceSpeed maps the surface movement code to knots.

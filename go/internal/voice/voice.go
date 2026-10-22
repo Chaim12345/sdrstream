@@ -13,9 +13,11 @@
 package voice
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/chaim12345/sdrstream/go/internal/common"
 	"math"
 	"os"
 	"os/exec"
@@ -337,18 +339,16 @@ func Resample(samples []float64, from, to int) []float64 {
 	return out
 }
 
-// WriteWAV writes 16-bit mono PCM to a file.
+// WriteWAV writes 16-bit mono PCM to a file. The write goes to a sibling
+// temp file first and is renamed into place, so a scanner or web server
+// reading the directory never sees a half-written WAV.
 func WriteWAV(path string, samples []float64, rate int) error {
 	data := make([]byte, 2*len(samples))
 	for i, s := range samples {
 		value := int16(math.Round(s * 32767))
 		binary.LittleEndian.PutUint16(data[2*i:], uint16(value))
 	}
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
+	var buf bytes.Buffer
 	header := make([]byte, 44)
 	copy(header[0:], "RIFF")
 	binary.LittleEndian.PutUint32(header[4:], uint32(36+len(data)))
@@ -362,11 +362,9 @@ func WriteWAV(path string, samples []float64, rate int) error {
 	binary.LittleEndian.PutUint16(header[34:], 16) // bits
 	copy(header[36:], "data")
 	binary.LittleEndian.PutUint32(header[40:], uint32(len(data)))
-	if _, err := file.Write(header); err != nil {
-		return err
-	}
-	_, err = file.Write(data)
-	return err
+	buf.Write(header)
+	buf.Write(data)
+	return common.WriteFileAtomic(path, buf.Bytes(), 0o644)
 }
 
 // Envelope returns how strongly a recording is modulated: the coefficient
