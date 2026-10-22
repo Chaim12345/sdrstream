@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -1402,6 +1403,7 @@ func cmdWeb(args []string) error {
 	galleryDir := fs.String("gallery-dir", "", "directory for SatNOGS gallery artefacts (default: cache/gallery)")
 	scanStations := fs.String("scan-stations", "", "comma-separated public receivers for bounded parallel scan (one connection per receiver)")
 	scanOpenDirectory := fs.Bool("scan-open-directory", false, "scan OpenWebRX and WebSDR entries from receiverbook")
+	scanKiwiDirectory := fs.Bool("scan-kiwi-directory", false, "scan free-slot KiwiSDR entries from cached public directory")
 	scanWSPR := fs.Bool("scan-wspr", false, "run a separate 250s WSPR capture on the configured HF receiver")
 	scanHFServer := fs.String("scan-hf-server", "", "HF receiver URL for FT8/WSPR session; use WebSDR/OpenWebRX host")
 	kiwiPreflightOnly := fs.Bool("kiwi-preflight", false, "preflight Kiwi receivers and print first-pass verdict counts, then exit")
@@ -1497,6 +1499,23 @@ func cmdWeb(args []string) error {
 		if *scanHFServer == "" {
 			*scanHFServer = "http://websdr.ewi.utwente.nl:8901/"
 		}
+	}
+	if *scanKiwiDirectory {
+		cacheDir := filepath.Join(os.Getenv("HOME"), ".cache", "sdrstream")
+		if stateDir := os.Getenv("SDRSTREAM_STATE_DIR"); stateDir != "" {
+			cacheDir = filepath.Join(stateDir, "cache")
+		}
+		loader := kiwisdr.NewLoader(cacheDir)
+		receivers, _, err := loader.Load(ctx)
+		if err != nil {
+			return fmt.Errorf("load KiwiSDR directory: %w", err)
+		}
+		items := []string{}
+		if strings.TrimSpace(*scanStations) != "" {
+			items = strings.Split(*scanStations, ",")
+		}
+		items = appendUsableKiwiStations(items, receivers)
+		*scanStations = strings.Join(items, ",")
 	}
 	if strings.TrimSpace(*scanStations) != "" {
 		config, err := newScanConfig(*scanStart, *scanMax, *scanRamp, *scanGoodRate, *scanRefusalBackoff, *scanLoadAdvance, *scanLoadBackoff, *scanBandwidth, *scanStreamKbps, *scanTargetLimit, *scanStationSession)
@@ -2006,6 +2025,43 @@ func blockStation(server *web.Server, host, reason string, duration time.Duratio
 	server.UpsertScanStatus(web.ScanStatus{Station: host, State: "blocked", Result: reason, BlockedUntil: &t, UpdatedAt: time.Now()})
 }
 
+func stationHostPortKey(_ string, raw string) string {
+	if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
+		port := u.Port()
+		if port == "" {
+			if u.Scheme == "https" || u.Scheme == "wss" {
+				port = "443"
+			} else {
+				port = "80"
+			}
+		}
+		return strings.ToLower(net.JoinHostPort(u.Hostname(), port))
+	}
+	return strings.ToLower(strings.TrimRight(strings.TrimSpace(raw), "/"))
+}
+
+func appendUsableKiwiStations(existing []string, candidates []kiwisdr.Receiver) []string {
+	seen := make(map[string]bool, len(existing)+len(candidates))
+	for _, item := range existing {
+		parts := strings.SplitN(strings.TrimSpace(item), "|", 2)
+		if len(parts) == 2 {
+			seen[stationHostPortKey(parts[0], parts[1])] = true
+		}
+	}
+	for _, receiver := range candidates {
+		if !receiver.Usable() {
+			continue
+		}
+		key := stationHostPortKey("KiwiSDR", receiver.ServerURL())
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		existing = append(existing, "KiwiSDR|"+receiver.ServerURL())
+	}
+	return existing
+}
+
 func runParallelScan(ctx context.Context, server *web.Server, receivers []string, multimonPath, direwolfPath string, cfg scanConfig, guard *loadGuard) {
 	for ctx.Err() == nil {
 		runParallelScanOnce(ctx, server, receivers, multimonPath, direwolfPath, cfg, guard)
@@ -2035,7 +2091,7 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, receivers []st
 			continue
 		}
 		kind, host := strings.TrimSpace(parts[0]), strings.TrimSpace(strings.TrimRight(parts[1], "/"))
-		key := strings.ToLower(host)
+		key := stationHostPortKey(kind, host)
 		if host == "" || seen[key] {
 			continue
 		}

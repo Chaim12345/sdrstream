@@ -2,12 +2,9 @@
 // protocol: a /SND stream that speaks short "SET name=value" commands in text
 // frames and binary frames tagged with a three byte marker.
 //
-// The handshake is easy to get wrong, so it is spelled out here the way the
-// server performs it (jks-prv/KiwiSDR net/net.cpp): authenticate with
-// "SET auth t=kiwi p=", agree the audio rate with "SET AR OK in=12000
-// out=44100", tune with "SET mod=usb low_cut=high_cut=freq=", and only then
-// do SND frames start to flow. Without the AR OK line the server answers the
-// config messages and then goes forever silent.
+// The client negotiates a receiver session using observed WebSocket text
+// commands and binary audio frames. No external client implementation is
+// incorporated.
 package kiwisdr
 
 import (
@@ -24,7 +21,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// SND frame flags (client.py SND_FLAG_*).
+// SND frame flag values interpreted from observed KiwiSDR stream headers.
 const (
 	flagADCOverrun  = 0x02
 	flagStereo      = 0x08

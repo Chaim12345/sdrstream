@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/chaim12345/sdrstream/go/internal/kiwisdr"
 )
 
 func TestStationBlocklistPersistsAcrossReload(t *testing.T) {
@@ -158,5 +160,22 @@ func TestShutdownFailuresDoNotBlockAndBlocklistCleanupPreservesReceiverFailures(
 		if _, ok := cleaned[host]; !ok {
 			t.Errorf("genuine receiver failure %q was removed", host)
 		}
+	}
+}
+
+func TestAppendUsableKiwiStationsDedupesByHostPortAndSlots(t *testing.T) {
+	existing := []string{"OpenWebRX|http://radio.example:8073/", "KiwiSDR|http://dup.example:8073"}
+	candidates := []kiwisdr.Receiver{
+		{Host: "radio.example", Port: 8073, URL: "http://radio.example:8073", Users: 0, UsersMax: 3}, // same endpoint, don't add another client
+		{Host: "dup.example", Port: 8073, URL: "http://dup.example:8073/", Users: 0, UsersMax: 4},
+		{Host: "full.example", Port: 8073, URL: "http://full.example:8073", Users: 4, UsersMax: 4},
+		{Host: "free.example", Port: 8073, URL: "http://free.example:8073", Users: 1, UsersMax: 4},
+	}
+	got := appendUsableKiwiStations(existing, candidates)
+	if len(got) != 3 {
+		t.Fatalf("stations=%v; want 3 after host:port dedupe and slot filtering", got)
+	}
+	if got[2] != "KiwiSDR|http://free.example:8073" {
+		t.Fatalf("added station %q", got[2])
 	}
 }
