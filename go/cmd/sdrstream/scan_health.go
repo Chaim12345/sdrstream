@@ -26,6 +26,10 @@ const (
 	// beaconProbeInterval is the most often the prober measures one idle
 	// candidate; one 5s connection per interval is the polite ceiling.
 	beaconProbeInterval = 10 * time.Minute
+	// beaconProbeFirstDelay is when the first probe runs after startup. A
+	// plain ticker would wait a whole beaconProbeInterval first, so a run
+	// shorter than the interval never recorded a beacon measurement.
+	beaconProbeFirstDelay = time.Minute
 	// beaconSNRStale is how long a beacon SNR reading stays fresh.
 	beaconSNRStale = 6 * time.Hour
 	// healthSaveInterval is how often the table is persisted while running.
@@ -44,6 +48,9 @@ type healthPool struct {
 	mu     sync.Mutex
 	picks  map[string]bool
 	repick time.Time
+	// visits marks hosts with a scan visit in flight (set at visit
+	// preflight, cleared at visit outcome); the beacon prober skips them.
+	visits map[string]bool
 }
 
 var scanHealth *healthPool
@@ -72,7 +79,7 @@ func newHealthPool(size int, path string, logf func(string, ...any)) (*healthPoo
 	if n := len(table.Snapshot()); n > 0 {
 		logf("scan health: loaded %d receiver record(s) from %s", n, path)
 	}
-	return &healthPool{table: table, path: path, size: size, logf: logf, picks: map[string]bool{}}, nil
+	return &healthPool{table: table, path: path, size: size, logf: logf, picks: map[string]bool{}, visits: map[string]bool{}}, nil
 }
 
 // pickStations restricts the deduped roster to the pool's current picks and
@@ -86,7 +93,7 @@ func (p *healthPool) pickStations(unique []string) []string {
 		if len(parts) != 2 {
 			continue
 		}
-		key := stationHostPortKey(parts[0], parts[1])
+		key := stationHostPortKey(parts[1])
 		hosts = append(hosts, key)
 		byHost[key] = entry
 	}
@@ -122,21 +129,31 @@ func (p *healthPool) activePicks() map[string]bool {
 	return maps.Clone(p.picks)
 }
 
-// observeProbe folds a preflight result into the table.
+// observeProbe folds a preflight result into the table and marks the
+// host's scan visit as in flight, so the beacon prober leaves it alone.
 func (p *healthPool) observeProbe(host string, st kiwisdr.Status) {
-	p.table.ObserveProbe(stationHostPortKey("", host), st.Latency, st.Free())
+	key := stationHostPortKey(host)
+	p.table.ObserveProbe(key, st.Latency, st.Free())
+	p.mu.Lock()
+	p.visits[key] = true
+	p.mu.Unlock()
 }
 
 // observeOutcome folds one finished station visit into the table. Skips and
 // local-resource failures say nothing about the receiver: no observation.
+// The visit mark is always cleared: the connection is over either way.
 func (p *healthPool) observeOutcome(host string, o scanOutcome) {
+	key := stationHostPortKey(host)
+	p.mu.Lock()
+	delete(p.visits, key)
+	p.mu.Unlock()
 	switch {
 	case o.skipped, o.localResource:
 		return
 	case o.refused || o.timedOut:
-		p.table.ObserveCapture(stationHostPortKey("", host), false)
+		p.table.ObserveCapture(key, false)
 	default:
-		p.table.ObserveCapture(stationHostPortKey("", host), true)
+		p.table.ObserveCapture(key, true)
 	}
 }
 
@@ -169,12 +186,19 @@ func (p *healthPool) saveLoop(ctx context.Context) {
 // a receiver already in the pool is serving a scan connection, and public
 // receivers allow one connection per guest.
 func (p *healthPool) beaconProber(ctx context.Context, roster *scanRoster) {
+	// Probe once early, then keep the polite cadence: a plain ticker would
+	// fire only after a full beaconProbeInterval, and a run shorter than
+	// the interval recorded nothing at all (QA: 15 min, zero measurements).
+	first := time.NewTimer(beaconProbeFirstDelay)
+	defer first.Stop()
 	ticker := time.NewTicker(beaconProbeInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-first.C:
+			p.probeOneIdleBeacon(ctx, roster)
 		case <-ticker.C:
 			p.probeOneIdleBeacon(ctx, roster)
 		}
@@ -185,39 +209,73 @@ func (p *healthPool) probeOneIdleBeacon(ctx context.Context, roster *scanRoster)
 	if roster == nil {
 		return
 	}
-	picks := p.activePicks()
 	measured := map[string]time.Time{}
 	for _, rec := range p.table.Snapshot() {
 		measured[rec.Host] = rec.BeaconMeasuredAt
 	}
-	for _, entry := range roster.Snapshot() {
-		parts := strings.SplitN(entry, "|", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "KiwiSDR") {
-			continue
-		}
-		key := stationHostPortKey(parts[0], parts[1])
-		if picks[key] {
-			continue
-		}
-		if at, ok := measured[key]; ok && time.Since(at) < beaconSNRStale {
-			continue
-		}
+	for _, cand := range p.pickBeaconCandidates(roster.Snapshot(), measured, time.Now()) {
 		// Preflight first (cached 15 min, daily budget per host): a busy or
 		// dead receiver is not asked for a second connection.
-		st := kiwiPreflight.Check(ctx, parts[1])
-		p.table.ObserveProbe(key, st.Latency, st.Free())
+		st := kiwiPreflight.Check(ctx, cand.host)
+		p.table.ObserveProbe(cand.key, st.Latency, st.Free())
 		if !st.Free() {
 			continue
 		}
 		beacon := kiwisdr.DefaultBeacons[0]
-		snr, err := kiwisdr.MeasureBeaconSNR(ctx, parts[1], beacon, 0, kiwisdr.DefaultOptions())
+		snr, err := kiwisdr.MeasureBeaconSNR(ctx, cand.host, beacon, 0, kiwisdr.DefaultOptions())
 		if err != nil {
-			p.logf("scan health: %s beacon %s: %v", parts[1], beacon.Name, err)
+			p.logf("scan health: %s beacon %s: %v", cand.host, beacon.Name, err)
 			return
 		}
-		p.table.ObserveBeaconSNR(key, beacon.Name, snr)
-		p.logf("scan health: %s beacon %s SNR %.1f dB (500 Hz BW)", parts[1], beacon.Name, snr)
+		p.table.ObserveBeaconSNR(cand.key, beacon.Name, snr)
+		p.logf("scan health: %s beacon %s SNR %.1f dB (tone vs neighbouring floor)", cand.host, beacon.Name, snr)
 		p.save()
 		return
 	}
+}
+
+// beaconCandidate is one receiver due for a beacon SNR measurement.
+type beaconCandidate struct {
+	host string // roster host as dialled (may carry scheme/port)
+	key  string // health-table key (stationHostPortKey)
+}
+
+// pickBeaconCandidates orders KiwiSDR roster entries whose beacon reading
+// is missing or stale, best first: idle candidates (not in the pool) come
+// before pool members whose scan visit is not in flight. Pool members in a
+// visit are left alone: a second connection could disturb the capture, and
+// public receivers limit channels per guest. The picked-but-idle class is
+// what keeps a small roster measurable: when the pool covers every KiwiSDR
+// entry, skipping picks wholesale left beacon_measured_at zero forever.
+func (p *healthPool) pickBeaconCandidates(entries []string, measured map[string]time.Time, now time.Time) []beaconCandidate {
+	picks := p.activePicks()
+	p.mu.Lock()
+	inVisit := make(map[string]bool, len(p.visits))
+	for key := range p.visits {
+		inVisit[key] = true
+	}
+	p.mu.Unlock()
+	var idle, pickedIdle []beaconCandidate
+	for _, entry := range entries {
+		parts := strings.SplitN(entry, "|", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "KiwiSDR") {
+			continue
+		}
+		host := strings.TrimSpace(parts[1])
+		if host == "" {
+			continue
+		}
+		key := stationHostPortKey(host)
+		if at, ok := measured[key]; ok && now.Sub(at) < beaconSNRStale {
+			continue
+		}
+		cand := beaconCandidate{host: host, key: key}
+		switch {
+		case !picks[key]:
+			idle = append(idle, cand)
+		case !inVisit[key]:
+			pickedIdle = append(pickedIdle, cand)
+		}
+	}
+	return append(idle, pickedIdle...)
 }

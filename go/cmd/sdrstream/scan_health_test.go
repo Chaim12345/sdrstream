@@ -106,7 +106,7 @@ func TestObserveProbeNormalisesHost(t *testing.T) {
 	p := testPool(t, 3)
 	// The same receiver under URL and host:port forms must be one record.
 	p.observeProbe("http://a.example:8073/", kiwisdr.Status{Verdict: kiwisdr.VerdictOK, Latency: 300 * time.Millisecond})
-	p.table.ObserveCapture(stationHostPortKey("KiwiSDR", "http://a.example:8073/"), true)
+	p.table.ObserveCapture(stationHostPortKey("http://a.example:8073/"), true)
 	if n := len(p.table.Snapshot()); n != 1 {
 		t.Fatalf("expected one record, got %d", n)
 	}
@@ -142,5 +142,99 @@ func TestNewHealthPoolSizeValidation(t *testing.T) {
 	}
 	if _, err := newHealthPool(3, "", nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStationHostPortKeyNormalisesForms(t *testing.T) {
+	// One receiver, one key - no matter which roster form or call site
+	// named it. QA suspected observe* and the beacon loop keyed records
+	// differently ("", host) vs ("KiwiSDR", host); the kind argument was in
+	// fact ignored, and it is now gone from the signature so the key
+	// cannot diverge.
+	cases := map[string]string{
+		"http://Example.COM:8073/":   "example.com:8073",
+		"example.com:8073":           "example.com:8073",
+		"Example.COM:8073/":          "example.com:8073",
+		"http://example.com":         "example.com:80",
+		"https://example.com/":       "example.com:443",
+		"http://example.com:8073/x?": "example.com:8073",
+	}
+	for raw, want := range cases {
+		if got := stationHostPortKey(raw); got != want {
+			t.Errorf("stationHostPortKey(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestPickBeaconCandidatesPrefersIdleThenPickedIdle(t *testing.T) {
+	p := testPool(t, 3)
+	p.mu.Lock()
+	p.picks = map[string]bool{"b.example:8073": true}
+	p.mu.Unlock()
+	entries := []string{
+		"KiwiSDR|a.example:8073",
+		"KiwiSDR|b.example:8073",
+		"WebSDR|http://c.example:8901/", // wrong kind: never a beacon candidate
+	}
+	got := p.pickBeaconCandidates(entries, map[string]time.Time{}, time.Now())
+	if len(got) != 2 {
+		t.Fatalf("candidates = %v, want a (idle) and b (picked, no visit)", got)
+	}
+	if got[0].host != "a.example:8073" || got[1].host != "b.example:8073" {
+		t.Fatalf("order = %v, want idle candidate before picked-but-idle", got)
+	}
+	if got[0].key != "a.example:8073" || got[1].key != "b.example:8073" {
+		t.Fatalf("keys = %v, want normalised host:port", got)
+	}
+}
+
+func TestPickBeaconCandidatesCoversPickedOnlyRoster(t *testing.T) {
+	// Regression for QA's 15-minute silence: when the pool covers every
+	// KiwiSDR roster entry, skipping picks wholesale left
+	// beacon_measured_at zero forever. Picked members not in a visit must
+	// still be measured.
+	p := testPool(t, 3)
+	p.mu.Lock()
+	p.picks = map[string]bool{"a.example:8073": true, "b.example:8073": true}
+	p.mu.Unlock()
+	entries := []string{"KiwiSDR|a.example:8073", "KiwiSDR|b.example:8073"}
+	got := p.pickBeaconCandidates(entries, map[string]time.Time{}, time.Now())
+	if len(got) != 2 {
+		t.Fatalf("picked-only roster must still be measurable, got %v", got)
+	}
+	// A pool member in a visit is left alone.
+	p.mu.Lock()
+	p.visits["a.example:8073"] = true
+	p.mu.Unlock()
+	got = p.pickBeaconCandidates(entries, map[string]time.Time{}, time.Now())
+	if len(got) != 1 || got[0].host != "b.example:8073" {
+		t.Fatalf("in-visit member must be skipped, got %v", got)
+	}
+	// A fresh reading makes a host due-never for beaconSNRStale.
+	fresh := map[string]time.Time{"b.example:8073": time.Now()}
+	p.mu.Lock()
+	delete(p.visits, "a.example:8073")
+	p.mu.Unlock()
+	if got = p.pickBeaconCandidates(entries, fresh, time.Now()); len(got) != 1 || got[0].host != "a.example:8073" {
+		t.Fatalf("fresh reading must be skipped, got %v", got)
+	}
+}
+
+func TestObserveHooksTrackVisits(t *testing.T) {
+	p := testPool(t, 1)
+	p.observeProbe("http://a.example:8073/", kiwisdr.Status{})
+	p.mu.Lock()
+	marked := p.visits["a.example:8073"]
+	p.mu.Unlock()
+	if !marked {
+		t.Fatal("observeProbe must mark the visit in flight")
+	}
+	// Even a skipped visit (not a table observation) clears the mark.
+	p.observeOutcome("http://a.example:8073/", scanOutcome{skipped: true})
+	p.mu.Lock()
+	marked = p.visits["a.example:8073"]
+	p.mu.Unlock()
+	if marked {
+		t.Fatal("observeOutcome must clear the visit mark")
 	}
 }

@@ -71,7 +71,7 @@ func (r *scanRoster) Snapshot() []string {
 		if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
 			continue
 		}
-		key := stationHostPortKey(parts[0], parts[1])
+		key := stationHostPortKey(parts[1])
 		if seen[key] {
 			continue
 		}
@@ -137,14 +137,14 @@ func countRosterDelta(old, next []string) (added, removed int) {
 	for _, station := range old {
 		parts := strings.SplitN(station, "|", 2)
 		if len(parts) == 2 {
-			oldKeys[stationHostPortKey(parts[0], parts[1])] = true
+			oldKeys[stationHostPortKey(parts[1])] = true
 		}
 	}
 	newKeys := map[string]bool{}
 	for _, station := range next {
 		parts := strings.SplitN(station, "|", 2)
 		if len(parts) == 2 {
-			newKeys[stationHostPortKey(parts[0], parts[1])] = true
+			newKeys[stationHostPortKey(parts[1])] = true
 		}
 	}
 	for key := range newKeys {

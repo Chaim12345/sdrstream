@@ -2195,7 +2195,11 @@ func blockStation(server *web.Server, host, reason string, duration time.Duratio
 	server.UpsertScanStatus(web.ScanStatus{Station: host, State: "blocked", Result: reason, BlockedUntil: &t, UpdatedAt: time.Now()})
 }
 
-func stationHostPortKey(_ string, raw string) string {
+// stationHostPortKey normalises a roster host to lowercase host:port for
+// dedup and health-table keys. The receiver kind is deliberately not part
+// of the key: one receiver gets one health record no matter which roster
+// entry form (or call site) named it.
+func stationHostPortKey(raw string) string {
 	if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
 		port := u.Port()
 		if port == "" {
@@ -2215,14 +2219,14 @@ func appendUsableKiwiStations(existing []string, candidates []kiwisdr.Receiver) 
 	for _, item := range existing {
 		parts := strings.SplitN(strings.TrimSpace(item), "|", 2)
 		if len(parts) == 2 {
-			seen[stationHostPortKey(parts[0], parts[1])] = true
+			seen[stationHostPortKey(parts[1])] = true
 		}
 	}
 	for _, receiver := range candidates {
 		if !receiver.Usable() {
 			continue
 		}
-		key := stationHostPortKey("KiwiSDR", receiver.ServerURL())
+		key := stationHostPortKey(receiver.ServerURL())
 		if seen[key] {
 			continue
 		}
@@ -2265,7 +2269,7 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 			continue
 		}
 		kind, host := strings.TrimSpace(parts[0]), strings.TrimSpace(strings.TrimRight(parts[1], "/"))
-		key := stationHostPortKey(kind, host)
+		key := stationHostPortKey(host)
 		if host == "" || seen[key] {
 			continue
 		}
