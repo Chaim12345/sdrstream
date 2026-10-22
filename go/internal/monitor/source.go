@@ -31,10 +31,10 @@ type openWebRXSource struct {
 // its spectrum frames. The optional profile selects a wide profile so that
 // more of the band is visible.
 func OpenWebRXSource(ctx context.Context, server, profile string) (Source, error) {
-	return openWebRXSource(ctx, server, profile, false)
+	return dialOpenWebRX(ctx, server, profile, false)
 }
 
-func openWebRXSource(ctx context.Context, server, profile string, allowPrivate bool) (Source, error) {
+func dialOpenWebRX(ctx context.Context, server, profile string, allowPrivate bool) (Source, error) {
 	options := openwebrx.DefaultOptions()
 	options.AllowPrivate = allowPrivate
 	client, err := openwebrx.New(server, options)
@@ -172,10 +172,10 @@ type webSDRSource struct {
 
 // WebSDRSource connects to a WebSDR server.
 func WebSDRSource(ctx context.Context, server string) (Source, error) {
-	return webSDRSource(ctx, server, false)
+	return dialWebSDR(ctx, server, false)
 }
 
-func webSDRSource(ctx context.Context, server string, allowPrivate bool) (Source, error) {
+func dialWebSDR(ctx context.Context, server string, allowPrivate bool) (Source, error) {
 	client, err := websdr.New(server, websdr.Options{Reconnect: true, AllowPrivate: allowPrivate})
 	if err != nil {
 		return nil, err
@@ -223,10 +223,10 @@ type kiwiSource struct {
 
 // KiwiSource connects to a KiwiSDR server.
 func KiwiSource(ctx context.Context, server string) (Source, error) {
-	return kiwiSource(ctx, server, false)
+	return dialKiwi(ctx, server, false)
 }
 
-func kiwiSource(ctx context.Context, server string, allowPrivate bool) (Source, error) {
+func dialKiwi(ctx context.Context, server string, allowPrivate bool) (Source, error) {
 	options := kiwisdr.DefaultOptions()
 	options.AllowPrivate = allowPrivate
 	client, err := kiwisdr.New(server, options)
@@ -281,13 +281,13 @@ func SourceForLocal(ctx context.Context, kind, server, profile string) (Source, 
 func sourceFor(ctx context.Context, kind, server, profile string, allowPrivate bool) (Source, error) {
 	switch kind {
 	case "openwebrx", "":
-		return openWebRXSource(ctx, server, profile, allowPrivate)
+		return dialOpenWebRX(ctx, server, profile, allowPrivate)
 	case "websdr":
-		return webSDRSource(ctx, server, allowPrivate)
+		return dialWebSDR(ctx, server, allowPrivate)
 	case "icecast", "shoutcast", "nwr":
 		return icecast.NewSource(server), nil
 	case "kiwi", "kiwisdr":
-		return kiwiSource(ctx, server, allowPrivate)
+		return dialKiwi(ctx, server, allowPrivate)
 	}
 	return nil, fmt.Errorf("monitor: unknown receiver kind %q", kind)
 }

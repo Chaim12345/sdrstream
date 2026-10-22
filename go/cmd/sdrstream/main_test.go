@@ -121,6 +121,9 @@ func TestPreflightDirectoryStationIdentity(t *testing.T) {
 		{"WebSDR", `<script src="websdr.js"></script>`, true},
 		{"WebSDR", `<html>plain site</html>`, false},
 	}
+	old := directoryPreflightHTTPClient
+	directoryPreflightHTTPClient = func() *http.Client { return &http.Client{Timeout: 8 * time.Second} }
+	defer func() { directoryPreflightHTTPClient = old }()
 	for _, tt := range tests {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, tt.body) }))
 		err := preflightDirectoryStation(context.Background(), tt.kind, server.URL)
@@ -177,5 +180,48 @@ func TestAppendUsableKiwiStationsDedupesByHostPortAndSlots(t *testing.T) {
 	}
 	if got[2] != "KiwiSDR|http://free.example:8073" {
 		t.Fatalf("added station %q", got[2])
+	}
+}
+
+func TestPreflightOutcomeMapsLocalVerdictsToSkips(t *testing.T) {
+	for _, verdict := range []string{kiwisdr.VerdictBackoff, kiwisdr.VerdictBudget} {
+		if got := preflightOutcome(verdict); got != (scanOutcome{skipped: true}) {
+			t.Errorf("%s: got %+v, want skipped", verdict, got)
+		}
+	}
+	if got := preflightOutcome(kiwisdr.VerdictTimeout); got != (scanOutcome{timedOut: true}) {
+		t.Errorf("timeout: got %+v", got)
+	}
+	for _, verdict := range []string{kiwisdr.VerdictBusy, kiwisdr.VerdictDead} {
+		if got := preflightOutcome(verdict); got != (scanOutcome{refused: true}) {
+			t.Errorf("%s: got %+v, want refused", verdict, got)
+		}
+	}
+}
+
+func TestNormalizeStationOutcomeTreatsOwnDeadlineAsSkip(t *testing.T) {
+	parent := context.Background()
+	stationCtx, cancel := context.WithTimeout(parent, time.Millisecond)
+	<-stationCtx.Done()
+	defer cancel()
+	got := normalizeStationOutcome(stationCtx, parent, scanOutcome{timedOut: true})
+	if got != (scanOutcome{skipped: true}) {
+		t.Fatalf("own session deadline must become a skip, got %+v", got)
+	}
+	// Parent cancellation is a shutdown, not a skip-worthy station result.
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	stationCtx2, cancel2 := context.WithTimeout(parentCtx, time.Minute)
+	parentCancel()
+	defer cancel2()
+	got = normalizeStationOutcome(stationCtx2, parentCtx, scanOutcome{timedOut: true})
+	if got != (scanOutcome{timedOut: true}) {
+		t.Fatalf("parent shutdown must keep the original outcome, got %+v", got)
+	}
+	// A still-running station context changes nothing.
+	stationCtx3, cancel3 := context.WithCancel(parent)
+	defer cancel3()
+	got = normalizeStationOutcome(stationCtx3, parent, scanOutcome{refused: true})
+	if got != (scanOutcome{refused: true}) {
+		t.Fatalf("live station ctx: got %+v", got)
 	}
 }
