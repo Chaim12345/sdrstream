@@ -2,6 +2,8 @@ package decode
 
 import (
 	"fmt"
+	"math/bits"
+	"sort"
 	"strings"
 )
 
@@ -21,12 +23,14 @@ const (
 
 // FlexMessage is one decoded FLEX page.
 type FlexMessage struct {
-	Capcode  int64
-	Cycle    int
-	Frame    int
-	Type     int  // vector type, 5 = alphanumeric
-	Fragment byte // 'K' complete, 'F' first/continued, 'C' final fragment
-	Text     string
+	Capcode     int64
+	Cycle       int
+	Frame       int
+	Type        int  // vector type, 5 = alphanumeric
+	Fragment    byte // 'K' complete, 'F' first/continued, 'C' final fragment
+	Text        string
+	corrections int
+	fragmentID  uint32
 }
 
 func (m FlexMessage) String() string {
@@ -84,7 +88,8 @@ func flexCorrect(w uint32) (uint32, bool) {
 	return flexRev31(std) & 0x1FFFFF, true
 }
 
-// FlexDecode demodulates a recording and returns FLEX pages.
+// FlexDecode demodulates a recording and returns raw FLEX pages/fragments.
+// Use FlexReassemble on its output to join complete long-message chains.
 func FlexDecode(samples []float64, rate int) []FlexMessage {
 	const baud = 1600
 	spb := float64(rate) / baud
@@ -101,17 +106,31 @@ func FlexDecode(samples []float64, rate int) []FlexMessage {
 		c[i] = s - mean
 	}
 	var out []FlexMessage
-	seen := map[string]bool{}
+	best := map[string]FlexMessage{}
 	for phase := 0.0; phase < spb; phase++ {
 		bits := pocsagSliceBits(c, spb, phase)
 		for _, m := range flexFromBits(bits) {
-			k := fmt.Sprintf("%d|%d|%d|%s", m.Capcode, m.Cycle, m.Frame, m.Text)
-			if !seen[k] {
-				seen[k] = true
-				out = append(out, m)
+			// Several slicer phases can decode the same page differently.
+			// Prefer the phase requiring the fewest BCH repairs.
+			k := fmt.Sprintf("%d|%d|%d|%d", m.Capcode, m.Cycle, m.Frame, m.Type)
+			if prev, ok := best[k]; !ok || m.corrections < prev.corrections {
+				best[k] = m
 			}
 		}
 	}
+	for _, m := range best {
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Cycle != b.Cycle {
+			return a.Cycle < b.Cycle
+		}
+		if a.Frame != b.Frame {
+			return a.Frame < b.Frame
+		}
+		return a.Capcode < b.Capcode
+	})
 	return out
 }
 
@@ -187,12 +206,17 @@ func flexFromBits(bits []byte) []FlexMessage {
 
 func flexParsePhase(raw []uint32, cycle, frame int) []FlexMessage {
 	w := make([]uint32, len(raw))
+	corrections := 0
 	for i, r := range raw {
 		d, ok := flexCorrect(r)
 		if !ok {
 			return nil // garbled block: multimon-ng also drops the phase
 		}
 		w[i] = d
+		std := flexRev31(r & 0x7fffffff)
+		if sy := flexRem(std); sy != 0 {
+			corrections += bits.OnesCount32(flexFix[sy])
+		}
 	}
 	biw := w[0]
 	if biw == 0 || biw == 0x1FFFFF {
@@ -243,7 +267,45 @@ func flexParsePhase(raw []uint32, cycle, frame int) []FlexMessage {
 				}
 			}
 		}
-		out = append(out, FlexMessage{Capcode: capcode, Cycle: cycle, Frame: frame, Type: typ, Fragment: flag, Text: strings.TrimRight(sb.String(), "\x00 ")})
+		out = append(out, FlexMessage{Capcode: capcode, Cycle: cycle, Frame: frame, Type: typ, Fragment: flag, corrections: corrections, fragmentID: frag, Text: strings.TrimRight(sb.String(), "\x00 ")})
+	}
+	return out
+}
+
+// FlexReassemble joins only a complete ordered chain within this recording.
+// Orphan tails and unfinished chains are not emitted as complete pages.
+func FlexReassemble(in []FlexMessage) []FlexMessage {
+	pending := map[int64]FlexMessage{}
+	var out []FlexMessage
+	for _, m := range in {
+		if m.Fragment == 'K' {
+			delete(pending, m.Capcode)
+			out = append(out, m)
+			continue
+		}
+		prev, ok := pending[m.Capcode]
+		if m.fragmentID == 3 {
+			if m.Fragment == 'F' {
+				pending[m.Capcode] = m
+			}
+			continue
+		}
+		delta := (m.Cycle*128 + m.Frame) - (prev.Cycle*128 + prev.Frame)
+		if !ok || delta < 0 || delta > 8 || m.fragmentID != (prev.fragmentID+1)%4 {
+			delete(pending, m.Capcode)
+			continue
+		}
+		prev.Text += m.Text
+		prev.Frame = m.Frame
+		prev.Cycle = m.Cycle
+		prev.fragmentID = m.fragmentID
+		if m.Fragment == 'C' {
+			prev.Fragment = 'K'
+			out = append(out, prev)
+			delete(pending, m.Capcode)
+		} else {
+			pending[m.Capcode] = prev
+		}
 	}
 	return out
 }

@@ -1,0 +1,21 @@
+Sample rate 12000 Hz, 180000 samples, 15.000 seconds
+Block size = 1920
+Subblock size = 960
+N_FFT = 3840
+#############################################################################################
+Max magnitude: -36.1 dB
+4ceaf08f3cada187d358
+738cb1fa92313dc7d498
+4b262d84b678ae5fd318
+09e2960060b6bb9fa508
+0c0b3514c104e61f9d48
+053b3d1f56ff8f47da98
+0a710ba060ddea1fa508
+00005e6060dd13068e88
+4ce53cdd7400e68fd8d8
+773108185267979fd198
+00005e656d0ff68a1408
+09bf9b925bba969f9d48
+00005e604df0788672c8
+0bfea9604731ed1fa508
+Decoded 14 messages, callsign hashtable size 13

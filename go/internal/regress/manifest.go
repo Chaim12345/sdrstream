@@ -95,7 +95,7 @@ func Manifest() []Case {
 		{Name: "wsjt/181201_180245", Decoder: "ft8", File: "181201_180245.wav", Source: "WSJT sample archive, sourceforge.net/projects/wsjt/files/samples/FT8",
 			URL:    "https://sourceforge.net/projects/wsjt/files/samples/FT8/181201_180245.wav/download",
 			SHA256: "f9140305922701aa27fac712bb91d2a781c63829abcc810a8e65575573a451b0",
-			Ref:    "ft8_lib C decoder", Golden: "ft8_181201_180245.txt"},
+			Ref:    "ft8_lib C payloads; WSJT-X type-3 protocol unpack", Golden: "ft8_181201_180245.txt"},
 		{Name: "wsjt/170709_135615", Decoder: "ft8", File: "170709_135615.wav", Source: "WSJT sample archive, sourceforge.net/projects/wsjt/files/samples/FT8",
 			URL:    "https://sourceforge.net/projects/wsjt/files/samples/FT8/170709_135615.wav/download",
 			SHA256: "438cb892df15fe2d84ac50cc3e4bbcb4369c3aa592c9e82399174b22d1968795",
