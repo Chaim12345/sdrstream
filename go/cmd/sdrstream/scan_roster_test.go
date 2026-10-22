@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/chaim12345/sdrstream/go/internal/decode"
@@ -115,5 +117,41 @@ func TestOpenWebRXProfileRotation(t *testing.T) {
 	noteOpenWebRXProfiles(host, "HF", []string{"2m", "70cm", "HF"})
 	if got := nextOpenWebRXProfile(host); got != "2m" {
 		t.Fatalf("cursor after active HF = %q, want wrap to 2m", got)
+	}
+}
+
+func TestAddManualRejectsBareHostLoudly(t *testing.T) {
+	var logs []string
+	r := newScanRoster(func(format string, args ...interface{}) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	// The QA finding: a bare host:port (no Kind| prefix) was stored by
+	// AddManual and then silently dropped by Snapshot's "|" split, so the
+	// station never scanned and nothing said why.
+	r.AddManual("manual.test:8073", "KiwiSDR|good.test:8073")
+	got := r.Snapshot()
+	if len(got) != 1 || got[0] != "KiwiSDR|good.test:8073" {
+		t.Fatalf("snapshot = %v, want only the prefixed station", got)
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "manual.test:8073") || !strings.Contains(joined, "Kind|") {
+		t.Fatalf("drop must be logged with the entry and the fix, got: %q", joined)
+	}
+}
+
+func TestAddManualRejectsEmptyHostLoudly(t *testing.T) {
+	var logs []string
+	r := newScanRoster(func(format string, args ...interface{}) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	r.AddManual("KiwiSDR|", "|host-with-guessed-kind.test:8073")
+	got := r.Snapshot()
+	// "KiwiSDR|" (no host) is dropped; "|host" keeps the existing
+	// guess-the-kind fallback, but both must log.
+	if len(got) != 1 || got[0] != "|host-with-guessed-kind.test:8073" {
+		t.Fatalf("snapshot = %v, want only the empty-kind entry kept", got)
+	}
+	if len(logs) != 2 {
+		t.Fatalf("want 2 log lines (empty host drop, empty kind guess), got %v", logs)
 	}
 }

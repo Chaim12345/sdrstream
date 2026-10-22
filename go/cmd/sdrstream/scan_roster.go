@@ -32,14 +32,37 @@ func newScanRoster(logf func(string, ...interface{})) *scanRoster {
 	return &scanRoster{logf: logf}
 }
 
+// AddManual records hand-picked stations. Every entry must name the
+// receiver kind: "KiwiSDR|host:8073", "OpenWebRX|http://host:8073/", ... A
+// bare host:port used to be stored and then silently dropped by Snapshot,
+// which split on "|" and skipped entries without a kind; now it is rejected
+// here, loudly, so the operator sees the mistake at startup instead of
+// wondering why a receiver never scans. An empty kind ("|host") stays
+// allowed - scanStation guesses the type from the host name - but that is
+// logged too, because a wrong guess drives the receiver with the wrong
+// protocol.
 func (r *scanRoster) AddManual(stations ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, station := range stations {
 		station = strings.TrimSpace(station)
-		if station != "" {
-			r.manual = append(r.manual, station)
+		if station == "" {
+			continue
 		}
+		kind, host, found := strings.Cut(station, "|")
+		if !found {
+			r.logf("scan: --scan-stations entry %q has no Kind| prefix and will never scan; dropping it (use e.g. KiwiSDR|%[1]s; kinds: KiwiSDR, OpenWebRX, WebSDR)", station)
+			continue
+		}
+		kind, host = strings.TrimSpace(kind), strings.TrimSpace(host)
+		if host == "" {
+			r.logf("scan: --scan-stations entry %q has an empty host after the Kind| prefix; dropping it", station)
+			continue
+		}
+		if kind == "" {
+			r.logf("scan: --scan-stations entry %q has an empty Kind; the scanner will guess the receiver type from the host name", station)
+		}
+		r.manual = append(r.manual, kind+"|"+host)
 	}
 }
 
