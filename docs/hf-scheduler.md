@@ -28,6 +28,47 @@ NAVTEX and WEFAX entries tune appropriate USB offsets and call the existing
 radio decoders. Broadcast voice is recorded, not transcribed, and cannot pass
 the decode gate. Other utility codes are not treated as AM broadcasts.
 
+## RTTY cross-verification (verified anchor)
+
+A recorded RTTY capture is only marked **verified** when an independent
+reference decoder agrees with the Go decode on the same audio. The known
+failure mode this guards is readable-looking false text from a strong
+carrier: one engine hallucinating is plausible, two unrelated
+demodulators producing the same station anchor and lines is not.
+
+* Reference engine: minimodem (`go/internal/decode/rttyref.go`), run as an
+  unmodified child process on the saved WAV. multimon-ng ships no RTTY
+  demodulator and fldigi has no non-interactive WAV batch mode, so neither
+  can fill this role. Binary resolution: `SDRSTREAM_REF_MINIMODEM`,
+  `SDRSTREAM_REFDEC_DIR` (`<dir>/usr/bin/minimodem`), then `$PATH`;
+  extracted-package library dirs are added to the child's
+  `LD_LIBRARY_PATH` only. `bash ../scripts/refdec.sh` installs the
+  extracted-package layout without root.
+* Verdict (`RTTYAgreement`): verified requires non-trivial reference text
+  AND the expected anchor (DDK2/DDH7/DDK9) in both engines, or at least
+  one 40-character reference line whose 8-char shingles land at >=80%
+  inside the Go text. Disagreement, an empty reference, or a missing
+  binary leave the capture unverified with the reason recorded.
+* Artifacts per capture: `<key>.wav` (audio), `<key>.txt` (Go decode),
+  `<key>.ref.txt` (reference decode), `<key>.json` (audit with verified
+  fields), and the proof-ledger line (`verified`, `verified_lines`,
+  `verified_reason`, `ref_engine`, `ref_text`).
+* `hfschedule -report -out <dir>` prints ledger statistics: window hours,
+  capture tallies, verified captures, verified lines and verified
+  lines/hour, plus reject reasons.
+* `examples/hfschedule/dwd-rtty-hourly.txt` splits the three continuous
+  DWD RTTY frequencies into hourly windows so each service is re-captured
+  every hour:
+
+```sh
+SDRSTREAM_REF_MINIMODEM=$HOME/refdec/root/usr/bin/minimodem \
+/tmp/hfschedule -source eibi -eibi ../examples/hfschedule/dwd-rtty-hourly.txt \
+  -match 'DWD 1 Pinneberg' -kind rtty \
+  -receivers ../examples/hfschedule/receivers-health.json \
+  -listen 5m -out /tmp/rtty-verified -run
+/tmp/hfschedule -report -out /tmp/rtty-verified
+```
+
 ## Source and UTC semantics
 
 * EiBi: http://eibispace.de/dx/eibi.txt, fixed-width frequency schedule, Latin-1.
