@@ -2665,27 +2665,11 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		}
 		if strings.Contains(strings.ToLower(host), "jukebox.spdns.eu") {
 			wavPath := filepath.Join(os.TempDir(), fmt.Sprintf("sdrstream-aprs-%d.wav", time.Now().UnixNano()))
-			if err := finishInt16(samples, rate, wavPath); err == nil {
-				packets, decodeErr := decode.AFSKFrames(wavPath)
-				if decodeErr == nil && len(packets) > 0 {
-					lines := make([]string, 0, len(packets))
-					for _, packet := range packets {
-						lines = append(lines, packet.String())
-					}
-					detail := strings.Join(lines, " | ")
-					if verify.Live("data", "aprs", detail, nil) == nil {
-						capture := filepath.Join(capturesDir, "APRS_144800kHz_aprs_jukebox_spdns_eu_"+time.Now().UTC().Format("20060102T150405Z")+".wav")
-						if os.MkdirAll(filepath.Dir(capture), 0755) == nil && finishInt16(samples, rate, capture) == nil {
-							server.AddCaptureMetadata(filepath.Base(capture), "aprs", "jukebox.spdns.eu:6166", detail, target.frequency)
-							activity := monitor.Activity{ID: int(time.Now().UnixNano()), Started: time.Now().UTC(), FrequencyHz: target.frequency, Kind: "data", Mode: "aprs", Detail: detail, Source: host, AudioPath: capture}
-							if err := server.AddLiveArtifact(activity, nil); err == nil {
-								update("decoded", detail)
-								continue
-							}
-						}
-					}
-				}
-				_ = os.Remove(wavPath)
+			// The decoded-and-continued path used to skip the remove and
+			// leak one temp WAV per APRS capture; tryJukeboxAPRS owns the
+			// cleanup now, on every outcome.
+			if tryJukeboxAPRS(server, samples, rate, wavPath, capturesDir, target.frequency, host, update) {
+				continue
 			}
 		}
 
@@ -2704,7 +2688,7 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		if decoder == "speech" || kind == "voice" {
 			activity.AudioPath = filepath.Join(capturesDir, fmt.Sprintf("VOICE_%dkHz_voice_%s_%d.wav", int(target.frequency/1000), safeCaptureName(host), activity.ID))
 			if finishInt16(samples, rate, activity.AudioPath) == nil {
-				server.AddCaptureMetadata(filepath.Base(activity.AudioPath), "voice", host, detail, target.frequency)
+				server.AddCaptureMetadata(filepath.Base(activity.AudioPath), "voice", host, detail, target.frequency, true)
 			}
 		}
 		if err := server.AddLiveArtifact(activity, nil); err != nil {
@@ -2844,7 +2828,7 @@ func runDirectoryHFScan(ctx context.Context, server *web.Server, receiverList st
 				setScanResult(server, key, "error", e.Error())
 				continue
 			}
-			if e := os.WriteFile(path, decode.WriteWAV16(pcm, rate), 0644); e != nil {
+			if e := common.WriteFileAtomic(path, decode.WriteWAV16(pcm, rate), 0644); e != nil {
 				setScanResult(server, key, "error", e.Error())
 				continue
 			}
@@ -2852,7 +2836,7 @@ func runDirectoryHFScan(ctx context.Context, server *web.Server, receiverList st
 			if !gate.Live {
 				detail = "unverified: " + gate.Reason
 			}
-			server.AddCaptureMetadata(name, mode+"-"+label, rx, detail, dial*1000)
+			server.AddCaptureMetadata(name, mode+"-"+label, rx, detail, dial*1000, gate.Live)
 			if !gate.Live {
 				setScanResult(server, key, "unverified decode", gate.Reason)
 				continue
@@ -3033,6 +3017,39 @@ func scanStatusKey(s web.ScanStatus) string {
 var scansMu sync.Mutex
 var scans []web.ScanStatus
 var scannerCaptureDir string
+
+// tryJukeboxAPRS runs the jukebox APRS fast path. It writes the samples to
+// wavPath, always removes that temp file, and reports whether the activity
+// was decoded and recorded (true = the caller moves to the next target).
+func tryJukeboxAPRS(server *web.Server, samples []float64, rate int, wavPath, capturesDir string, frequency float64, host string, update func(state, result string)) (decoded bool) {
+	if err := finishInt16(samples, rate, wavPath); err != nil {
+		return false
+	}
+	defer func() { _ = os.Remove(wavPath) }()
+	packets, decodeErr := decode.AFSKFrames(wavPath)
+	if decodeErr != nil || len(packets) == 0 {
+		return false
+	}
+	lines := make([]string, 0, len(packets))
+	for _, packet := range packets {
+		lines = append(lines, packet.String())
+	}
+	detail := strings.Join(lines, " | ")
+	if verify.Live("data", "aprs", detail, nil) != nil {
+		return false
+	}
+	capture := filepath.Join(capturesDir, "APRS_144800kHz_aprs_jukebox_spdns_eu_"+time.Now().UTC().Format("20060102T150405Z")+".wav")
+	if os.MkdirAll(filepath.Dir(capture), 0755) != nil || finishInt16(samples, rate, capture) != nil {
+		return false
+	}
+	server.AddCaptureMetadata(filepath.Base(capture), "aprs", "jukebox.spdns.eu:6166", detail, frequency, true)
+	activity := monitor.Activity{ID: int(time.Now().UnixNano()), Started: time.Now().UTC(), FrequencyHz: frequency, Kind: "data", Mode: "aprs", Detail: detail, Source: host, AudioPath: capture}
+	if err := server.AddLiveArtifact(activity, nil); err != nil {
+		return false
+	}
+	update("decoded", detail)
+	return true
+}
 
 func finishInt16(samples []float64, rate int, path string) error {
 	pcm := make([]int16, len(samples))

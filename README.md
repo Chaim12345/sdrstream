@@ -717,6 +717,25 @@ go run ./cmd/sdrstream web --host 127.0.0.1 --port 8000 \
   --feeds-lat 31.8 --feeds-lon 35
 ```
 
+Web UI security and storage notes:
+
+- The session cookie is marked `Secure` only when the request arrives over
+  HTTPS - either directly or through a local tunnel such as cloudflared,
+  which forwards from loopback with `X-Forwarded-Proto: https`. On plain
+  HTTP (a loopback demo) the cookie goes without `Secure`, because browsers
+  would refuse to send it; expose the UI over HTTPS or a tunnel for any
+  real deployment.
+- Changing `SDRSTREAM_UI_PASSWORD` invalidates every existing login: the
+  persisted session file carries a fingerprint of the issuing password.
+- Small state files (sessions, scan state) default to a private per-user
+  directory (`$TMPDIR/sdrstream-state-<uid>`, mode 0700); set
+  `SDRSTREAM_STATE_DIR` to override.
+- The captures directory is pruned to `SDRSTREAM_CAPTURES_MAX_BYTES`
+  (default 5 GiB). Oldest unverified recordings go first, with their
+  sidecars; captures whose sidecar says `verified=true` are never pruned,
+  even when that leaves the directory over budget. Sidecars written before
+  the `verified` line existed count as unknown and are prunable.
+
 Useful options: `--monitor-server URL --monitor-kind openwebrx|websdr|kiwi`,
 `--monitor-strategy sweep|spectrum|broadcast`, `--monitor-channels`,
 `--monitor-out DIR`, `--monitor-listen`, and `--monitor-voice`;
