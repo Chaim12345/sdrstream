@@ -44,3 +44,37 @@ func TestWSPRNoiseDecodesNothing(t *testing.T) {
 		t.Fatalf("decoded %v from white noise", got)
 	}
 }
+
+// Two more live windows with reference wsprd output. 0542: the port matches
+// all 6 reference spots. 0544: reference found 7, the port finds 5 of them
+// (the two weak ones, EB5RCA and ES1RCG, are missed) and adds nothing else.
+func TestWSPRLiveMoreWindows(t *testing.T) {
+	cases := map[string][]string{
+		"testdata/wspr/live_websdr_utwente_7038p6kHz_20261022T0542Z.wav": {"I0HCJ JN62 27", "E79Q JN83 23", "<...> KO85HX 23", "EB1A IN53 27", "<...> KM56VO 37", "I0LYO JN52 23"},
+		"testdata/wspr/live_websdr_utwente_7038p6kHz_20261022T0544Z.wav": {"E79Q JN83 23", "EB5RCA IM98 23", "SV1BHF KM18 23", "I0LYO JN52 23", "ES1RCG KO29 27", "TA4/G8SCU 37", "SP8EB KO11 13"},
+	}
+	for f, ref := range cases {
+		if _, err := os.Stat(f); err != nil {
+			t.Skip("fixture absent")
+		}
+		samples, rate, err := ReadWAV(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refSet := map[string]bool{}
+		for _, r := range ref {
+			refSet[r] = true
+		}
+		hit := 0
+		for _, m := range WSPRDecode(samples, rate) {
+			if !refSet[m.Text] {
+				t.Errorf("%s: spot %q not in reference wsprd output", f, m.Text)
+			} else {
+				hit++
+			}
+		}
+		if hit < 5 {
+			t.Errorf("%s: only %d of %d reference spots", f, hit, len(ref))
+		}
+	}
+}
