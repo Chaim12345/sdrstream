@@ -128,3 +128,35 @@ func TestPreflightDirectoryStationIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestShutdownFailuresDoNotBlockAndBlocklistCleanupPreservesReceiverFailures(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, reason := range []string{"use of closed network connection", "context canceled", "EOF: use of closed network connection"} {
+		if shouldBlockScanFailure(context.Background(), reason) {
+			t.Errorf("shutdown failure should not block: %q", reason)
+		}
+	}
+	if shouldBlockScanFailure(ctx, "receiver refused") {
+		t.Fatal("canceled scan context should not block")
+	}
+	if !shouldBlockScanFailure(context.Background(), "receiver refused") || !shouldBlockScanFailure(context.Background(), "preflight HTTP status 403 Forbidden") || !shouldBlockScanFailure(context.Background(), "context deadline exceeded") {
+		t.Fatal("genuine receiver refusal, 403, and timeout must remain blockable")
+	}
+	input := map[string]stationBlock{
+		"shutdown.example": {Reason: "use of closed network connection", Until: time.Now().Add(time.Hour)},
+		"cancel.example":   {Reason: "context canceled", Until: time.Now().Add(time.Hour)},
+		"refused.example":  {Reason: "connection refused", Until: time.Now().Add(time.Hour)},
+		"403.example":      {Reason: "preflight HTTP status 403 Forbidden", Until: time.Now().Add(time.Hour)},
+		"timeout.example":  {Reason: "context deadline exceeded", Until: time.Now().Add(time.Hour)},
+	}
+	cleaned, removed := cleanShutdownBlocklistEntries(input)
+	if removed != 2 || len(cleaned) != 3 {
+		t.Fatalf("cleanup removed=%d entries=%v", removed, cleaned)
+	}
+	for _, host := range []string{"refused.example", "403.example", "timeout.example"} {
+		if _, ok := cleaned[host]; !ok {
+			t.Errorf("genuine receiver failure %q was removed", host)
+		}
+	}
+}

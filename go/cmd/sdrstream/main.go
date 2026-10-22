@@ -1936,6 +1936,35 @@ func loadBlocklist() map[string]stationBlock {
 	_ = gob.NewDecoder(f).Decode(&m)
 	return m
 }
+func cleanShutdownBlocklistEntries(m map[string]stationBlock) (map[string]stationBlock, int) {
+	cleaned := make(map[string]stationBlock, len(m))
+	removed := 0
+	for host, entry := range m {
+		if isShutdownBlockReason(entry.Reason) {
+			removed++
+			continue
+		}
+		cleaned[host] = entry
+	}
+	return cleaned, removed
+}
+
+func isShutdownBlockReason(reason string) bool {
+	text := strings.ToLower(reason)
+	return strings.Contains(text, "use of closed network connection") || strings.Contains(text, "context canceled") || strings.Contains(text, "context canceled by user")
+}
+
+func purgeShutdownBlocklistEntries() int {
+	blockMu.Lock()
+	defer blockMu.Unlock()
+	current := loadBlocklist()
+	cleaned, removed := cleanShutdownBlocklistEntries(current)
+	if removed > 0 {
+		saveBlocklist(cleaned)
+	}
+	return removed
+}
+
 func saveBlocklist(m map[string]stationBlock) {
 	path := blocklistPath()
 	_ = os.MkdirAll(filepath.Dir(path), 0700)
@@ -1953,6 +1982,19 @@ func saveBlocklist(m map[string]stationBlock) {
 	_ = f.Close()
 	_ = os.Rename(tmp, path)
 }
+func shouldBlockScanFailure(ctx context.Context, reason string) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	return !isShutdownBlockReason(reason)
+}
+
+func blockStationIfEligible(ctx context.Context, server *web.Server, host, reason string, duration time.Duration) {
+	if shouldBlockScanFailure(ctx, reason) {
+		blockStation(server, host, reason, duration)
+	}
+}
+
 func blockStation(server *web.Server, host, reason string, duration time.Duration) {
 	until := time.Now().Add(duration)
 	blockMu.Lock()
@@ -1965,6 +2007,23 @@ func blockStation(server *web.Server, host, reason string, duration time.Duratio
 }
 
 func runParallelScan(ctx context.Context, server *web.Server, receivers []string, multimonPath, direwolfPath string, cfg scanConfig, guard *loadGuard) {
+	for ctx.Err() == nil {
+		runParallelScanOnce(ctx, server, receivers, multimonPath, direwolfPath, cfg, guard)
+		if ctx.Err() != nil {
+			return
+		}
+		timer := time.NewTimer(20 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func runParallelScanOnce(ctx context.Context, server *web.Server, receivers []string, multimonPath, direwolfPath string, cfg scanConfig, guard *loadGuard) {
+	purgeShutdownBlocklistEntries()
 	if guard == nil {
 		guard = newLoadGuard(0, 0, 0, 0, 0, 0, 0, 0)
 	}
@@ -2120,7 +2179,7 @@ func runParallelScan(ctx context.Context, server *web.Server, receivers []string
 		case r := <-results:
 			if r.outcome.refused || r.outcome.timedOut {
 				reason := "receiver refused or timed out"
-				blockStation(server, r.host, reason, 30*time.Minute)
+				blockStationIfEligible(ctx, server, r.host, reason, 30*time.Minute)
 			}
 			inFlight--
 			delete(activeStations, r.host)
@@ -2386,7 +2445,7 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		updateMetrics()
 		outcome := classifyScanFailure(err)
 		reason := err.Error()
-		blockStation(server, host, reason, 30*time.Minute)
+		blockStationIfEligible(ctx, server, host, reason, 30*time.Minute)
 		return outcome
 	}
 	source, err := monitor.SourceFor(connectCtx, protocol, host, "")
@@ -2395,7 +2454,7 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		active.Add(-1)
 		updateMetrics()
 		outcome := classifyScanFailure(err)
-		blockStation(server, host, err.Error(), 30*time.Minute)
+		blockStationIfEligible(ctx, server, host, err.Error(), 30*time.Minute)
 		return outcome
 	}
 	defer func() { source.Close(); active.Add(-1); updateMetrics() }()
@@ -2440,7 +2499,7 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 				state = "timeout"
 			}
 			update(state, err.Error())
-			blockStation(server, host, err.Error(), 30*time.Minute)
+			blockStationIfEligible(ctx, server, host, err.Error(), 30*time.Minute)
 			return result
 		}
 		if strings.Contains(strings.ToLower(host), "jukebox.spdns.eu") {
@@ -2512,7 +2571,7 @@ func runDirectoryHFScan(ctx context.Context, server *web.Server, host string, ws
 			cancelConnect()
 			if err != nil {
 				setScanResult(server, key, "blocked", err.Error())
-				blockStation(server, host, err.Error(), 30*time.Minute)
+				blockStationIfEligible(ctx, server, host, err.Error(), 30*time.Minute)
 				return
 			}
 			listenCtx, cancelListen := context.WithTimeout(ctx, target.Listen+10*time.Second)
@@ -2521,7 +2580,7 @@ func runDirectoryHFScan(ctx context.Context, server *web.Server, host string, ws
 			_ = source.Close()
 			if err != nil {
 				setScanResult(server, key, "blocked", err.Error())
-				blockStation(server, host, err.Error(), 30*time.Minute)
+				blockStationIfEligible(ctx, server, host, err.Error(), 30*time.Minute)
 				return
 			}
 			pcm := make([]int16, len(samples))
