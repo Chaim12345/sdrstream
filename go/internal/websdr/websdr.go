@@ -306,9 +306,25 @@ func (c *Client) Tune(ctx context.Context, frequencyKHz float64, mode string, ba
 		// Bounded write: a dead peer must not wedge the scanner slot on
 		// a TCP buffer that never drains (review H3).
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		return conn.WriteMessage(websocket.TextMessage, []byte("GET /~~param?"+params))
+		err := conn.WriteMessage(websocket.TextMessage, []byte("GET /~~param?"+params))
+		c.drainTuneBuffer()
+		return err
 	}
 	return nil
+}
+
+// drainTuneBuffer drops buffered events from before the tune. The buffer
+// holds the previous frequency's audio (and stale meter text); without
+// this the next Record starts with the old broadcast, per review M4.
+func (c *Client) drainTuneBuffer() {
+	for {
+		select {
+		case <-c.events:
+			continue
+		default:
+			return
+		}
+	}
 }
 
 // sendParam sends a raw /~~param query string (e.g. "squelch=3").

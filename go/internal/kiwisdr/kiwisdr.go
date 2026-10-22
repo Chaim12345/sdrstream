@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -27,6 +28,12 @@ const (
 	flagStereo      = 0x08
 	flagCompressed  = 0x10
 	flagLittleEndLs = 0x80
+
+	// tuneDrainWindow bounds how long Tune waits, after sending the SET
+	// line, swallowing audio that was still in flight from the previous
+	// frequency (review M4). Past that instant the frames that arrive
+	// are guaranteed post-tune, so the capture starts clean.
+	tuneDrainWindow = 250 * time.Millisecond
 )
 
 // Passbands the browser client uses per mode, in Hz around the tuned centre.
@@ -92,11 +99,16 @@ type Client struct {
 	opts    Options
 	ws      *websocket.Conn
 	adpcm   adpcmState
-	rate    float64
-	info    Info
 	curFreq int64
 	curMode string
 	refused error // set by handleText when the server refuses the session
+
+	// stateMu fronts rate and info: handleText (the socket reader) writes
+	// them while any listener can call SampleRate/InfoSnapshot (review
+	// M7: unlocked rate/info).
+	stateMu sync.RWMutex
+	rate    float64
+	info    Info
 }
 
 // New parses "host:port" or any http(s)/ws(s) URL the directory lists.
@@ -199,14 +211,41 @@ func (c *Client) tuneSend(freqHz int64, mode string) error {
 	line := fmt.Sprintf("SET mod=%s low_cut=%d high_cut=%d freq=%.3f",
 		mode, band[0], band[1], freqKHz)
 	c.ws.SetWriteDeadline(time.Now().Add(writeDeadline(c)))
-	return c.ws.WriteMessage(websocket.TextMessage, []byte(line))
+	err := c.ws.WriteMessage(websocket.TextMessage, []byte(line))
+	if err == nil {
+		// In-flight audio from before the tune is still inside the TCP
+		// stream; discard a bounded window of it so the next capture
+		// starts clean (review M4). Text frames (MSG name=value) still
+		// carry session state such as sample_rate, so they are handled;
+		// only the binary SND/WEFAX frames are dropped.
+		drainUntil := time.Now().Add(tuneDrainWindow)
+		_ = c.ws.SetReadDeadline(drainUntil)
+		for {
+			kind, data, err2 := c.ws.ReadMessage()
+			if err2 != nil {
+				break
+			}
+			if kind == websocket.TextMessage && strings.HasPrefix(string(data), "MSG ") {
+				c.handleText(string(data))
+			}
+		}
+	}
+	return err
 }
 
 // Info snapshot of what the server has announced so far.
-func (c *Client) InfoSnapshot() Info { return c.info }
+func (c *Client) InfoSnapshot() Info {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.info
+}
 
 // SampleRate is the negotiated decode rate, only valid once audio flows.
-func (c *Client) SampleRate() int { return int(math.Round(c.rate)) }
+func (c *Client) SampleRate() int {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return int(math.Round(c.rate))
+}
 
 // Record collects duration of audio and returns samples plus rate.
 func (c *Client) Record(ctx context.Context, duration time.Duration) ([]int16, int, error) {
@@ -301,11 +340,15 @@ func (c *Client) handleText(text string) {
 		switch name {
 		case "sample_rate":
 			if f, err := strconv.ParseFloat(value, 64); err == nil {
+				c.stateMu.Lock()
 				c.rate = f
+				c.stateMu.Unlock()
 			}
 		case "bandwidth":
 			if f, err := strconv.ParseFloat(value, 64); err == nil {
+				c.stateMu.Lock()
 				c.info.BandwidthKHz = f
+				c.stateMu.Unlock()
 			}
 		case "version_maj", "version_min":
 			// version messages land as separate pairs; keep both and join later.
@@ -321,7 +364,9 @@ func (c *Client) handleText(text string) {
 			c.refused = fmt.Errorf("%w: %s", ErrDown, c.base)
 		case "rx_chans":
 			if n, err := strconv.Atoi(value); err == nil {
+				c.stateMu.Lock()
 				c.info.RXChannels = n
+				c.stateMu.Unlock()
 			}
 		}
 	}
@@ -337,10 +382,14 @@ func (c *Client) handleText(text string) {
 			if k := strings.Index(min, " "); k >= 0 {
 				min = min[:k]
 			}
+			c.stateMu.Lock()
 			c.info.Version = maj + "." + min
+			c.stateMu.Unlock()
 		}
 	}
 	if value, ok := extractURLEncoded(body, "load_cfg"); ok {
+		c.stateMu.Lock()
 		parseRxGPS(value, &c.info)
+		c.stateMu.Unlock()
 	}
 }

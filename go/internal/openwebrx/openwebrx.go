@@ -566,7 +566,26 @@ func (c *Client) Tune(ctx context.Context, frequency *int64, modulation string, 
 	// send no audio at all until the client asks for it again.
 	start := map[string]interface{}{"type": "dspcontrol", "action": "start"}
 	restart, _ := json.Marshal(start)
-	return writeText(conn, restart)
+	if err := writeText(conn, restart); err != nil {
+		return err
+	}
+	c.drainAudio()
+	return nil
+}
+
+// drainAudio drops buffered audio from before the current tuning. A retune
+// does not flush the socket, so the first chunks after Tune are still the
+// PREVIOUS frequency's voice; without this, clip starts bleed the old
+// broadcast into every capture (review M4).
+func (c *Client) drainAudio() {
+	for {
+		select {
+		case <-c.audioEvents:
+			continue
+		default:
+			return
+		}
+	}
 }
 
 // SelectProfile switches the receiver to another SDR profile. The argument
@@ -592,7 +611,11 @@ func (c *Client) SelectProfile(ctx context.Context, profile string) error {
 	// still has to Tune, because the old frequency belongs to the old
 	// profile's span.
 	restart, _ := json.Marshal(map[string]interface{}{"type": "dspcontrol", "action": "start"})
-	return writeText(conn, restart)
+	if err := writeText(conn, restart); err != nil {
+		return err
+	}
+	c.drainAudio()
+	return nil
 }
 
 // Profile is one tunable SDR profile a server advertises over the socket.
