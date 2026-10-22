@@ -120,6 +120,8 @@ func main() {
 		err = cmdWeb(args)
 	case "feeds":
 		err = cmdFeeds(args)
+	case "avmarine":
+		err = cmdAVMarine(args)
 	case "decode":
 		err = cmdDecode(args)
 	case "scan":
