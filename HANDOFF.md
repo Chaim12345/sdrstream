@@ -93,11 +93,57 @@ KiwiSDR), then, continuously and fleet-wide:
   on `kiwisdr.johnnorton.co.uk:8073` (5505 USB, 25 s listens), OpenWebRX
   spectrum survey at `sdr.ladar.club`.
 
-## 3. Deep review snapshot (2026-10-22)
+## 3. Deep review snapshot (2026-10-22) — FIX STATUS
 
 Five parallel review passes over the whole repo. Full finding list lives in
-this session's conversation; every item has file:line + quote. State: **not
- yet fixed** (except the two rotation bugs above). Ordered roadmap below.
+this session's conversation; every item has file:line + quote. **Fixed so
+far** (commits `9856a52`, `41efb0d`, `7259d71`, `c1051e4`):
+
+* **C2 fixed** — ReadWAV clamps a torn data chunk to the bytes that exist
+  + truncation regression test.
+* **C1 resolved as FALSE POSITIVE** — cross-checked Junzi Sun's pyModeS:
+  our odd-newer branch is the DO-260B formula byte-for-byte (`ni = NL-1`,
+  `m = floor(lonE*(NL-1) - lonO*NL + .5)`); the reviewer compared decodes
+  at *different instants* (movement ≈ 0.02°). Armored with the synthetic
+  encoder round-trip test (`cpr_armor_test.go`), both parities + stationary.
+* **H1+M1 fixed** — EMFILE/ENFILE classify `localResource` (never refused,
+  never blocklisted); blocklisting is gated on refused-or-timeout at all
+  four sites. `TestClassifyScanFailureLocalResourceIsNotReceiverRefusal`.
+* **M2 fixed** (profile-failure client close), **M5 fixed** (Enqueue/Close
+  under q.mu, close before drain-outside-lock + hammer test), **M9 fixed**
+  (CW temp WAV removed), **M8 fixed** (WriteWAV removes partial file +
+  monitor logs record failures), **M10 fixed** (prune keeps accounting on
+  failed remove; injectable remover + test), **M11 fixed** (boot logs and
+  continues on directory-fetch failure; scanner starts on any roster
+  source).
+* **H4 fixed** — NIM: pooled TLS conn per endpoint, 2-slot concurrency
+  cap, status-code cooldowns (quota/auth 10 min, Unavailable 1 min);
+  `TestNIMPoolsTLSConnection`, `TestNIMCooldownAfterQuotaFailure`.
+* **H5 fixed** — `voice.GuardTranscript` runs on the Kiwi HF voice path.
+* **H6 fixed** — http.Server timeouts + MaxHeaderBytes; POST/PUT/PATCH
+  bodies capped 1 MiB (`limitRequestBody`).
+* **M12 fixed** (handleScanLog/handleScans snapshot-then-write), **M13
+  fixed** (Secure follows r.TLS / X-Forwarded-Proto; both directions
+  tested), **M14 fixed** (attempts map sweep+shed cap, tested).
+* **H2 fixed (events half)** — openwebrx readLoop closes the events
+  channel on exit (tested); monitor source freshness-gates Spectrum()
+  (dead or >1 min stale → ok=false) and handles the ok flag.
+* **H3 fixed (openwebrx+websdr)** — 10 s write deadline on every text
+  write; kiwisdr already had one.
+
+**Still open:**
+
+* **H2/H3 remainder:** openwebrx auto-reconnect (`Reconnect` option still
+  unused; consumers must reconnect instead), kiwi in-flight reconnect +
+  unlocked `rate`/`info` (M7), tune-drain (M4), websdr backoff reset +
+  preflight short-read, and a websdr test suite (still zero tests).
+* **H3 remainder for tune paths:** drain pre-tune audio in all three
+  clients (clips start with the previous frequency).
+* **M6** verify gate mixes byte/rune counts (rejects accented text) +
+  substring anchors.
+* **M15/M16** WSPR NaN/fac==0 + Fano off-by-one + ~345 MB/h retention;
+  AIS assembler never evicts orphans + unclamped lat/lon.
+* openwebrx readLoop writes Config/Profiles without mu (minor race).
 
 **Critical**
 * **C1** `internal/decode/modes.go:417` — CPRPosition **odd-newer** branch
@@ -154,27 +200,29 @@ eviction, dtmf/blob/flex all missing.
 
 ## 4. Roadmap forward (priority order)
 
+**Progress markers:** R0 done every slice (`go test -race` green on the six
+race-capable packages). R1 batch 1+2 done (`9856a52`, `41efb0d`); NIM/web
+parts of R3+R4 done (`7259d71`); openwebrx/websdr write-deadlines + events
+close done (`c1051e4`).
+
 * **R0 process:** run `go test -race` on the six race-capable packages in
   every slice loop; replace the stale `-race cannot run` note everywhere.
-* **R1 fleet stability (fix order):** C1+C2, H1, M1 block-gating, M2 profile
-  client close, M5 rdio closed-guard, temp-WAV removals (hfrun + jukebox
-  main.go:2865), M10 prune, M8 WAV-failure log, M11 boot-continue.
-* **R2 transport:** extract a shared ws-transport (dial + write deadline +
-  readLoop + backoff/jitter + reconnect + stale-frame detection); then
-  per-client openwebrx reconnect/events close/freshness (H2), write
-  deadlines (H3), tune-drain (M4), kiwi fixes (M7), websdr backoff reset +
-  preflight short-read, and a websdr test suite.
-* **R3 NIM governance:** pooled conn + bounded worker pool + status-code
-  classification with cooldown (H4), `GuardTranscript` on the Kiwi path
-  (H5), rune-count/word-boundary verify fix (M6), `TranscribeASR` under the
-  semaphore.
-* **R4 web hardening:** server timeouts + body caps (H6), unlock-before-
-  write (M12), Secure-cookie scheme detection (M13), attempts-map cap (M14),
+* **R1 fleet stability — DONE** (C1 armor, C2, H1, M1, M2, M5, M8, M9,
+  M10, M11). Remaining R1-scope item: jukebox main.go:2865 temp-WAV.
+* **R2 transport remainder:** openwebrx auto-reconnect (or feed
+  `Reconnect` through), tune-drain M4 (all three clients), kiwi fixes
+  (M7: in-flight reconnect, unlocked rate/info), websdr backoff reset +
+  preflight short-read, and a websdr test suite (still zero tests).
+* **R3 NIM governance — DONE** (pooled conn, worker pool, cooldowns,
+  GuardTranscript on the Kiwi path). Remaining: rune-count/word-boundary
+  verify fix (M6), `TranscribeASR` under the semaphore.
+* **R4 web hardening — DONE** (H6, M12, M13, M14). Remaining smallies:
   `/audio/live` exact match, `app.js:1368` innerHTML → textContent, atomic
   `index.json`.
-* **R5 decode coverage:** CPR odd test, truncated-WAV fuzz, FT8/WSPR
-  audio-level SNR fixtures, WEFAX color + mid-chart, AIS eviction, block-scan
-  budget reduction.
+* **R5 decode coverage:** truncated-WAV fuzz, FT8/WSPR audio-level SNR
+  fixtures, WEFAX color + mid-chart, AIS eviction, WSPR NaN/fac==0 +
+  Fano off-by-one, block-scan budget reduction. (CPR odd test + C2 clamp
+  test already landed in `9856a52`.)
 * **R6 structure:** split main.go (3.4k lines) into `internal/fleetscan` +
   `internal/capture`; make `web.Server` the single owner of the scan board
   (kill the 500-cap mirror that strands rows); one station-identity
