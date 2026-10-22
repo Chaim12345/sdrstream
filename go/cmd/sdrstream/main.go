@@ -2617,64 +2617,123 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 }
 
 func runDirectoryHFScan(ctx context.Context, server *web.Server, host string, wspr bool, capturesDir string) {
-	targets := []decode.HFTarget{{Name: "FT8 40m", Kind: "ft8", CarrierKHz: 7074, DialKHz: 7074, Mode: "usb", Listen: 40 * time.Second}}
+	// One orderly WebSDR session for both UTC-aligned digital cycles. The
+	// client is closed on cancellation and never touches the public tunnel.
+	client, err := websdr.New(host, websdr.DefaultOptions())
+	if err != nil {
+		return
+	}
+	if err := client.Connect(ctx); err != nil {
+		return
+	}
+	defer client.Close()
+	targets := []decode.HFTarget{{Name: "FT8 40m", Kind: "ft8", CarrierKHz: 7074, DialKHz: 7074, Mode: "usb", Listen: 15 * time.Second}}
 	if wspr {
-		targets = append(targets, decode.HFTarget{Name: "WSPR 40m", Kind: "wspr", CarrierKHz: 7038.6, DialKHz: 7038.6, Mode: "usb", Listen: 250 * time.Second})
+		targets = append(targets, decode.HFTarget{Name: "WSPR 40m", Kind: "wspr", CarrierKHz: 7038.6, DialKHz: 7038.6, Mode: "usb", Listen: 120 * time.Second})
 	}
 	for ctx.Err() == nil {
 		for _, target := range targets {
 			if ctx.Err() != nil {
 				return
 			}
-			key := addScan(server, web.ScanStatus{StationType: "WebSDR", Station: host, FrequencyHz: target.DialKHz * 1000, Mode: target.Mode, State: "listening", UpdatedAt: time.Now()})
-			connectCtx, cancelConnect := context.WithTimeout(ctx, 10*time.Second)
-			source, err := monitor.SourceFor(connectCtx, "websdr", host, "")
-			cancelConnect()
-			if err != nil {
-				setScanResult(server, key, "blocked", err.Error())
-				blockStationIfEligible(ctx, server, host, err.Error(), 30*time.Minute)
+			key := addScan(server, web.ScanStatus{StationType: "WebSDR", Station: host, FrequencyHz: target.DialKHz * 1000, Mode: target.Mode, State: "waiting UTC slot", UpdatedAt: time.Now()})
+			if err := client.Tune(ctx, target.DialKHz, "usb", nil); err != nil {
+				setScanResult(server, key, "blocked", "tune: "+err.Error())
 				return
 			}
-			listenCtx, cancelListen := context.WithTimeout(ctx, target.Listen+10*time.Second)
-			samples, rate, err := source.Listen(listenCtx, target.DialKHz*1000, target.Mode, target.Listen)
-			cancelListen()
-			_ = source.Close()
-			if err != nil {
-				setScanResult(server, key, "blocked", err.Error())
-				blockStationIfEligible(ctx, server, host, err.Error(), 30*time.Minute)
+			slot := int64(15)
+			duration := 16 * time.Second
+			if target.Kind == "wspr" {
+				slot = 120
+				duration = 122 * time.Second
+			}
+			if err := waitHFSlot(ctx, slot); err != nil {
 				return
 			}
-			pcm := make([]int16, len(samples))
-			for i, v := range samples {
-				pcm[i] = int16(max(-32768, min(32767, int(v*32767))))
+			setScanResult(server, key, "listening", time.Now().UTC().Format("15:04:05Z"))
+			samples, rate, err := client.Record(ctx, duration)
+			callEnd := time.Now().UTC()
+			if err != nil {
+				setScanResult(server, key, "blocked", "record: "+err.Error())
+				return
 			}
-			hf := decode.HFDecodeForScan(target, host, pcm, rate)
-			if hf.Gate.Live {
-				path := filepath.Join(capturesDir, fmt.Sprintf("%s_%dkHz_%s_%s.wav", safeCaptureName(target.Name), int(target.DialKHz), target.Kind, time.Now().UTC().Format("20060102T150405Z")))
-				if err := common.WriteWAVFile(path, pcm, rate); err != nil {
-					setScanResult(server, key, "error", "capture write: "+err.Error())
-					continue
-				}
-				server.AddCaptureMetadata(filepath.Base(path), target.Kind, host, hf.Text, target.DialKHz*1000)
-				activity := monitor.Activity{ID: int(time.Now().UnixNano()), Started: hf.Started, FrequencyHz: target.DialKHz * 1000, Kind: "data", Mode: target.Kind, Detail: hf.Text, Source: host, AudioPath: path}
-				if err := server.AddLiveArtifact(activity, nil); err != nil {
-					setScanResult(server, key, "unverified decode", err.Error())
-				} else {
-					setScanResult(server, key, "decoded", hf.Gate.Reason)
+			if rate <= 0 || len(samples) < rate*10 {
+				setScanResult(server, key, "error", fmt.Sprintf("short WebSDR audio: %d samples at %dHz", len(samples), rate))
+				continue
+			}
+			start := callEnd.Add(-time.Duration(float64(len(samples)) / float64(rate) * float64(time.Second)))
+			// WebSDR stream is an 8kHz +/-1 float-domain audio signal. Convert
+			// to float for the same decoders used by hfprove (int16/32768).
+			pcm := append([]int16(nil), samples...)
+			f := make([]float64, len(pcm))
+			for i, v := range pcm {
+				f[i] = float64(v) / 32768.0
+			}
+			var lines []string
+			if target.Kind == "ft8" {
+				for _, m := range decode.FTXDecodeStream(f, rate, float64(start.UnixNano())/1e9, "FT8") {
+					lines = append(lines, fmt.Sprintf("%s FT8 %+.1f %.0f Hz %s", time.Unix(m.SlotUnix, 0).UTC().Format("150405"), m.SNR, m.FreqHz, m.Text))
 				}
 			} else {
-				setScanResult(server, key, "unverified decode", hf.Gate.Reason)
+				for _, w := range decode.WSPRWindows(f, rate, float64(start.UnixNano())/1e9) {
+					for _, m := range w.Messages {
+						lines = append(lines, fmt.Sprintf("%s WSPR %+.0f %.1f %.1f Hz %s", time.Unix(w.Start, 0).UTC().Format("1504"), m.SNR, m.DT, m.FreqHz, m.Text))
+					}
+				}
+			}
+			text := strings.Join(lines, "\n")
+			gate := verify.FTX(len(lines), true, text)
+			if target.Kind == "wspr" {
+				gate = verify.WSPR(len(lines), text)
+			}
+			if !gate.Live {
+				setScanResult(server, key, "unverified decode", gate.Reason)
+				continue
+			}
+			name := fmt.Sprintf("%s_%dkHz_%s_%s.wav", target.Kind, int(target.DialKHz), target.Kind, start.UTC().Format("20060102T150405Z"))
+			path := filepath.Join(capturesDir, name)
+			if err := os.MkdirAll(capturesDir, 0755); err != nil {
+				setScanResult(server, key, "error", err.Error())
+				continue
+			}
+			if err := os.WriteFile(path, decode.WriteWAV16(pcm, rate), 0644); err != nil {
+				setScanResult(server, key, "error", "capture write: "+err.Error())
+				continue
+			}
+			server.AddCaptureMetadata(name, target.Kind, host, text, target.DialKHz*1000)
+			activity := monitor.Activity{ID: int(time.Now().UnixNano()), Started: start, FrequencyHz: target.DialKHz * 1000, Kind: "data", Mode: target.Kind, Detail: text, Source: host, AudioPath: path}
+			if err := server.AddLiveArtifact(activity, nil); err != nil {
+				setScanResult(server, key, "verified decode; gallery error", err.Error())
+			} else {
+				setScanResult(server, key, "decoded", gate.Reason)
 			}
 		}
-		wait := time.NewTimer(5 * time.Minute)
+		// After each pair, allow a short idle before starting the next aligned cycle.
 		select {
 		case <-ctx.Done():
-			wait.Stop()
 			return
-		case <-wait.C:
+		case <-time.After(5 * time.Second):
 		}
 	}
 }
+
+func waitHFSlot(ctx context.Context, slot int64) error {
+	now := time.Now().UTC()
+	next := now.Truncate(time.Duration(slot) * time.Second).Add(time.Duration(slot) * time.Second)
+	wait := time.Until(next.Add(-700 * time.Millisecond))
+	if wait <= 0 {
+		return nil
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 func safeCaptureName(name string) string {
 	return strings.Map(func(r rune) rune {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
