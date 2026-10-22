@@ -176,3 +176,38 @@ func TestFindSpectrumPeaks(t *testing.T) {
 		t.Errorf("peak level = %v, want -20", peaks[0].LevelDB)
 	}
 }
+
+// TestSelectProfileSendsRawKeyAndRestartsDemod pins two OpenWebRX facts:
+// selectprofile needs the raw "sdr_id|profile_id" key, and the demodulator
+// must be started again afterwards or the server sends no audio.
+func TestSelectProfileSendsRawKeyAndRestartsDemod(t *testing.T) {
+	server, received := startMockServer(t)
+	client, err := New(server.URL, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := client.Connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+	next(t, received)
+	next(t, received)
+	profiles := client.ProfileList()
+	if len(profiles) != 1 || profiles[0].Key != "sdr|p" {
+		t.Fatalf("profiles = %+v, want one with raw key sdr|p", profiles)
+	}
+	if err := client.SelectProfile(ctx, profiles[0].Key); err != nil {
+		t.Fatal(err)
+	}
+	sel := next(t, received)
+	params, _ := sel["params"].(map[string]interface{})
+	if sel["type"] != "selectprofile" || params["profile"] != "sdr|p" {
+		t.Fatalf("selectprofile message = %v", sel)
+	}
+	restart := next(t, received)
+	if restart["type"] != "dspcontrol" || restart["action"] != "start" {
+		t.Fatalf("message after selectprofile = %v, want dspcontrol action=start", restart)
+	}
+}

@@ -550,8 +550,9 @@ func (c *Client) Tune(ctx context.Context, frequency *int64, modulation string, 
 	return conn.WriteMessage(websocket.TextMessage, restart)
 }
 
-// SelectProfile switches the receiver to another SDR profile, identified by
-// its "sdr_id|profile_id" key as listed by /status.json.
+// SelectProfile switches the receiver to another SDR profile. The argument
+// must be the raw "sdr_id|profile_id" key (Profile.Key), not the display
+// name; the server ignores a name. The demodulator is restarted afterwards.
 func (c *Client) SelectProfile(ctx context.Context, profile string) error {
 	c.mu.Lock()
 	conn := c.conn
@@ -564,7 +565,15 @@ func (c *Client) SelectProfile(ctx context.Context, profile string) error {
 		"params": map[string]interface{}{"profile": profile},
 	}
 	payload, _ := json.Marshal(message)
-	return conn.WriteMessage(websocket.TextMessage, payload)
+	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+		return err
+	}
+	// A profile switch tears down the server's demodulator: no audio flows
+	// until the client starts it again, so restart it here. The caller
+	// still has to Tune, because the old frequency belongs to the old
+	// profile's span.
+	restart, _ := json.Marshal(map[string]interface{}{"type": "dspcontrol", "action": "start"})
+	return conn.WriteMessage(websocket.TextMessage, restart)
 }
 
 // Profile is one tunable SDR profile a server advertises over the socket.

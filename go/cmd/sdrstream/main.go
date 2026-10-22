@@ -1374,7 +1374,9 @@ func cmdWeb(args []string) error {
 	monitorLabel := fs.String("monitor-label", "", "programme or station label for monitor activities and gallery entries")
 	monitorKind := fs.String("monitor-kind", "openwebrx", "monitor receiver protocol: openwebrx, websdr or kiwi")
 	monitorProfile := fs.String("monitor-profile", "", "OpenWebRX profile for the monitor")
-	monitorStrategy := fs.String("monitor-strategy", "sweep", "monitor strategy: sweep or spectrum")
+	monitorStrategy := fs.String("monitor-strategy", "sweep", "monitor strategy: sweep, spectrum or broadcast")
+	monitorChannels := fs.String("monitor-channels", "", "broadcast channel rotation: \"default\" (terrestrial VHF/UHF voice) or comma list of freqHz[:mode[:label]]")
+	monitorChannelPause := fs.Duration("monitor-channel-pause", 2*time.Second, "rest between broadcast channel visits (keeps load inside budget)")
 	monitorStart := fs.Float64("monitor-start", 144000000, "monitor sweep start frequency in Hz")
 	monitorEnd := fs.Float64("monitor-end", 146000000, "monitor sweep end frequency in Hz")
 	monitorStep := fs.Float64("monitor-step", 25000, "monitor sweep step in Hz")
@@ -1403,6 +1405,15 @@ func cmdWeb(args []string) error {
 	}
 	if *monitorDirewolf != "" && decode.DirewolfBinary(*monitorDirewolf) == "" {
 		return fmt.Errorf("-monitor-direwolf: %q is not an executable file", *monitorDirewolf)
+	}
+	var channels []monitor.Channel
+	if *monitorChannels == "default" {
+		channels = monitor.DefaultVoiceChannels()
+	} else if *monitorChannels != "" {
+		var err error
+		if channels, err = monitor.ParseChannels(*monitorChannels); err != nil {
+			return err
+		}
 	}
 	server := web.New(*capturesDir, *galleryDir)
 	server.NoAuth = *noAuth
@@ -1450,6 +1461,8 @@ func cmdWeb(args []string) error {
 			},
 			Source:         source,
 			Strategy:       *monitorStrategy,
+			Channels:       channels,
+			ChannelPause:   *monitorChannelPause,
 			StartHz:        *monitorStart,
 			EndHz:          *monitorEnd,
 			StepHz:         *monitorStep,

@@ -85,6 +85,12 @@ type Options struct {
 	DirewolfBinary string
 	// OutDir saves a WAV of every transmission.
 	OutDir string
+	// Channels, when set with the broadcast strategy, is the rotation of
+	// fixed voice channels to visit (see DefaultVoiceChannels).
+	Channels []Channel
+	// ChannelPause is the rest between channel visits; it keeps the
+	// duty cycle inside the load budget. Default 2s.
+	ChannelPause time.Duration
 	// Name identifies the receiver in reports.
 	Name  string
 	Label string
@@ -121,6 +127,7 @@ type Monitor struct {
 	centreHz   float64
 	spanHz     float64
 	spectrumOK bool
+	bc         broadcastState
 }
 
 // candidate is a peak that is currently present in the spectrum.
@@ -160,6 +167,9 @@ func New(options Options) *Monitor {
 	}
 	if options.Logf == nil {
 		options.Logf = func(string, ...interface{}) {}
+	}
+	if options.ChannelPause <= 0 {
+		options.ChannelPause = 2 * time.Second
 	}
 	return &Monitor{opts: options, active: map[string]*candidate{},
 		reported: map[string]time.Time{}, jobs: make(chan job, 16)}
@@ -227,8 +237,11 @@ func (m *Monitor) worker(ctx context.Context) {
 // them.
 // runBroadcast records one fixed-frequency broadcast clip at a time.
 func (m *Monitor) runBroadcast(ctx context.Context) error {
+	if len(m.opts.Channels) > 0 {
+		return m.runChannels(ctx)
+	}
 	if m.opts.StartHz <= 0 {
-		return fmt.Errorf("monitor: broadcast strategy needs --start")
+		return fmt.Errorf("monitor: broadcast strategy needs --start or channels")
 	}
 	for {
 		if ctx.Err() != nil {
