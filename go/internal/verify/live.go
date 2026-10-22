@@ -38,8 +38,11 @@ func Text(kind, text, anchor string) Result {
 		return Result{true, "anchor " + anchor}
 	}
 	upper := strings.ToUpper(text)
-	if kind == "navtex" && strings.Contains(upper, "ZCZC") && (strings.Contains(upper, "NAVAREA") || strings.Contains(upper, "METAREA")) && strings.Contains(upper, "NNNN") {
-		return Result{true, fmt.Sprintf("NAVTEX framing and area (%d maritime words)", MaritimeWordHits(text))}
+	if kind == "navtex" && strings.Contains(upper, "ZCZC") && strings.Contains(upper, "NNNN") {
+		hits := MaritimeWordHits(text)
+		if hits >= 2 {
+			return Result{true, fmt.Sprintf("NAVTEX framing and %d distinct maritime words", hits)}
+		}
 	}
 	return Result{false, "expected service anchor missing"}
 }

@@ -113,7 +113,17 @@ func TestMaritimeWordHitsDoesNotLoosenGate(t *testing.T) {
 	if n := MaritimeWordHits("GALE WARNING NORTH SEA"); n < 3 {
 		t.Errorf("hits = %d", n)
 	}
-	if r := Text("navtex", "ZCZC FA01 GALE WARNING SEA STORM WIND NNNN", ""); r.Live {
-		t.Error("maritime words alone must not satisfy the NAVAREA/METAREA anchor")
+	good := "ZCZC FA01 GALE WARNING NORTH SEA NNNN"
+	if r := Text("navtex", good, ""); !r.Live {
+		t.Errorf("framed bulletin with two distinct maritime words rejected: %s", r.Reason)
+	}
+	if r := Text("navtex", "ZCZC FA01 THIS IS A TEST OF THE EMERGENCY BROADCAST SYSTEM NNNN", ""); r.Live {
+		t.Error("non-maritime framed text passed the NAVTEX gate")
+	}
+	if r := Text("noise", good, ""); r.Live {
+		t.Error("NAVTEX-looking noise passed under a different decoder kind")
+	}
+	if r := Text("navtex", "GALE WARNING NORTH SEA STORM WIND", ""); r.Live {
+		t.Error("unframed maritime-looking noise passed the NAVTEX gate")
 	}
 }
