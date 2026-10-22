@@ -616,7 +616,7 @@ func (s *Server) handleFeeds(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, m.Snapshot(500))
 }
 
-func scanStateFile() string { return filepath.Join(os.TempDir(), "sdrstream-scan-state.json") }
+func scanStateFile() string { return stateFile("sdrstream-scan-state.json") }
 func (s *Server) loadScanState() {
 	b, err := os.ReadFile(scanStateFile())
 	if err != nil {
@@ -635,10 +635,7 @@ func (s *Server) persistScanStateLocked() {
 	if err != nil {
 		return
 	}
-	tmp := scanStateFile() + ".tmp"
-	if os.WriteFile(tmp, b, 0600) == nil {
-		_ = os.Rename(tmp, scanStateFile())
-	}
+	writeStateFile(scanStateFile(), b)
 }
 
 // SetMonitor attaches a live monitor to the server.

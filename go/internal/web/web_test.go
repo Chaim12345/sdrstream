@@ -17,6 +17,21 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/monitor"
 )
 
+// TestMain isolates the small JSON state files (auth sessions, scan state)
+// into a throwaway directory so test runs never leak fixture rows into a
+// live server sharing the OS temp dir - a leaked "rx.example" row is how
+// fake scan entries once appeared in a real UI.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "sdrstream-web-test-state")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("SDRSTREAM_STATE_DIR", dir)
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	dir := t.TempDir()
@@ -310,6 +325,23 @@ func TestSessionsPersistAcrossRestart(t *testing.T) {
 	second.ServeHTTP(recorder, api)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("restarted server rejected persisted session: status=%d, want 200", recorder.Code)
+	}
+}
+
+func TestSessionPersistCreatesMissingStateDir(t *testing.T) {
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "test-demo-password")
+	t.Setenv("SDRSTREAM_STATE_DIR", filepath.Join(t.TempDir(), "nested", "state"))
+
+	handler := (&Server{}).Handler()
+	login := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("password=test-demo-password"))
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, login)
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("login status=%d, want 303", recorder.Code)
+	}
+	if _, err := os.Stat(authSessionFile()); err != nil {
+		t.Fatalf("session file was not written into a fresh state dir: %v", err)
 	}
 }
 

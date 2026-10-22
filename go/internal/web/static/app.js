@@ -61,8 +61,14 @@ function showView(name) {
   if (name === 'map') initMap();
   if (location.hash !== '#'+name) history.replaceState(null,'','#'+name);
 }
-views.forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
-const more=el('nav-more'); if(more) more.onclick=()=>{const active=more.getAttribute('aria-expanded')!=='true';more.setAttribute('aria-expanded',String(active));document.querySelectorAll('.mainnav button').forEach((b,i)=>{if(i>=5&&b!==more)b.hidden=!active})};
+views.forEach(b => { if (b.dataset.view) b.addEventListener('click', () => showView(b.dataset.view)); });
+/* The More button collapses the nav to its first five entries on narrow
+   screens; it is not a view, so it must never reach showView (an undefined
+   view blanks every panel). Start collapsed on mobile widths. */
+const more=el('nav-more');
+const collapseNav=collapse=>{if(!more)return;more.setAttribute('aria-expanded',String(!collapse));document.querySelectorAll('.mainnav button').forEach((b,i)=>{if(i>=5&&b!==more)b.hidden=collapse})};
+if(more) more.onclick=()=>collapseNav(more.getAttribute('aria-expanded')==='true');
+collapseNav(window.matchMedia('(max-width: 899px)').matches);
 window.addEventListener('hashchange',()=>{const name=location.hash.slice(1);if(el('view-'+name)) showView(name)});
 document.querySelectorAll('[data-goto]').forEach(b => b.addEventListener('click', () => showView(b.dataset.goto)));
 
