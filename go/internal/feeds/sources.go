@@ -13,12 +13,19 @@ var maxAges = map[string]time.Duration{
 	"rbn":         30 * time.Minute,
 	"aisstream":   10 * time.Minute,
 	"wsprnet":     24 * time.Hour,
+	"noaa-swpc":   12 * time.Hour,
+	"wspr.live":   30 * time.Minute,
+	"sondehub":    2 * time.Hour,
+	"digitraffic": 30 * time.Minute,
 }
 
 // Start launches every feed against the manager until ctx ends.
 func Start(ctx context.Context, m *Manager, lat, lon float64, aisKey string) {
-	pollers := []Poller{&ADSB{Lat: lat, Lon: lon, Radius: 250}}
+	pollers := []Poller{&ADSB{Lat: lat, Lon: lon, Radius: 250},
+		&PublicJSON{Source: "noaa-swpc"}, &PublicJSON{Source: "wspr.live"},
+		&PublicJSON{Source: "digitraffic"}}
 	streams := []StreamSource{
+		&SondeHub{},
 		&APRSIS{Lat: lat, Lon: lon, Radius: 400},
 		&PSKReporter{},
 		&RBN{},

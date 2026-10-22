@@ -535,3 +535,14 @@ kbd {
 .bookmark-chip.user { border-color: #5b4a1a; color: var(--warn); }
 .tune-hint { font-size: 11px; margin-top: 4px; }
 #spectrum, #waterfall { touch-action: manipulation; }
+
+/* Public data panels use independent source samples, not the global top-N. */
+.public-feed-panels { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,350px),1fr)); gap:16px; margin:18px 0 28px; }
+.public-feed-panel { min-width:0; margin:0; overflow-wrap:anywhere; }
+.public-feed-panel h2 { margin:0; }
+.public-feed-panel .panel-head { gap:12px; flex-wrap:wrap; }
+.public-feed-sample { padding:10px 0; border-top:1px solid var(--border,#283447); line-height:1.55; }
+.public-feed-credit { padding-top:12px; font-size:12px; }
+.feed-error { color:#ffb16c; }
+.public-feed-panel [data-state="live"] { color:#65d6a0; }
+.public-feed-panel [data-state="error"] { color:#ffb16c; }
