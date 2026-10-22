@@ -206,3 +206,25 @@ func ExampleTranscribeBest() {
 	fmt.Println("the hosted backend is tried first, whisper.cpp is the fallback")
 	// Output: the hosted backend is tried first, whisper.cpp is the fallback
 }
+
+func TestNIMModelPresets(t *testing.T) {
+	for name, want := range map[string]string{
+		"":                 DefaultNIMFunctionID,
+		"parakeet":         DefaultNIMFunctionID,
+		"Whisper-Large-V3": WhisperLargeV3FunctionID,
+		"whisper":          WhisperLargeV3FunctionID,
+		"canary":           CanaryFunctionID,
+	} {
+		if got, ok := NIMModelFunctionID(name); !ok || got != want {
+			t.Errorf("%q: got %q ok=%v", name, got, ok)
+		}
+	}
+	if _, ok := NIMModelFunctionID("nope"); ok {
+		t.Error("unknown preset accepted")
+	}
+	t.Setenv("SDRSTREAM_NIM_MODEL", "whisper-large-v3")
+	t.Setenv("SDRSTREAM_NIM_FUNCTION_ID", "")
+	if got := DefaultNIMOptions().FunctionID; got != WhisperLargeV3FunctionID {
+		t.Errorf("env preset: %q", got)
+	}
+}

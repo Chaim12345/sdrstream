@@ -47,6 +47,13 @@ const (
 	// DefaultNIMLanguage is parakeet-multilingual's automatic language
 	// detection code. The hosted models reject an empty language code.
 	DefaultNIMLanguage = "multi"
+	// WhisperLargeV3FunctionID is the catalog function id of
+	// openai/whisper-large-v3 (build.nvidia.com/openai/whisper-large-v3/api).
+	// "multi" enables automatic language detection; a known language code
+	// is recommended for accuracy.
+	WhisperLargeV3FunctionID = "b702f636-f60c-4a3d-a6f4-f3568c13bd7d"
+	// CanaryFunctionID is canary-1b-asr.
+	CanaryFunctionID = "b0e8b4a5-217c-40b7-9b96-17d84e666317"
 	// nimSampleRate is the rate the audio is resampled to before upload.
 	nimSampleRate = 16000
 )
@@ -74,15 +81,35 @@ type NIMOptions struct {
 //
 //	SDRSTREAM_NIM_API_KEY      NVIDIA API catalog key (required to enable)
 //	SDRSTREAM_NIM_ENDPOINT     default grpc.nvcf.nvidia.com:443
-//	SDRSTREAM_NIM_FUNCTION_ID  default canary-1b-asr
+//	SDRSTREAM_NIM_MODEL        parakeet (default), whisper-large-v3 or canary
+//	SDRSTREAM_NIM_FUNCTION_ID  explicit function id, overrides the model name
 //	SDRSTREAM_NIM_LANG         language hint, default "multi" (auto-detect)
 func DefaultNIMOptions() NIMOptions {
+	fn := DefaultNIMFunctionID
+	if id, ok := NIMModelFunctionID(os.Getenv("SDRSTREAM_NIM_MODEL")); ok {
+		fn = id
+	}
 	return NIMOptions{
 		APIKey:       os.Getenv("SDRSTREAM_NIM_API_KEY"),
 		Endpoint:     envOr("SDRSTREAM_NIM_ENDPOINT", DefaultNIMEndpoint),
-		FunctionID:   envOr("SDRSTREAM_NIM_FUNCTION_ID", DefaultNIMFunctionID),
+		FunctionID:   envOr("SDRSTREAM_NIM_FUNCTION_ID", fn),
 		LanguageCode: envOr("SDRSTREAM_NIM_LANG", DefaultNIMLanguage),
 	}
+}
+
+// NIMModelFunctionID maps a model preset name to its catalog function id.
+// Names: "parakeet" (default multilingual), "whisper" or "whisper-large-v3",
+// "canary". An unknown name is returned as ok=false.
+func NIMModelFunctionID(name string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "parakeet":
+		return DefaultNIMFunctionID, true
+	case "whisper", "whisper-large", "whisper-large-v3":
+		return WhisperLargeV3FunctionID, true
+	case "canary":
+		return CanaryFunctionID, true
+	}
+	return "", false
 }
 
 // NIMAvailable reports whether the hosted backend is configured.
