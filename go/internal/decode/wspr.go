@@ -38,6 +38,7 @@ type WSPRMessage struct {
 	Metric  uint32
 	Type    int // 1 standard, 2 extended prefix/suffix, 3 hashed
 	WindowT int64
+	Engine  string // decode engine: "go" or the reference tool name (empty = Go)
 }
 
 var wsprSync = [162]int{

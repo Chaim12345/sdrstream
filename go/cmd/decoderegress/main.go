@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -28,8 +29,14 @@ func main() {
 	asJSON := flag.Bool("json", false, "emit JSON instead of the table")
 	root := flag.String("root", ".", "go/ module directory (for committed recordings)")
 	wb := flag.Bool("write-baseline", false, "print a new golden/baseline.txt from the current results")
+	bakeoff := flag.Bool("bakeoff", false, "run Go decoders and reference tools side by side against the goldens")
 	flag.Parse()
 
+	if *bakeoff {
+		rows := regress.Bakeoff(context.Background(), *cache, *root, *only)
+		regress.WriteBakeoff(os.Stdout, rows, regress.Verdicts(rows))
+		return
+	}
 	var results []regress.Result
 	for _, c := range regress.Manifest() {
 		if *only != "" && !strings.Contains(c.Name, *only) && c.Decoder != *only {
