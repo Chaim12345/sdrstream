@@ -550,6 +550,26 @@ func securityHeaders(next http.Handler) http.Handler {
 //go:embed static
 var staticFS embed.FS
 
+// legalFS holds copies of the repository LICENSE, NOTICE and
+// NOTICE-third-party.md (go:embed cannot reach outside this package).
+// TestLegalFilesMatchRepoRoot keeps them identical to the root files.
+//
+//go:embed legal
+var legalFS embed.FS
+
+// handleLegal serves an embedded legal text as plain text.
+func handleLegal(name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		data, err := legalFS.ReadFile("legal/" + name)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write(data)
+	}
+}
+
 // Handler returns the HTTP routes.
 func (s *Server) Handler() http.Handler {
 	s.auth.init()
@@ -557,6 +577,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/logout", s.handleLogout)
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/LICENSE", handleLegal("LICENSE"))
+	mux.HandleFunc("/NOTICE", handleLegal("NOTICE"))
+	mux.HandleFunc("/NOTICE-third-party.md", handleLegal("NOTICE-third-party.md"))
 	mux.HandleFunc("/api/status.json", s.handleStatus)
 	mux.HandleFunc("/api/captures.json", s.handleCaptures)
 	mux.HandleFunc("/api/satellites.json", s.handleSatellites)

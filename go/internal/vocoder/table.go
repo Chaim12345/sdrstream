@@ -9,7 +9,12 @@ package vocoder
 // its 256 entries, so it is reproduced verbatim rather than computed.
 //
 // Values are from the public WebSDR HTML5 client (websdr-sound.js),
-// copyright 2013-2025 PA3FWM.
+// copyright 2013-2025 PA3FWM. NO PERMISSION TO REDISTRIBUTE OR REUSE THIS TABLE
+// HAS BEEN OBTAINED: upstream says the client code is "all rights reserved" and
+// may only be served unmodified by the original WebSDR server to original
+// clients, and that reusing parts of it in other software needs the author's
+// explicit prior permission. TODO: obtain permission or replace the table
+// (see NOTICE).
 var sampleTable = [256]int16{
 	-5504, -5248, -6016, -5760, -4480, -4224, -4992, -4736,
 	-7552, -7296, -8064, -7808, -6528, -6272, -7040, -6784,

@@ -13,3 +13,10 @@ go/bin/
 .run/
 gotools/sdrpass/sdrpass
 go/sdrstream
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+tools/vendor/decoders/*
+!tools/vendor/decoders/README.md

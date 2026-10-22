@@ -759,3 +759,10 @@ go run ./cmd/sdrstream icecast sweep -nwr -max 20 -dur 15s   # one stream at a t
 Streams are decoded with ffmpeg and go through the existing speech recognition and decoders. SAME
 headers are found with `decode.SAMEScan` (per-burst demodulation, 3-repeat voting, strict FCC field
 validation) and are also tried by the monitor (`--monitor-kind icecast`, the stream URL as server).
+
+## License
+
+Copyright (C) 2026 Chaim12345 and sdrstream contributors.
+SPDX-License-Identifier: AGPL-3.0-or-later. See `LICENSE`, `NOTICE` and
+`NOTICE-third-party.md` (also served by the web UI footer). Note the open
+permission issue for the WebSDR table described in `NOTICE`.
