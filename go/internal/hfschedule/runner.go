@@ -352,6 +352,9 @@ func (r *Runner) RunOnce(ctx context.Context, entries []Entry) (*Audit, error) {
 		if err := saveJSON(filepath.Join(r.Dir, o.Key()+".json"), a); err != nil {
 			return nil, err
 		}
+		if err := AppendLedger(r.Dir, a); err != nil {
+			return nil, err
+		}
 		state.Attempts[o.Key()] = a
 		if err := saveJSON(statePath, state); err != nil {
 			return nil, err

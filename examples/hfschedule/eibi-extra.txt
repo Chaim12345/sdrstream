@@ -1,0 +1,157 @@
+sdrstream supplemental HF schedule (EiBi format)
+=================================================
+NAVTEX 518 kHz NAVAREA I slot times: ITU Navtex list (2017) cross-checked with
+en.wikipedia.org/wiki/List_of_Navtex_stations (2026). DWD 4583 is continuous in
+EiBi A26; split into hourly windows so each hour gets its own capture slot.
+Time-signal carriers are AM; audio is recorded, there is no decode backend.
+
+         Valid March 29, 2026 - October 25, 2026
+
+kHz           Time(UTC) Days  ITU Station                Lang. Target   Remarks
+================================================================================
+518           0040-0050           E Niton NAVTEX         E     Eu           navtex-slot
+518           0440-0450           E Niton NAVTEX         E     Eu           navtex-slot
+518           0840-0850           E Niton NAVTEX         E     Eu           navtex-slot
+518           1240-1250           E Niton NAVTEX         E     Eu           navtex-slot
+518           1640-1650           E Niton NAVTEX         E     Eu           navtex-slot
+518           2040-2050           E Niton NAVTEX         E     Eu           navtex-slot
+518           0100-0110           G Cullercoats NAVTEX   E     Eu           navtex-slot
+518           0500-0510           G Cullercoats NAVTEX   E     Eu           navtex-slot
+518           0900-0910           G Cullercoats NAVTEX   E     Eu           navtex-slot
+518           1300-1310           G Cullercoats NAVTEX   E     Eu           navtex-slot
+518           1700-1710           G Cullercoats NAVTEX   E     Eu           navtex-slot
+518           2100-2110           G Cullercoats NAVTEX   E     Eu           navtex-slot
+518           0120-0130           I Grimeton NAVTEX      E     Eu           navtex-slot
+518           0520-0530           I Grimeton NAVTEX      E     Eu           navtex-slot
+518           0920-0930           I Grimeton NAVTEX      E     Eu           navtex-slot
+518           1320-1330           I Grimeton NAVTEX      E     Eu           navtex-slot
+518           1720-1730           I Grimeton NAVTEX      E     Eu           navtex-slot
+518           2120-2130           I Grimeton NAVTEX      E     Eu           navtex-slot
+518           0130-0140           J Gislovshammar NAVTEX E     Eu           navtex-slot
+518           0530-0540           J Gislovshammar NAVTEX E     Eu           navtex-slot
+518           0930-0940           J Gislovshammar NAVTEX E     Eu           navtex-slot
+518           1330-1340           J Gislovshammar NAVTEX E     Eu           navtex-slot
+518           1730-1740           J Gislovshammar NAVTEX E     Eu           navtex-slot
+518           2130-2140           J Gislovshammar NAVTEX E     Eu           navtex-slot
+518           0140-0150           K Niton NAVTEX         E     Eu           navtex-slot
+518           0540-0550           K Niton NAVTEX         E     Eu           navtex-slot
+518           0940-0950           K Niton NAVTEX         E     Eu           navtex-slot
+518           1340-1350           K Niton NAVTEX         E     Eu           navtex-slot
+518           1740-1750           K Niton NAVTEX         E     Eu           navtex-slot
+518           2140-2150           K Niton NAVTEX         E     Eu           navtex-slot
+518           0150-0200           L Rogaland NAVTEX      E     Eu           navtex-slot
+518           0550-0600           L Rogaland NAVTEX      E     Eu           navtex-slot
+518           0950-1000           L Rogaland NAVTEX      E     Eu           navtex-slot
+518           1350-1400           L Rogaland NAVTEX      E     Eu           navtex-slot
+518           1750-1800           L Rogaland NAVTEX      E     Eu           navtex-slot
+518           2150-2200           L Rogaland NAVTEX      E     Eu           navtex-slot
+518           0200-0210           M Jeloy NAVTEX         E     Eu           navtex-slot
+518           0600-0610           M Jeloy NAVTEX         E     Eu           navtex-slot
+518           1000-1010           M Jeloy NAVTEX         E     Eu           navtex-slot
+518           1400-1410           M Jeloy NAVTEX         E     Eu           navtex-slot
+518           1800-1810           M Jeloy NAVTEX         E     Eu           navtex-slot
+518           2200-2210           M Jeloy NAVTEX         E     Eu           navtex-slot
+518           0210-0220           N Orlandet NAVTEX      E     Eu           navtex-slot
+518           0610-0620           N Orlandet NAVTEX      E     Eu           navtex-slot
+518           1010-1020           N Orlandet NAVTEX      E     Eu           navtex-slot
+518           1410-1420           N Orlandet NAVTEX      E     Eu           navtex-slot
+518           1810-1820           N Orlandet NAVTEX      E     Eu           navtex-slot
+518           2210-2220           N Orlandet NAVTEX      E     Eu           navtex-slot
+518           0220-0230           O Portpatrick NAVTEX   E     Eu           navtex-slot
+518           0620-0630           O Portpatrick NAVTEX   E     Eu           navtex-slot
+518           1020-1030           O Portpatrick NAVTEX   E     Eu           navtex-slot
+518           1420-1430           O Portpatrick NAVTEX   E     Eu           navtex-slot
+518           1820-1830           O Portpatrick NAVTEX   E     Eu           navtex-slot
+518           2220-2230           O Portpatrick NAVTEX   E     Eu           navtex-slot
+518           0230-0240           P Den Helder NAVTEX    E     Eu           navtex-slot
+518           0630-0640           P Den Helder NAVTEX    E     Eu           navtex-slot
+518           1030-1040           P Den Helder NAVTEX    E     Eu           navtex-slot
+518           1430-1440           P Den Helder NAVTEX    E     Eu           navtex-slot
+518           1830-1840           P Den Helder NAVTEX    E     Eu           navtex-slot
+518           2230-2240           P Den Helder NAVTEX    E     Eu           navtex-slot
+518           0240-0250           Q Malin Head NAVTEX    E     Eu           navtex-slot
+518           0640-0650           Q Malin Head NAVTEX    E     Eu           navtex-slot
+518           1040-1050           Q Malin Head NAVTEX    E     Eu           navtex-slot
+518           1440-1450           Q Malin Head NAVTEX    E     Eu           navtex-slot
+518           1840-1850           Q Malin Head NAVTEX    E     Eu           navtex-slot
+518           2240-2250           Q Malin Head NAVTEX    E     Eu           navtex-slot
+518           0300-0310           S Pinneberg NAVTEX     E     Eu           navtex-slot
+518           0700-0710           S Pinneberg NAVTEX     E     Eu           navtex-slot
+518           1100-1110           S Pinneberg NAVTEX     E     Eu           navtex-slot
+518           1500-1510           S Pinneberg NAVTEX     E     Eu           navtex-slot
+518           1900-1910           S Pinneberg NAVTEX     E     Eu           navtex-slot
+518           2300-2310           S Pinneberg NAVTEX     E     Eu           navtex-slot
+518           0310-0320           T Oostende NAVTEX      E     Eu           navtex-slot
+518           0710-0720           T Oostende NAVTEX      E     Eu           navtex-slot
+518           1110-1120           T Oostende NAVTEX      E     Eu           navtex-slot
+518           1510-1520           T Oostende NAVTEX      E     Eu           navtex-slot
+518           1910-1920           T Oostende NAVTEX      E     Eu           navtex-slot
+518           2310-2320           T Oostende NAVTEX      E     Eu           navtex-slot
+518           0330-0340           V Oostende NAVTEX      E     Eu           navtex-slot
+518           0730-0740           V Oostende NAVTEX      E     Eu           navtex-slot
+518           1130-1140           V Oostende NAVTEX      E     Eu           navtex-slot
+518           1530-1540           V Oostende NAVTEX      E     Eu           navtex-slot
+518           1930-1940           V Oostende NAVTEX      E     Eu           navtex-slot
+518           2330-2340           V Oostende NAVTEX      E     Eu           navtex-slot
+518           0340-0350           W Valentia NAVTEX      E     Eu           navtex-slot
+518           0740-0750           W Valentia NAVTEX      E     Eu           navtex-slot
+518           1140-1150           W Valentia NAVTEX      E     Eu           navtex-slot
+518           1540-1550           W Valentia NAVTEX      E     Eu           navtex-slot
+518           1940-1950           W Valentia NAVTEX      E     Eu           navtex-slot
+518           2340-2350           W Valentia NAVTEX      E     Eu           navtex-slot
+4583          0005-0055       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0105-0155       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0205-0255       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0305-0355       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0405-0455       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0505-0555       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0605-0655       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0705-0755       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0805-0855       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0905-0955       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1005-1055       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1105-1155       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1205-1255       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1305-1355       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1405-1455       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1505-1555       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1605-1655       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1705-1755       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1805-1855       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1905-1955       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          2005-2055       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          2105-2155       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          2205-2255       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          2305-2355       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4996          0015-0021       RUS RWM Time Signal        E                  time-signal
+4996          0315-0321       RUS RWM Time Signal        E                  time-signal
+4996          0615-0621       RUS RWM Time Signal        E                  time-signal
+4996          0915-0921       RUS RWM Time Signal        E                  time-signal
+4996          1215-1221       RUS RWM Time Signal        E                  time-signal
+4996          1515-1521       RUS RWM Time Signal        E                  time-signal
+4996          1815-1821       RUS RWM Time Signal        E                  time-signal
+4996          2115-2121       RUS RWM Time Signal        E                  time-signal
+9996          0025-0031       RUS RWM Time Signal        E                  time-signal
+9996          0325-0331       RUS RWM Time Signal        E                  time-signal
+9996          0625-0631       RUS RWM Time Signal        E                  time-signal
+9996          0925-0931       RUS RWM Time Signal        E                  time-signal
+9996          1225-1231       RUS RWM Time Signal        E                  time-signal
+9996          1525-1531       RUS RWM Time Signal        E                  time-signal
+9996          1825-1831       RUS RWM Time Signal        E                  time-signal
+9996          2125-2131       RUS RWM Time Signal        E                  time-signal
+10000         0035-0041       USA WWV Time Signal        E                  time-signal
+10000         0335-0341       USA WWV Time Signal        E                  time-signal
+10000         0635-0641       USA WWV Time Signal        E                  time-signal
+10000         0935-0941       USA WWV Time Signal        E                  time-signal
+10000         1235-1241       USA WWV Time Signal        E                  time-signal
+10000         1535-1541       USA WWV Time Signal        E                  time-signal
+10000         1835-1841       USA WWV Time Signal        E                  time-signal
+10000         2135-2141       USA WWV Time Signal        E                  time-signal
+15000         0045-0051       USA WWV Time Signal        E                  time-signal
+15000         0345-0351       USA WWV Time Signal        E                  time-signal
+15000         0645-0651       USA WWV Time Signal        E                  time-signal
+15000         0945-0951       USA WWV Time Signal        E                  time-signal
+15000         1245-1251       USA WWV Time Signal        E                  time-signal
+15000         1545-1551       USA WWV Time Signal        E                  time-signal
+15000         1845-1851       USA WWV Time Signal        E                  time-signal
+15000         2145-2151       USA WWV Time Signal        E                  time-signal
