@@ -12,6 +12,18 @@ import (
 	"time"
 )
 
+func TestStationBlocklistPersistsAcrossReload(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SDRSTREAM_STATE_DIR", dir)
+	until := time.Now().Add(30 * time.Minute).UTC().Truncate(time.Second)
+	want := map[string]stationBlock{"radio.example": {Reason: "connection refused", Until: until}}
+	saveBlocklist(want)
+	got := loadBlocklist()
+	if got["radio.example"].Reason != want["radio.example"].Reason || !got["radio.example"].Until.Equal(until) {
+		t.Fatalf("blocklist reload = %+v, want %+v", got, want)
+	}
+}
+
 func TestNewScanConfigCapsRampAndStartsAtConfiguredStep(t *testing.T) {
 	cfg, err := newScanConfig(49, 100, "49,100", .15, .30, .70, .90, 20, 100, 40, 5*time.Minute)
 	if err != nil {

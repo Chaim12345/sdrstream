@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image/png"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -139,6 +140,26 @@ func Live(kindValue, modeValue, detail string, imageData []byte, anchors ...stri
 		}
 		return nil
 	}
+	if mode == "ft8" {
+		count := len(strings.Split(text, "\n"))
+		if !FTX(count, !strings.Contains(strings.ToUpper(text), " FT4 "), text).Live {
+			return errors.New("FT8 decode failed publication gate")
+		}
+		return nil
+	}
+	if mode == "wspr" {
+		count := len(strings.Split(text, "\n"))
+		if !WSPR(count, text).Live {
+			return errors.New("WSPR decode failed publication gate")
+		}
+		return nil
+	}
+	if mode == "pocsag" {
+		if !pocsagDetailValid(text) {
+			return errors.New("POCSAG payload failed page structure check")
+		}
+		return nil
+	}
 	if mode == "cw" {
 		if !CW(text, anchor).Live {
 			return errors.New("CW payload lacks a verified callsign")
@@ -225,4 +246,21 @@ func WSPR(count int, text string) Result {
 		return Result{false, "fewer than two callsigns in decoded spots"}
 	}
 	return Result{true, fmt.Sprintf("%d WSPR spots with callsigns", count)}
+}
+
+func pocsagDetailValid(text string) bool {
+	pages := strings.Split(text, " | ")
+	if len(pages) == 0 {
+		return false
+	}
+	for _, page := range pages {
+		parts := strings.SplitN(page, ":", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+			return false
+		}
+		if _, err := strconv.Atoi(strings.TrimSpace(parts[0])); err != nil {
+			return false
+		}
+	}
+	return true
 }

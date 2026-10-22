@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -39,13 +40,16 @@ import (
 
 // Capture is one recording the UI can show.
 type Capture struct {
-	Satellite string    `json:"satellite"`
-	Receiver  string    `json:"receiver"`
-	Start     time.Time `json:"start"`
-	Samples   int       `json:"samples"`
-	Rate      int       `json:"rate"`
-	Path      string    `json:"path"`
-	URL       string    `json:"url,omitempty"`
+	Satellite   string    `json:"satellite"`
+	Receiver    string    `json:"receiver"`
+	FrequencyHz float64   `json:"frequency_hz,omitempty"`
+	Mode        string    `json:"mode,omitempty"`
+	Decode      string    `json:"decode,omitempty"`
+	Start       time.Time `json:"start"`
+	Samples     int       `json:"samples"`
+	Rate        int       `json:"rate"`
+	Path        string    `json:"path"`
+	URL         string    `json:"url,omitempty"`
 }
 
 // Status is the live snapshot the UI polls.
@@ -319,6 +323,14 @@ func (s *Server) passesLoop() {
 	}
 }
 
+// AddCaptureMetadata persists scanner metadata alongside the WAV filename.
+func (s *Server) AddCaptureMetadata(name, mode, receiver, detail string, frequencyHz float64) {
+	if s.capturesDir == "" || filepath.Base(name) != name {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(s.capturesDir, strings.TrimSuffix(name, ".wav")+".txt"), []byte(fmt.Sprintf("frequency_hz=%.0f\nmode=%s\nreceiver=%s\ndecode=%s\n", frequencyHz, mode, receiver, strings.ReplaceAll(detail, "\n", " "))), 0644)
+}
+
 // AddCapture records a completed capture for the UI.
 func (s *Server) AddCapture(capture Capture) {
 	s.mu.Lock()
@@ -357,14 +369,46 @@ func (s *Server) scanCaptures() []Capture {
 		if i := strings.IndexByte(name, '_'); i > 0 {
 			satellite = name[:i]
 		}
+		parts := strings.Split(strings.TrimSuffix(name, ".wav"), "_")
+		var freq float64
+		mode, receiver, detail := "", "sdrstream", ""
+		for _, part := range parts {
+			if strings.HasSuffix(part, "kHz") {
+				v, _ := strconv.ParseFloat(strings.TrimSuffix(part, "kHz"), 64)
+				freq = v * 1000
+			}
+			if part == "aprs" || part == "pocsag" || part == "voice" || part == "ft8" || part == "wspr" {
+				mode = part
+			}
+			if strings.HasPrefix(part, "jukebox") {
+				receiver = "jukebox.spdns.eu:6166"
+			}
+		}
+		if sidecar, err := os.ReadFile(strings.TrimSuffix(path, ".wav") + ".txt"); err == nil {
+			for _, line := range strings.Split(string(sidecar), "\n") {
+				if strings.HasPrefix(line, "frequency_hz=") {
+					freq, _ = strconv.ParseFloat(strings.TrimPrefix(line, "frequency_hz="), 64)
+				}
+				if strings.HasPrefix(line, "mode=") {
+					mode = strings.TrimPrefix(line, "mode=")
+				}
+				if strings.HasPrefix(line, "receiver=") {
+					receiver = strings.TrimPrefix(line, "receiver=")
+				}
+				if strings.HasPrefix(line, "decode=") {
+					detail = strings.TrimPrefix(line, "decode=")
+				}
+			}
+		}
 		out = append(out, Capture{
-			Satellite: satellite,
-			Receiver:  "sdrstream",
-			Start:     info.ModTime().UTC(),
-			Samples:   int(dataBytes / 2),
-			Rate:      rate,
-			Path:      name,
-			URL:       "/audio/" + url.PathEscape(name),
+			Satellite:   satellite,
+			Receiver:    receiver,
+			FrequencyHz: freq, Mode: mode, Decode: detail,
+			Start:   info.ModTime().UTC(),
+			Samples: int(dataBytes / 2),
+			Rate:    rate,
+			Path:    name,
+			URL:     "/audio/" + url.PathEscape(name),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
@@ -1068,6 +1112,11 @@ func writeJSON(w http.ResponseWriter, value interface{}) {
 
 // Serve binds addr and serves the UI until the process exits.
 func (s *Server) Serve(addr string) error {
+	return s.ServeContext(context.Background(), addr)
+}
+
+// ServeContext serves until ctx is cancelled, then gracefully drains requests.
+func (s *Server) ServeContext(ctx context.Context, addr string) error {
 	if os.Getenv("SDRSTREAM_UI_PASSWORD") == "" && !s.NoAuth {
 		host, _, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -1082,7 +1131,27 @@ func (s *Server) Serve(addr string) error {
 	}
 	log.Printf("web UI on http://%s", addr)
 	server := &http.Server{Addr: addr, Handler: s.Handler()}
-	return server.ListenAndServe()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.ListenAndServe() }()
+	select {
+	case err := <-serveErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			_ = server.Close()
+			return err
+		}
+		err := <-serveErr
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
 }
 
 // sourcesResponse is the on-demand data-source health table.

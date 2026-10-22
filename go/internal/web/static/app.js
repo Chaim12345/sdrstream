@@ -184,7 +184,7 @@ function renderPasses(status) {
 function renderCaptures(status) {
   const captures = (status.captures || []).slice().reverse();
   const box = el('captures-list');
-  const key = captures.map(c => c.path + '|' + c.url).join(',');
+  const key = captures.map(c => c.path + '|' + c.url + '|' + c.decode).join(',');
   if (box.dataset.key !== key) {
     box.dataset.key = key;
     box.textContent = '';
@@ -197,8 +197,9 @@ function renderCaptures(status) {
       title.appendChild(when);
       card.appendChild(title);
       const meta = document.createElement('div'); meta.className = 'card-meta';
-      meta.textContent = shortURL(c.receiver) + ' · ' + c.samples + ' samples · ' + c.rate + ' Hz';
+      meta.textContent = shortURL(c.receiver) + ' · ' + c.samples + ' samples · ' + c.rate + ' Hz' + (c.frequency_hz ? ' · ' + mhz(c.frequency_hz) : '') + (c.mode ? ' · ' + c.mode : '');
       card.appendChild(meta);
+      if (c.decode) { const d=document.createElement('div'); d.className='detail'; d.textContent=c.decode; card.appendChild(d); }
       if (c.url) {
         const audio = document.createElement('audio');
         audio.controls = true; audio.preload = 'none'; audio.src = c.url;

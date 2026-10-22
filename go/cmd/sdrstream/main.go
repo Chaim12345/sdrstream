@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/catalogue"
@@ -1401,6 +1402,8 @@ func cmdWeb(args []string) error {
 	galleryDir := fs.String("gallery-dir", "", "directory for SatNOGS gallery artefacts (default: cache/gallery)")
 	scanStations := fs.String("scan-stations", "", "comma-separated public receivers for bounded parallel scan (one connection per receiver)")
 	scanOpenDirectory := fs.Bool("scan-open-directory", false, "scan OpenWebRX and WebSDR entries from receiverbook")
+	scanWSPR := fs.Bool("scan-wspr", false, "run a separate 250s WSPR capture on the configured HF receiver")
+	scanHFServer := fs.String("scan-hf-server", "", "HF receiver URL for FT8/WSPR session; use WebSDR/OpenWebRX host")
 	kiwiPreflightOnly := fs.Bool("kiwi-preflight", false, "preflight Kiwi receivers and print first-pass verdict counts, then exit")
 	scanStart := fs.Int("scan-start-connections", 49, "initial scanner concurrency ramp step")
 	scanMax := fs.Int("scan-max-connections", 100, "integrator scanner maximum concurrency (hard limit 1000)")
@@ -1451,6 +1454,8 @@ func cmdWeb(args []string) error {
 	feedsLon := fs.Float64("feeds-lon", 34.78, "feeds center longitude")
 	aisKey := fs.String("ais-key", os.Getenv("SDRSTREAM_AIS_KEY"), "aisstream.io key; prefer SDRSTREAM_AIS_KEY")
 	fs.Parse(args)
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 	if *kiwiPreflightOnly {
 		return cmdKiwiPreflight(strings.Split(*scanStations, ","))
 	}
@@ -1474,7 +1479,7 @@ func cmdWeb(args []string) error {
 	if !*noFeeds {
 		feedsManager := feeds.New(0, nil)
 		server.SetFeeds(feedsManager)
-		feedsCtx, feedsCancel := context.WithCancel(context.Background())
+		feedsCtx, feedsCancel := context.WithCancel(ctx)
 		defer feedsCancel()
 		feeds.Start(feedsCtx, feedsManager, *feedsLat, *feedsLon, *aisKey)
 	}
@@ -1488,7 +1493,10 @@ func cmdWeb(args []string) error {
 				*scanStations += "," + station.Type + "|" + station.URL
 			}
 		}
-		*scanStations += ",WebSDR|http://websdr.ewi.utwente.nl:8901/"
+		*scanStations += ",WebSDR|http://websdr.ewi.utwente.nl:8901/,OpenWebRX|http://jukebox.spdns.eu:6166/"
+		if *scanHFServer == "" {
+			*scanHFServer = "http://websdr.ewi.utwente.nl:8901/"
+		}
 	}
 	if strings.TrimSpace(*scanStations) != "" {
 		config, err := newScanConfig(*scanStart, *scanMax, *scanRamp, *scanGoodRate, *scanRefusalBackoff, *scanLoadAdvance, *scanLoadBackoff, *scanBandwidth, *scanStreamKbps, *scanTargetLimit, *scanStationSession)
@@ -1496,12 +1504,16 @@ func cmdWeb(args []string) error {
 			return err
 		}
 		guard := newLoadGuard(*scanGuardWindow, *scanGuardDropFor, *scanGuardRestoreFor, *scanGuardDropRatio, *scanGuardRestoreRatio, *scanGuardMaxRSS<<20, *scanGuardMaxFDs, *scanGuardMaxGoroutines)
-		go runParallelScan(context.Background(), server, strings.Split(*scanStations, ","), *monitorMultimon, *monitorDirewolf, config, guard)
+		scannerCaptureDir = *capturesDir
+		go runParallelScan(ctx, server, strings.Split(*scanStations, ","), *monitorMultimon, *monitorDirewolf, config, guard)
+		if *scanHFServer != "" {
+			go runDirectoryHFScan(ctx, server, *scanHFServer, *scanWSPR, *capturesDir)
+		}
 	}
 	if *monitorServer != "" {
-		ctx, cancel := context.WithCancel(context.Background())
+		monitorCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		source, err := monitor.SourceFor(ctx, *monitorKind, *monitorServer, *monitorProfile)
+		source, err := monitor.SourceFor(monitorCtx, *monitorKind, *monitorServer, *monitorProfile)
 		if err != nil {
 			return err
 		}
@@ -1553,10 +1565,10 @@ func cmdWeb(args []string) error {
 			}
 		}
 		server.SetMonitor(instance)
-		go instance.Run(ctx)
+		go instance.Run(monitorCtx)
 		fmt.Printf("monitoring %s (%s)\n", *monitorServer, *monitorKind)
 	}
-	return server.Serve(fmt.Sprintf("%s:%d", *host, *port))
+	return server.ServeContext(ctx, fmt.Sprintf("%s:%d", *host, *port))
 }
 
 // cmdFeeds reports a bounded snapshot of the configured public live feeds.
@@ -2074,7 +2086,7 @@ func runParallelScan(ctx context.Context, server *web.Server, receivers []string
 				activeCancels[host] = cancel
 				inFlight++
 				go func(kind, host string) {
-					outcome := scanStation(stationCtx, server, kind, host, cfg.targetLimit, multimonPath, direwolfPath, &active, updateMetrics)
+					outcome := scanStation(stationCtx, server, kind, host, cfg.targetLimit, multimonPath, direwolfPath, scannerCaptureDir, &active, updateMetrics)
 					cancel()
 					results <- result{host: host, outcome: outcome}
 				}(parts[0], host)
@@ -2344,7 +2356,7 @@ func preflightDirectoryStation(ctx context.Context, stationType, rawURL string) 
 	return nil
 }
 
-func scanStation(ctx context.Context, server *web.Server, stationType, host string, targetLimit int, multimonPath, direwolfPath string, active *atomic.Int64, updateMetrics func()) scanOutcome {
+func scanStation(ctx context.Context, server *web.Server, stationType, host string, targetLimit int, multimonPath, direwolfPath, capturesDir string, active *atomic.Int64, updateMetrics func()) scanOutcome {
 	if strings.EqualFold(stationType, "KiwiSDR") || looksLikeKiwi(host) {
 		preflight := kiwiPreflight.Check(ctx, host)
 		if !preflight.Free() {
@@ -2388,14 +2400,16 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 	}
 	defer func() { source.Close(); active.Add(-1); updateMetrics() }()
 	targets := []scanTarget{
-		{host, 144800e3, "fm"}, {host, 145500e3, "fm"}, {host, 145800e3, "fm"}, {host, 145825e3, "fm"},
-		{host, 146520e3, "fm"}, {host, 433500e3, "fm"}, {host, 434650e3, "fm"}, {host, 446006250, "fm"},
-		{host, 446093750, "fm"}, {host, 162400e3, "fm"}, {host, 162425e3, "fm"}, {host, 162450e3, "fm"},
-		{host, 162475e3, "fm"}, {host, 162500e3, "fm"}, {host, 162525e3, "fm"}, {host, 162550e3, "fm"},
-		{host, 88.1e6, "wfm"}, {host, 94.5e6, "wfm"}, {host, 100e6, "wfm"}, {host, 104.5e6, "wfm"},
+		{server: host, frequency: 144800e3, mode: "fm"}, {server: host, frequency: 145500e3, mode: "fm"}, {server: host, frequency: 145800e3, mode: "fm"}, {server: host, frequency: 145825e3, mode: "fm"},
+		{server: host, frequency: 146520e3, mode: "fm"}, {server: host, frequency: 433500e3, mode: "fm"}, {server: host, frequency: 434650e3, mode: "fm"}, {server: host, frequency: 446006250, mode: "fm"},
+		{server: host, frequency: 446093750, mode: "fm"}, {server: host, frequency: 162400e3, mode: "fm"}, {server: host, frequency: 162425e3, mode: "fm"}, {server: host, frequency: 162450e3, mode: "fm"},
+		{server: host, frequency: 162475e3, mode: "fm"}, {server: host, frequency: 162500e3, mode: "fm"}, {server: host, frequency: 162525e3, mode: "fm"}, {server: host, frequency: 162550e3, mode: "fm"},
+		{server: host, frequency: 88.1e6, mode: "wfm"}, {server: host, frequency: 94.5e6, mode: "wfm"}, {server: host, frequency: 100e6, mode: "wfm"}, {server: host, frequency: 104.5e6, mode: "wfm"},
 	}
-	if strings.Contains(strings.ToLower(host), "websdr.ewi.utwente.nl") {
-		targets = []scanTarget{{host, 7074e3, "usb"}}
+	if strings.Contains(strings.ToLower(host), "jukebox.spdns.eu") {
+		targets = []scanTarget{{server: host, frequency: 144800e3, mode: "fm"}}
+	} else if strings.Contains(strings.ToLower(host), "websdr.ewi.utwente.nl") {
+		targets = []scanTarget{{server: host, frequency: 162400e3, mode: "fm"}, {server: host, frequency: 162425e3, mode: "fm"}}
 	}
 	if targetLimit < len(targets) {
 		targets = targets[:targetLimit]
@@ -2410,8 +2424,8 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		update("tuning", "")
 		update("listening", "")
 		listen := 12 * time.Second
-		if strings.Contains(strings.ToLower(host), "websdr.ewi.utwente.nl") && target.frequency == 7074e3 {
-			listen = 35 * time.Second
+		if strings.Contains(strings.ToLower(host), "jukebox.spdns.eu") {
+			listen = 30 * time.Second
 		}
 		targetCtx, cancelTarget := context.WithTimeout(ctx, listen+5*time.Second)
 		samples, rate, err := source.Listen(targetCtx, target.frequency, target.mode, listen)
@@ -2429,6 +2443,32 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 			blockStation(server, host, err.Error(), 30*time.Minute)
 			return result
 		}
+		if strings.Contains(strings.ToLower(host), "jukebox.spdns.eu") {
+			wavPath := filepath.Join(os.TempDir(), fmt.Sprintf("sdrstream-aprs-%d.wav", time.Now().UnixNano()))
+			if err := finishInt16(samples, rate, wavPath); err == nil {
+				packets, decodeErr := decode.AFSKFrames(wavPath)
+				if decodeErr == nil && len(packets) > 0 {
+					lines := make([]string, 0, len(packets))
+					for _, packet := range packets {
+						lines = append(lines, packet.String())
+					}
+					detail := strings.Join(lines, " | ")
+					if verify.Live("data", "aprs", detail, nil) == nil {
+						capture := filepath.Join(capturesDir, "APRS_144800kHz_aprs_jukebox_spdns_eu_"+time.Now().UTC().Format("20060102T150405Z")+".wav")
+						if os.MkdirAll(filepath.Dir(capture), 0755) == nil && finishInt16(samples, rate, capture) == nil {
+							server.AddCaptureMetadata(filepath.Base(capture), "aprs", "jukebox.spdns.eu:6166", detail, target.frequency)
+							activity := monitor.Activity{ID: int(time.Now().UnixNano()), Started: time.Now().UTC(), FrequencyHz: target.frequency, Kind: "data", Mode: "aprs", Detail: detail, Source: host, AudioPath: capture}
+							if err := server.AddLiveArtifact(activity, nil); err == nil {
+								update("decoded", detail)
+								continue
+							}
+						}
+					}
+				}
+				_ = os.Remove(wavPath)
+			}
+		}
+
 		decodeCtx, cancelDecode := context.WithTimeout(ctx, 12*time.Second)
 		kind, decoder, detail, ok := monitor.New(monitor.Options{MultimonBinary: multimonPath, DirewolfBinary: direwolfPath, Voice: true, VoiceOptions: monitorVoiceOptions("en", 2, 1, "weather, radio, forecast"), VoiceNIMOptions: monitorNIMOptions()}).ClassifyForScan(decodeCtx, samples, rate, 3000)
 		cancelDecode()
@@ -2442,8 +2482,10 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 			continue
 		}
 		if decoder == "speech" || kind == "voice" {
-			activity.AudioPath = filepath.Join(os.TempDir(), fmt.Sprintf("sdrstream-live-%d.wav", activity.ID))
-			_ = finishInt16(samples, rate, activity.AudioPath)
+			activity.AudioPath = filepath.Join(capturesDir, fmt.Sprintf("VOICE_%dkHz_voice_%s_%d.wav", int(target.frequency/1000), safeCaptureName(host), activity.ID))
+			if finishInt16(samples, rate, activity.AudioPath) == nil {
+				server.AddCaptureMetadata(filepath.Base(activity.AudioPath), "voice", host, detail, target.frequency)
+			}
 		}
 		if err := server.AddLiveArtifact(activity, nil); err != nil {
 			update("error", err.Error())
@@ -2452,6 +2494,74 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		update("decoded", detail)
 	}
 	return scanOutcome{}
+}
+
+func runDirectoryHFScan(ctx context.Context, server *web.Server, host string, wspr bool, capturesDir string) {
+	targets := []decode.HFTarget{{Name: "FT8 40m", Kind: "ft8", CarrierKHz: 7074, DialKHz: 7074, Mode: "usb", Listen: 40 * time.Second}}
+	if wspr {
+		targets = append(targets, decode.HFTarget{Name: "WSPR 40m", Kind: "wspr", CarrierKHz: 7038.6, DialKHz: 7038.6, Mode: "usb", Listen: 250 * time.Second})
+	}
+	for ctx.Err() == nil {
+		for _, target := range targets {
+			if ctx.Err() != nil {
+				return
+			}
+			key := addScan(server, web.ScanStatus{StationType: "WebSDR", Station: host, FrequencyHz: target.DialKHz * 1000, Mode: target.Mode, State: "listening", UpdatedAt: time.Now()})
+			connectCtx, cancelConnect := context.WithTimeout(ctx, 10*time.Second)
+			source, err := monitor.SourceFor(connectCtx, "websdr", host, "")
+			cancelConnect()
+			if err != nil {
+				setScanResult(server, key, "blocked", err.Error())
+				blockStation(server, host, err.Error(), 30*time.Minute)
+				return
+			}
+			listenCtx, cancelListen := context.WithTimeout(ctx, target.Listen+10*time.Second)
+			samples, rate, err := source.Listen(listenCtx, target.DialKHz*1000, target.Mode, target.Listen)
+			cancelListen()
+			_ = source.Close()
+			if err != nil {
+				setScanResult(server, key, "blocked", err.Error())
+				blockStation(server, host, err.Error(), 30*time.Minute)
+				return
+			}
+			pcm := make([]int16, len(samples))
+			for i, v := range samples {
+				pcm[i] = int16(max(-32768, min(32767, int(v*32767))))
+			}
+			hf := decode.HFDecodeForScan(target, host, pcm, rate)
+			if hf.Gate.Live {
+				path := filepath.Join(capturesDir, fmt.Sprintf("%s_%dkHz_%s_%s.wav", safeCaptureName(target.Name), int(target.DialKHz), target.Kind, time.Now().UTC().Format("20060102T150405Z")))
+				if err := common.WriteWAVFile(path, pcm, rate); err != nil {
+					setScanResult(server, key, "error", "capture write: "+err.Error())
+					continue
+				}
+				server.AddCaptureMetadata(filepath.Base(path), target.Kind, host, hf.Text, target.DialKHz*1000)
+				activity := monitor.Activity{ID: int(time.Now().UnixNano()), Started: hf.Started, FrequencyHz: target.DialKHz * 1000, Kind: "data", Mode: target.Kind, Detail: hf.Text, Source: host, AudioPath: path}
+				if err := server.AddLiveArtifact(activity, nil); err != nil {
+					setScanResult(server, key, "unverified decode", err.Error())
+				} else {
+					setScanResult(server, key, "decoded", hf.Gate.Reason)
+				}
+			} else {
+				setScanResult(server, key, "unverified decode", hf.Gate.Reason)
+			}
+		}
+		wait := time.NewTimer(5 * time.Minute)
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return
+		case <-wait.C:
+		}
+	}
+}
+func safeCaptureName(name string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			return r
+		}
+		return '_'
+	}, name)
 }
 
 func looksLikeKiwi(host string) bool {
@@ -2568,6 +2678,7 @@ func scanStatusKey(s web.ScanStatus) string {
 
 var scansMu sync.Mutex
 var scans []web.ScanStatus
+var scannerCaptureDir string
 
 func finishInt16(samples []float64, rate int, path string) error {
 	pcm := make([]int16, len(samples))

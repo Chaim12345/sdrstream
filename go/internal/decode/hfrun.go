@@ -140,6 +140,11 @@ func RunHFSession(ctx context.Context, server string, targets []HFTarget, opts S
 // decodeHF runs the decoder and gate for one captured target. Kinds
 // without a built-in decoder (voice, dsc, hfdl, ft8, wspr) are real
 // captures but must never publish: the gate rejects them here.
+// HFDecodeForScan decodes already captured samples using the target's decoder and quality gate.
+func HFDecodeForScan(target HFTarget, server string, samples16 []int16, rate int) HFResult {
+	return decodeHF(target, server, samples16, rate)
+}
+
 func decodeHF(target HFTarget, server string, samples16 []int16, rate int) HFResult {
 	result := HFResult{Target: target, Server: server, Started: time.Now().UTC()}
 	samples := make([]float64, len(samples16))

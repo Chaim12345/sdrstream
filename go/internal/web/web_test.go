@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chaim12345/sdrstream/go/internal/common"
 	"github.com/chaim12345/sdrstream/go/internal/directory"
 	"github.com/chaim12345/sdrstream/go/internal/gallery"
 	"github.com/chaim12345/sdrstream/go/internal/monitor"
@@ -671,5 +672,18 @@ func TestLiveEndpointWithMonitor(t *testing.T) {
 		if !strings.Contains(body, field) {
 			t.Errorf("live snapshot missing %s: %s", field, body)
 		}
+	}
+}
+
+func TestScanCaptureMetadataSurvivesReload(t *testing.T) {
+	dir := t.TempDir()
+	if err := common.WriteWAVFile(filepath.Join(dir, "APRS_144800kHz_aprs_jukebox_spdns_eu_test.wav"), []int16{1, 2, 3}, 8000); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{capturesDir: dir}
+	s.AddCaptureMetadata("APRS_144800kHz_aprs_jukebox_spdns_eu_test.wav", "aprs", "jukebox.spdns.eu:6166", "4X1RF>APRS:!abc", 144800000)
+	got := s.scanCaptures()
+	if len(got) != 1 || got[0].FrequencyHz != 144800000 || got[0].Mode != "aprs" || got[0].Receiver != "jukebox.spdns.eu:6166" || got[0].Decode != "4X1RF>APRS:!abc" {
+		t.Fatalf("capture metadata = %+v", got)
 	}
 }
