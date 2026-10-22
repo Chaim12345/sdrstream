@@ -138,3 +138,26 @@ func TestGuardTranscriptRejectsTextOverSilence(t *testing.T) {
 		t.Errorf("GuardTranscript over silence = %+v, want coverage rejection", v)
 	}
 }
+
+func TestGuardRejectsSmallModelNoiseLabels(t *testing.T) {
+	for _, text := range []string{
+		"[no speech detected] [no speech detected]", "(machine whirring)",
+		"(crickets chirping)", "[beep]", "[ Silence ]", "[BLANK_AUDIO]",
+	} {
+		if v := Guard(text); !v.Rejected {
+			t.Errorf("Guard(%q) accepted: %+v", text, v)
+		}
+	}
+	good := "And so, my fellow Americans, ask not what your country can do for you. Ask what you can do for your country."
+	if v := Guard(good); v.Rejected {
+		t.Errorf("real speech rejected: %+v", v)
+	}
+}
+
+func TestSmallQuantisedPreferredOverPlainSmall(t *testing.T) {
+	p := []string{"ggml-small.en.bin", "ggml-small.en-q5_1.bin", "ggml-base.en.bin"}
+	sortByPreference(p)
+	if p[0] != "ggml-base.en.bin" || p[1] != "ggml-small.en-q5_1.bin" {
+		t.Errorf("order %v", p)
+	}
+}

@@ -43,6 +43,8 @@ var nonSpeechMarkers = []string{
 	"noise", "static", "beep", "beeps", "ringing", "static crackling",
 	"indistinct chatter", "foreign", "speaking foreign language",
 	"crowd noise", "wind", "static noise", "no audio",
+	"no speech detected", "machine whirring", "crickets chirping",
+	"whirring", "buzzing", "humming", "clicking",
 }
 
 // cannedHallucinations are whole-phrase hallucinations whisper.cpp is

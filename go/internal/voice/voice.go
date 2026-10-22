@@ -179,10 +179,13 @@ func sortByPreference(paths []string) {
 			return 2
 		case strings.Contains(name, "base"):
 			return 3
-		case strings.Contains(name, "small"):
+		case strings.Contains(name, "small") && strings.Contains(name, "q5"):
+			// Quantised small: ~190 MB on disk, ~460 MiB peak RSS.
 			return 4
+		case strings.Contains(name, "small"):
+			return 5
 		}
-		return 5
+		return 6
 	}
 	for i := 1; i < len(paths); i++ {
 		for j := i; j > 0 && score(paths[j]) < score(paths[j-1]); j-- {
