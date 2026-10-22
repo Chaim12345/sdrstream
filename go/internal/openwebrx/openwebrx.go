@@ -47,6 +47,14 @@ const (
 // in every FFT frame (COMPRESS_FFT_PAD_N in upstream openwebrx.js).
 const fftPadN = 10
 
+// maxFrameBytes caps one websocket frame (review: 1-4 MiB read limit on
+// every dial). FFT frames carry a float32 per bin, so 4 MiB.
+const maxFrameBytes = 4 << 20
+
+// writeTimeout bounds every control write (handshake, tune, profile
+// select, DSP start) so a stuck peer cannot wedge the writer.
+const writeTimeout = 10 * time.Second
+
 // DefaultOutputRate is the audio rate most servers deliver.
 const DefaultOutputRate = 12000
 
@@ -109,6 +117,7 @@ type Client struct {
 	closeOnce   sync.Once
 	outputRate  int
 	hdRate      int
+	options     Options
 }
 
 // Options configures a Client.
@@ -118,6 +127,9 @@ type Options struct {
 	Reconnect    bool
 	OpenTimeout  time.Duration
 	IdleTimeout  time.Duration
+	// AllowPrivate permits dialing loopback/private hosts (local receivers,
+	// tests). Leave false for directory-sourced stations.
+	AllowPrivate bool
 }
 
 // DefaultOptions returns polite defaults.
@@ -151,6 +163,7 @@ func New(rawURL string, options Options) (*Client, error) {
 		tuning:     map[string]interface{}{},
 		outputRate: options.OutputRate,
 		hdRate:     options.HDOutputRate,
+		options:    options,
 	}, nil
 }
 
@@ -161,10 +174,14 @@ func (c *Client) Events() <-chan Event { return c.events }
 // returns the server's configuration.
 func (c *Client) Connect(ctx context.Context) (Config, error) {
 	dialer := &websocket.Dialer{HandshakeTimeout: 15 * time.Second}
+	if !c.options.AllowPrivate {
+		dialer.NetDialContext = common.PublicDialContext(15 * time.Second)
+	}
 	conn, _, err := dialer.DialContext(ctx, c.URL, http.Header{})
 	if err != nil {
 		return Config{}, err
 	}
+	conn.SetReadLimit(maxFrameBytes)
 	c.mu.Lock()
 	c.conn = conn
 	c.mu.Unlock()
@@ -507,8 +524,21 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
 		_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		messageType, data, err := conn.ReadMessage()
 		if err != nil {
+			select {
+			case <-c.quit:
+				return
+			case <-ctx.Done():
+				return
+			default:
+			}
 			c.LastError = err
 			c.publish(Event{Type: "error", Value: err})
+			// The recorder listens on audioEvents only; without an error
+			// there it waits out its whole duration and reports silence.
+			select {
+			case c.audioEvents <- Event{Type: "error", Value: err}:
+			default:
+			}
 			return
 		}
 		if messageType == websocket.BinaryMessage {
@@ -639,13 +669,15 @@ func (c *Client) ProfileList() []Profile {
 	return out
 }
 
-// Record collects audio for duration and returns the chunks received.
+// Record collects audio for duration and returns the chunks received. A
+// reader failure is returned instead of being reported as clean silence.
 func (c *Client) Record(ctx context.Context, duration time.Duration) ([]AudioChunk, error) {
 	var chunks []AudioChunk
-	deadline := time.After(duration)
+	deadline := time.NewTimer(duration)
+	defer deadline.Stop()
 	for {
 		select {
-		case <-deadline:
+		case <-deadline.C:
 			return chunks, nil
 		case <-ctx.Done():
 			return chunks, ctx.Err()
@@ -653,6 +685,24 @@ func (c *Client) Record(ctx context.Context, duration time.Duration) ([]AudioChu
 			if event.Type == "audio" {
 				chunks = append(chunks, event.Value.(AudioChunk))
 			}
+			if event.Type == "error" {
+				if err, ok := event.Value.(error); ok {
+					return chunks, err
+				}
+			}
+		}
+	}
+}
+
+// DrainAudio discards buffered audio chunks. Call it after Tune: audio
+// captured at the old frequency would otherwise pollute the start of the
+// next recording.
+func (c *Client) DrainAudio() {
+	for {
+		select {
+		case <-c.audioEvents:
+		default:
+			return
 		}
 	}
 }

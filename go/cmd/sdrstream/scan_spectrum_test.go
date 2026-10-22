@@ -134,6 +134,9 @@ func TestScanStationKeepsSourceAlive(t *testing.T) {
 	defer page.Close()
 
 	old := scanSourceFor
+	oldPreflight := directoryStationPreflight
+	directoryStationPreflight = func(context.Context, string, string) error { return nil }
+	defer func() { directoryStationPreflight = oldPreflight }()
 	scanSourceFor = func(ctx context.Context, _, _, _ string) (monitor.Source, error) {
 		return &ctxAwareSpectrumSource{ctx: ctx}, nil
 	}

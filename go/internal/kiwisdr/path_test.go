@@ -33,6 +33,7 @@ func TestConnectUsesPreflightSelectedWSPath(t *testing.T) {
 			opts := DefaultOptions()
 			opts.WSPath = tc.selected
 			opts.OpenTimeout = time.Second
+			opts.AllowPrivate = true // loopback test server
 			c, err := New(strings.TrimPrefix(srv.URL, "http://"), opts)
 			if err != nil {
 				t.Fatal(err)

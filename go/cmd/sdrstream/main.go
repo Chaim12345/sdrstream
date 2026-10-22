@@ -56,6 +56,7 @@ const usage = `record and stream from public SDR servers
 usage: sdrstream <command> [flags]
 
 commands:
+  icecast      ingest Icecast/Shoutcast and NOAA Weather Radio streams
   record       record audio from a server to a WAV file
   info         show a server's capabilities
   satellites   list the amateur satellite catalogue
@@ -127,6 +128,8 @@ func main() {
 		err = cmdFeeds(args)
 	case "avmarine":
 		err = cmdAVMarine(args)
+	case "icecast":
+		err = cmdIcecast(args)
 	case "decode":
 		err = cmdDecode(args)
 	case "scan":
@@ -224,7 +227,9 @@ func cmdRecord(args []string) error {
 	}
 	ctx := context.Background()
 	if *kind == "kiwi" {
-		client, err := kiwisdr.New(*server, kiwisdr.DefaultOptions())
+		kiwiOpts := kiwisdr.DefaultOptions()
+		kiwiOpts.AllowPrivate = true // operator-named server
+		client, err := kiwisdr.New(*server, kiwiOpts)
 		if err != nil {
 			return err
 		}
@@ -268,7 +273,7 @@ func cmdRecord(args []string) error {
 		}
 		return finish(samples, rate, *out)
 	}
-	client, err := openwebrx.New(*server, openwebrx.DefaultOptions())
+	client, err := openwebrx.New(*server, operatorOpenWebRXOptions())
 	if err != nil {
 		return err
 	}
@@ -402,7 +407,7 @@ func cmdInfo(args []string) error {
 		}
 		return nil
 	}
-	client, err := openwebrx.New(*server, openwebrx.DefaultOptions())
+	client, err := openwebrx.New(*server, operatorOpenWebRXOptions())
 	if err != nil {
 		return err
 	}
@@ -879,7 +884,7 @@ func cmdMonitor(args []string) error {
 	ctx, stopSignals := signal.NotifyContext(ctx, os.Interrupt)
 	defer stopSignals()
 
-	source, err := monitor.SourceFor(ctx, *kind, *server, *profile)
+	source, err := monitor.SourceForLocal(ctx, *kind, *server, *profile)
 	if err != nil {
 		return err
 	}
@@ -1328,12 +1333,20 @@ func cmdSpectrum(args []string) error {
 	return nil
 }
 
+// operatorOpenWebRXOptions allows private/loopback receivers: these commands
+// connect to a server the operator named explicitly.
+func operatorOpenWebRXOptions() openwebrx.Options {
+	opts := openwebrx.DefaultOptions()
+	opts.AllowPrivate = true
+	return opts
+}
+
 // connectWithRetry dials and handshakes, retrying a few times with backoff
 // because some servers reject rapid successive connections.
 func connectWithRetry(ctx context.Context, server string, attempts int) (*openwebrx.Client, openwebrx.Config, error) {
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		client, err := openwebrx.New(server, openwebrx.DefaultOptions())
+		client, err := openwebrx.New(server, operatorOpenWebRXOptions())
 		if err != nil {
 			return nil, openwebrx.Config{}, err
 		}
@@ -1468,7 +1481,7 @@ func cmdWeb(args []string) error {
 	scanRecordAll := fs.Bool("scan-record-all", false, "archive audio for every detected activity, including unverified/noise/carrier clips")
 	scanState := fs.String("scan-state", defaultRotationStatePath(), "file that carries HF target / OpenWebRX profile rotation across restarts (empty disables)")
 	scanWSPR := fs.Bool("scan-wspr", false, "run a separate 250s WSPR capture on the configured HF receiver")
-	scanHFServer := fs.String("scan-hf-server", "", "HF receiver URL for FT8/WSPR session; use WebSDR/OpenWebRX host")
+	scanHFServer := fs.String("scan-hf-server", "", "comma-separated WebSDR/OpenWebRX/Kiwi receivers for rotating FT8/WSPR cycles")
 	kiwiPreflightOnly := fs.Bool("kiwi-preflight", false, "preflight Kiwi receivers and print first-pass verdict counts, then exit")
 	scanStart := fs.Int("scan-start-connections", 49, "initial scanner concurrency ramp step")
 	scanMax := fs.Int("scan-max-connections", 100, "integrator scanner maximum concurrency (hard limit 1000)")
@@ -1637,9 +1650,10 @@ func cmdWeb(args []string) error {
 		guard := newLoadGuard(*scanGuardWindow, *scanGuardDropFor, *scanGuardRestoreFor, *scanGuardDropRatio, *scanGuardRestoreRatio, *scanGuardMaxRSS<<20, *scanGuardMaxFDs, *scanGuardMaxGoroutines)
 		scannerCaptureDir = *capturesDir
 		go runParallelScan(ctx, server, roster, *monitorMultimon, *monitorDirewolf, config, guard)
-		if *scanHFServer != "" {
-			go runDirectoryHFScan(ctx, server, *scanHFServer, *scanWSPR, *capturesDir, *scanRecordAll)
-		}
+	}
+	// The dedicated HF capture schedule is independent of directory scanning.
+	if *scanHFServer != "" {
+		go runDirectoryHFScan(ctx, server, *scanHFServer, *scanWSPR, *capturesDir, *scanRecordAll)
 	}
 	if *capturesMaxGB > 0 || *capturesRetain > 0 {
 		go pruneCapturesLoop(ctx, *capturesDir, int64(*capturesMaxGB*float64(1<<30)), *capturesRetain, time.Minute, log.Printf)
@@ -1647,7 +1661,7 @@ func cmdWeb(args []string) error {
 	if *monitorServer != "" {
 		monitorCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		source, err := monitor.SourceFor(monitorCtx, *monitorKind, *monitorServer, *monitorProfile)
+		source, err := monitor.SourceForLocal(monitorCtx, *monitorKind, *monitorServer, *monitorProfile)
 		if err != nil {
 			return err
 		}
@@ -1801,8 +1815,14 @@ func cmdDecode(args []string) error {
 			}
 		}
 		if *mode == "rtty" || wantAll {
-			if s := decode.RTTYDecode(samples, rate, 0, 0, 0); s != "" {
-				fmt.Printf("   rtty:   %s\n", strings.TrimSpace(s))
+			// Auto mark/space polarity: DWD-style F1B services key mark
+			// low, amateurs key mark high.
+			if s, inverted := decode.RTTYDecodeAuto(samples, rate, 0, 0, 0); s != "" {
+				note := ""
+				if inverted {
+					note = " [inverted mark/space]"
+				}
+				fmt.Printf("   rtty:   %s%s\n", strings.TrimSpace(s), note)
 			} else if *mode == "rtty" {
 				fmt.Println("   rtty:   nothing")
 			}
@@ -2273,6 +2293,8 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 		outcome scanOutcome
 	}
 	results := make(chan result, cfg.maximum)
+	dispatchTick := time.NewTicker(time.Second)
+	defer dispatchTick.Stop()
 	inFlight := 0
 	nextStation := 0
 	activeStations := map[string]bool{}
@@ -2331,6 +2353,9 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 				go func(kind, host string) {
 					outcome := scanStation(stationCtx, server, kind, host, cfg.targetLimit, cfg.recordAll, multimonPath, direwolfPath, scannerCaptureDir, &active, updateMetrics)
 					cancel()
+					// A visit ended by our own session deadline is not a
+					// remote refusal or timeout.
+					outcome = normalizeStationOutcome(stationCtx, ctx, outcome)
 					results <- result{host: host, outcome: outcome}
 				}(parts[0], host)
 				dispatched = true
@@ -2351,15 +2376,25 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 					}
 				}
 			}
-			if earliest.IsZero() {
-				time.Sleep(time.Second)
-			} else if d := time.Until(earliest); d > 0 {
-				time.Sleep(minDuration(d, time.Second))
+			wait := time.Second
+			if !earliest.IsZero() {
+				wait = minDuration(maxDuration(time.Until(earliest), 50*time.Millisecond), time.Second)
+			}
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+			case <-timer.C:
 			}
 			continue
 		}
 		select {
 		case <-ctx.Done():
+		case <-dispatchTick.C:
+			// Re-evaluate dispatch while sessions run: backoff expiries and
+			// pause/target changes must not wait for the next finished
+			// station (visits can run for minutes).
+			updateMetrics()
 		case r := <-results:
 			receiverAtFault := (r.outcome.refused || r.outcome.timedOut) && !r.outcome.localResource
 			if receiverAtFault {
@@ -2369,7 +2404,11 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 			inFlight--
 			delete(activeStations, r.host)
 			delete(activeCancels, r.host)
-			if receiverAtFault {
+			if r.outcome.skipped {
+				if _, backingOff := backoffUntil[r.host]; !backingOff {
+					backoffUntil[r.host] = time.Now().Add(skippedStationRetry)
+				}
+			} else if receiverAtFault {
 				d := backoffFor[r.host]
 				if d == 0 {
 					d = 30 * time.Second
@@ -2442,7 +2481,36 @@ func minDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
-type scanOutcome struct{ refused, timedOut, localResource bool }
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+const skippedStationRetry = time.Minute
+
+type scanOutcome struct {
+	refused, timedOut, localResource bool
+	skipped                          bool
+}
+
+func preflightOutcome(verdict string) scanOutcome {
+	switch verdict {
+	case kiwisdr.VerdictBackoff, kiwisdr.VerdictBudget:
+		return scanOutcome{skipped: true}
+	case kiwisdr.VerdictTimeout:
+		return scanOutcome{timedOut: true}
+	default:
+		return scanOutcome{refused: true}
+	}
+}
+func normalizeStationOutcome(stationCtx, parentCtx context.Context, outcome scanOutcome) scanOutcome {
+	if errors.Is(stationCtx.Err(), context.DeadlineExceeded) && parentCtx.Err() == nil {
+		return scanOutcome{skipped: true}
+	}
+	return outcome
+}
 
 // classifyScanFailure sorts a failed visit into what the receiver did
 // versus what this machine did. A local descriptor exhaustion (EMFILE/
@@ -2566,6 +2634,12 @@ func cmdKiwiPreflight(receivers []string) error {
 
 var directoryPreflightSlots = make(chan struct{}, 16)
 
+// directoryPreflightHTTPClient builds the SSRF-guarded client for receiver
+// preflights. A var so tests pointing at loopback fixtures can replace it.
+var directoryPreflightHTTPClient = func() *http.Client { return common.PublicHTTPClient(8 * time.Second) }
+
+var directoryStationPreflight = preflightDirectoryStation
+
 func preflightDirectoryStation(ctx context.Context, stationType, rawURL string) error {
 	select {
 	case directoryPreflightSlots <- struct{}{}:
@@ -2577,12 +2651,17 @@ func preflightDirectoryStation(ctx context.Context, stationType, rawURL string) 
 	if err != nil {
 		return err
 	}
+	if u, err := url.Parse(requestURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("preflight: unsupported scheme in %q (http/https only)", rawURL)
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return err
 	}
 	request.Header.Set("User-Agent", "sdrstream/1.0 receiver-preflight")
-	client := &http.Client{Timeout: 8 * time.Second}
+	// Directory entries are untrusted: dial public addresses only, and let
+	// the guarded transport re-validate every redirect hop.
+	client := directoryPreflightHTTPClient()
 	response, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("preflight HTTP: %w", err)
@@ -2621,7 +2700,11 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 	if strings.EqualFold(stationType, "KiwiSDR") || (stationType == "" && looksLikeKiwi(host)) {
 		preflight := kiwiPreflight.Check(ctx, host)
 		if !preflight.Free() {
+			outcome := preflightOutcome(preflight.Verdict)
 			state := "refused/skipped"
+			if outcome.skipped {
+				state = "skipped"
+			}
 			reason := "preflight " + preflight.Verdict + ": " + preflight.Err
 			if preflight.Verdict == kiwisdr.VerdictBusy {
 				reason = fmt.Sprintf("preflight busy: users %d/%d", preflight.Users, preflight.UsersMax)
@@ -2630,7 +2713,7 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 				reason += " | " + d
 			}
 			addScan(server, web.ScanStatus{StationType: stationType, Station: host, State: state, Result: reason, UpdatedAt: time.Now()})
-			return scanOutcome{refused: preflight.Verdict != kiwisdr.VerdictTimeout, timedOut: preflight.Verdict == kiwisdr.VerdictTimeout}
+			return outcome
 		}
 		return scanKiwiStation(ctx, server, host, targetLimit, recordAll, capturesDir, active, updateMetrics, preflight.WSPath)
 	}
@@ -2649,7 +2732,7 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 	// stream right after a successful connection. The handshake has its own
 	// dial and read deadlines, and the station session bounds the source.
 	preflightCtx, cancelPreflight := context.WithTimeout(ctx, 10*time.Second)
-	err := preflightDirectoryStation(preflightCtx, stationType, host)
+	err := directoryStationPreflight(preflightCtx, stationType, host)
 	cancelPreflight()
 	if err != nil {
 		active.Add(-1)
@@ -2880,27 +2963,11 @@ func scanFixedTargets(ctx context.Context, server *web.Server, source monitor.So
 		}
 		if strings.Contains(strings.ToLower(host), "jukebox.spdns.eu") {
 			wavPath := filepath.Join(os.TempDir(), fmt.Sprintf("sdrstream-aprs-%d.wav", time.Now().UnixNano()))
-			if err := finishInt16(samples, rate, wavPath); err == nil {
-				packets, decodeErr := decode.AFSKFrames(wavPath)
-				if decodeErr == nil && len(packets) > 0 {
-					lines := make([]string, 0, len(packets))
-					for _, packet := range packets {
-						lines = append(lines, packet.String())
-					}
-					detail := strings.Join(lines, " | ")
-					if verify.Live("data", "aprs", detail, nil) == nil {
-						capture := filepath.Join(capturesDir, "APRS_144800kHz_aprs_jukebox_spdns_eu_"+time.Now().UTC().Format("20060102T150405Z")+".wav")
-						if os.MkdirAll(filepath.Dir(capture), 0755) == nil && finishInt16(samples, rate, capture) == nil {
-							server.AddCaptureMetadata(filepath.Base(capture), "aprs", "jukebox.spdns.eu:6166", detail, target.frequency)
-							activity := monitor.Activity{ID: int(time.Now().UnixNano()), Started: time.Now().UTC(), FrequencyHz: target.frequency, Kind: "data", Mode: "aprs", Detail: detail, Source: host, AudioPath: capture}
-							if err := server.AddLiveArtifact(activity, nil); err == nil {
-								update("decoded", detail)
-								continue
-							}
-						}
-					}
-				}
-				_ = os.Remove(wavPath)
+			// The decoded-and-continued path used to skip the remove and
+			// leak one temp WAV per APRS capture; tryJukeboxAPRS owns the
+			// cleanup now, on every outcome.
+			if tryJukeboxAPRS(server, samples, rate, wavPath, capturesDir, target.frequency, host, update) {
+				continue
 			}
 		}
 
@@ -3188,28 +3255,10 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 	active.Add(-1)
 	updateMetrics()
 	noteKiwiProgress(host, results)
+	ownDeadline := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	processed := make(map[string]bool, len(results))
 	for _, result := range results {
 		processed[result.Target.Name] = true
-	}
-	if err != nil {
-		outcome := classifyScanFailure(err)
-		state := "error"
-		if outcome.refused {
-			state = "refused/skipped"
-		}
-		if outcome.timedOut {
-			state = "timeout"
-		}
-		for _, target := range targets {
-			if processed[target.Name] {
-				continue
-			}
-			if key := keys[target.Name]; key != "" {
-				setScanResult(server, key, state, err.Error())
-			}
-		}
-		return outcome
 	}
 	for _, result := range results {
 		processed[result.Target.Name] = true
@@ -3255,13 +3304,42 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 		}
 		setScanResult(server, key, "decoded", result.Gate.Reason)
 	}
+	// Never advance past unprocessed targets: everything the session did not
+	// finish is deferred to the next visit, not reported as failed.
+	deferred := make(map[string]bool, len(remaining))
 	for _, target := range remaining {
+		deferred[target.Name] = true
 		if processed[target.Name] {
 			continue
 		}
 		if key := keys[target.Name]; key != "" {
 			setScanResult(server, key, "deferred", "receiver session target/time cap; next visit resumes after the last processed target")
 		}
+	}
+	if err != nil {
+		outcome := classifyScanFailure(err)
+		if ownDeadline {
+			outcome = scanOutcome{skipped: true}
+		}
+		state := "error"
+		if outcome.refused {
+			state = "refused/skipped"
+		}
+		if outcome.timedOut {
+			state = "timeout"
+		}
+		if ownDeadline {
+			state = "deferred"
+		}
+		for _, target := range targets {
+			if processed[target.Name] || deferred[target.Name] {
+				continue
+			}
+			if key := keys[target.Name]; key != "" {
+				setScanResult(server, key, state, err.Error())
+			}
+		}
+		return outcome
 	}
 	return scanOutcome{}
 }
@@ -3327,6 +3405,39 @@ func scanStatusKey(s web.ScanStatus) string {
 var scansMu sync.Mutex
 var scans []web.ScanStatus
 var scannerCaptureDir string
+
+// tryJukeboxAPRS runs the jukebox APRS fast path. It writes the samples to
+// wavPath, always removes that temp file, and reports whether the activity
+// was decoded and recorded (true = the caller moves to the next target).
+func tryJukeboxAPRS(server *web.Server, samples []float64, rate int, wavPath, capturesDir string, frequency float64, host string, update func(state, result string)) (decoded bool) {
+	if err := finishInt16(samples, rate, wavPath); err != nil {
+		return false
+	}
+	defer func() { _ = os.Remove(wavPath) }()
+	packets, decodeErr := decode.AFSKFrames(wavPath)
+	if decodeErr != nil || len(packets) == 0 {
+		return false
+	}
+	lines := make([]string, 0, len(packets))
+	for _, packet := range packets {
+		lines = append(lines, packet.String())
+	}
+	detail := strings.Join(lines, " | ")
+	if verify.Live("data", "aprs", detail, nil) != nil {
+		return false
+	}
+	capture := filepath.Join(capturesDir, "APRS_144800kHz_aprs_jukebox_spdns_eu_"+time.Now().UTC().Format("20060102T150405Z")+".wav")
+	if os.MkdirAll(filepath.Dir(capture), 0755) != nil || finishInt16(samples, rate, capture) != nil {
+		return false
+	}
+	server.AddCaptureMetadata(filepath.Base(capture), "aprs", "jukebox.spdns.eu:6166", detail, frequency, true)
+	activity := monitor.Activity{ID: int(time.Now().UnixNano()), Started: time.Now().UTC(), FrequencyHz: frequency, Kind: "data", Mode: "aprs", Detail: detail, Source: host, AudioPath: capture}
+	if err := server.AddLiveArtifact(activity, nil); err != nil {
+		return false
+	}
+	update("decoded", detail)
+	return true
+}
 
 func finishInt16(samples []float64, rate int, path string) error {
 	pcm := make([]int16, len(samples))

@@ -26,7 +26,7 @@ func main() {
 		log.Fatal("-server required")
 	}
 	ctx := context.Background()
-	client, err := kiwisdr.New(*server, kiwisdr.DefaultOptions())
+	client, err := kiwisdr.New(*server, func() kiwisdr.Options { o := kiwisdr.DefaultOptions(); o.AllowPrivate = true; return o }())
 	if err != nil {
 		log.Fatalf("new: %v", err)
 	}

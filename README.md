@@ -713,9 +713,28 @@ go run ./cmd/sdrstream web --host 127.0.0.1 --port 8000 \
   --captures-dir ../captures \
   --scan-start-connections 12 --scan-max-connections 12 --scan-ramp 12 \
   --scan-open-directory --scan-kiwi-directory \
-  --scan-hf-server https://websdr.ewi.utwente.nl:8901 --scan-wspr \
+  --scan-hf-server http://websdr.ewi.utwente.nl:8901,http://websdr.fi:8080,f4kiy.ddns.net:8073 --scan-wspr \
   --feeds-lat 31.8 --feeds-lon 35
 ```
+
+Web UI security and storage notes:
+
+- The session cookie is marked `Secure` only when the request arrives over
+  HTTPS - either directly or through a local tunnel such as cloudflared,
+  which forwards from loopback with `X-Forwarded-Proto: https`. On plain
+  HTTP (a loopback demo) the cookie goes without `Secure`, because browsers
+  would refuse to send it; expose the UI over HTTPS or a tunnel for any
+  real deployment.
+- Changing `SDRSTREAM_UI_PASSWORD` invalidates every existing login: the
+  persisted session file carries a fingerprint of the issuing password.
+- Small state files (sessions, scan state) default to a private per-user
+  directory (`$TMPDIR/sdrstream-state-<uid>`, mode 0700); set
+  `SDRSTREAM_STATE_DIR` to override.
+- The captures directory is pruned to `SDRSTREAM_CAPTURES_MAX_BYTES`
+  (default 5 GiB). Oldest unverified recordings go first, with their
+  sidecars; captures whose sidecar says `verified=true` are never pruned,
+  even when that leaves the directory over budget. Sidecars written before
+  the `verified` line existed count as unknown and are prunable.
 
 Useful options: `--monitor-server URL --monitor-kind openwebrx|websdr|kiwi`,
 `--monitor-strategy sweep|spectrum|broadcast`, `--monitor-channels`,
@@ -733,3 +752,24 @@ to unlimited); and `--no-feeds` to disable public-data panels. Rotation cursors
 `go run ./cmd/sdrstream web -h` for the full current flag list. Never place
 secrets in command-line arguments or documentation; pass them through the
 process environment or a secret manager.
+
+## Icecast / Shoutcast and NOAA Weather Radio streams (Go)
+
+```bash
+cd go
+go run ./cmd/sdrstream icecast list -nwr                 # live NWR relays from noaaweatherradio.org
+go run ./cmd/sdrstream icecast list -genre weather       # dir.xiph.org directory (cached 24 h)
+go run ./cmd/sdrstream icecast listen -url https://wxradio.org/GA-Athens-WXK56 -dur 60s
+go run ./cmd/sdrstream icecast sweep -nwr -max 20 -dur 15s   # one stream at a time, SAME scan
+```
+
+Streams are decoded with ffmpeg and go through the existing speech recognition and decoders. SAME
+headers are found with `decode.SAMEScan` (per-burst demodulation, 3-repeat voting, strict FCC field
+validation) and are also tried by the monitor (`--monitor-kind icecast`, the stream URL as server).
+
+## License
+
+Copyright (C) 2026 Chaim12345 and sdrstream contributors.
+SPDX-License-Identifier: AGPL-3.0-or-later. See `LICENSE`, `NOTICE` and
+`NOTICE-third-party.md` (also served by the web UI footer). Note the open
+permission issue for the WebSDR table described in `NOTICE`.

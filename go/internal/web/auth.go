@@ -2,7 +2,9 @@ package web
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,22 @@ type authState struct {
 	attempts map[string]loginAttempt
 }
 
+// sessionFile is the on-disk shape of the session table. The fingerprint
+// binds the file to the password that minted it: after the UI password
+// changes, sessions issued under the old password must not keep working.
+type sessionFile struct {
+	Fingerprint string               `json:"fingerprint"`
+	Sessions    map[string]time.Time `json:"sessions"`
+}
+
+// passwordFingerprint identifies the configured UI password without storing
+// it. A domain separator keeps the digest from colliding with any other
+// SHA-256 of the same password elsewhere.
+func passwordFingerprint(password string) string {
+	sum := sha256.Sum256([]byte("sdrstream-ui-password\x00" + password))
+	return hex.EncodeToString(sum[:])
+}
+
 func (a *authState) init() {
 	a.mu.Lock()
 	if a.sessions == nil {
@@ -52,18 +69,45 @@ func (a *authState) init() {
 	}
 	if len(a.sessions) == 0 {
 		if b, err := os.ReadFile(authSessionFile()); err == nil {
-			if loaded := map[string]time.Time{}; json.Unmarshal(b, &loaded) == nil {
-				// Drop sessions that expired while the process was down so a
-				// long-offline server does not reload dead entries.
-				for value, expires := range loaded {
-					if time.Now().Before(expires) {
-						a.sessions[value] = expires
+			var loaded sessionFile
+			if json.Unmarshal(b, &loaded) == nil && loaded.Sessions != nil {
+				// A password change (or a file written before fingerprints
+				// existed) invalidates every persisted session.
+				if loaded.Fingerprint == passwordFingerprint(os.Getenv("SDRSTREAM_UI_PASSWORD")) {
+					// Drop sessions that expired while the process was down so a
+					// long-offline server does not reload dead entries.
+					for value, expires := range loaded.Sessions {
+						if time.Now().Before(expires) {
+							a.sessions[value] = expires
+						}
 					}
+				} else {
+					log.Printf("web: UI password changed or unrecognised session file - existing sessions were signed out")
 				}
 			}
 		}
 	}
 	a.mu.Unlock()
+}
+
+// pruneAttemptsLocked drops rate-limit records whose 15-minute window has
+// closed. Without this the map grows by one entry per client IP forever.
+func (a *authState) pruneAttemptsLocked() {
+	for ip, attempt := range a.attempts {
+		if time.Since(attempt.started) > 15*time.Minute {
+			delete(a.attempts, ip)
+		}
+	}
+}
+
+// pruneSessionsLocked drops expired sessions so the table and its on-disk
+// copy hold only sessions a request could still use.
+func (a *authState) pruneSessionsLocked() {
+	for value, expires := range a.sessions {
+		if !time.Now().Before(expires) {
+			delete(a.sessions, value)
+		}
+	}
 }
 
 // clientIP keys rate limits on the real client. Behind a local cloudflared
@@ -85,18 +129,25 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// cookieSecure says whether the connection (or the TLS-terminating proxy
-// in front of us) speaks HTTPS. Browsers silently drop Secure cookies over
-// plain HTTP, which made login impossible on an http:// deployment —
-// loopback dev servers and bare-LAN ports never received a session. HTTPS
-// keeps Secure unconditionally; a forged X-Forwarded-Proto only works when
-// the attacker controls the request line anyway, and it only ever relaxes
-// the flag downward, matching the actual transport.
-func cookieSecure(r *http.Request) bool {
+// requestSecure reports whether the request arrived over HTTPS, either
+// directly (TLS terminated by this process) or through a local tunnel such
+// as cloudflared, which terminates TLS and forwards from loopback with
+// X-Forwarded-Proto set. From a non-loopback peer that header is
+// attacker-controlled and ignored, so the cookie is only marked Secure when
+// HTTPS is genuinely in play; a plain-HTTP loopback demo gets a working
+// cookie instead of one the browser silently refuses to send.
+func requestSecure(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
-	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = h
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return r.Header.Get("X-Forwarded-Proto") == "https"
+	}
+	return false
 }
 
 func clearSessionCookie(w http.ResponseWriter, secure bool) {
@@ -108,6 +159,18 @@ func sessionCookie(value string, maxAge int, secure bool) *http.Cookie {
 		Name: "sdrstream_session", Value: value, Path: "/", MaxAge: maxAge,
 		HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode,
 	}
+}
+
+// sameOriginPOST reports whether a POST came from a page this server served.
+// An absent Origin header (curl, old clients) is tolerated on the login form
+// because SameSite=Strict cookies already block cross-site use of a session;
+// a present-but-foreign Origin is always refused.
+func sameOriginPOST(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	return origin == "https://"+r.Host || origin == "http://"+r.Host
 }
 
 // handleLogin serves the password form and creates sessions. Wrong
@@ -124,6 +187,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !sameOriginPOST(r) {
+		http.Error(w, "same-origin required", http.StatusForbidden)
+		return
+	}
 	if uiPassword == "" {
 		http.Error(w, "login is not configured", http.StatusServiceUnavailable)
 		return
@@ -134,43 +201,25 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := clientIP(r)
 	s.auth.mu.Lock()
-	// The lockout map must not grow forever: an attacker rotating source
-	// addresses (or spamming CF-Connecting-IP through a loopback tunnel)
-	// would otherwise leak one entry per attempt for the life of the
-	// process. Sweep expired entries, then hard-cap.
+	// Sweep dead windows first so one-off visitors do not accumulate.
+	s.auth.pruneAttemptsLocked()
 	if len(s.auth.attempts) >= maxLoginAttemptsTracked {
-		now := time.Now()
-		for key, entry := range s.auth.attempts {
-			if now.Sub(entry.started) > 15*time.Minute {
-				delete(s.auth.attempts, key)
+		for key := range s.auth.attempts {
+			delete(s.auth.attempts, key)
+			if len(s.auth.attempts) < maxLoginAttemptsTracked*3/4 {
+				break
 			}
 		}
-		for len(s.auth.attempts) >= maxLoginAttemptsTracked {
-			// Still full: shed the oldest quarter so the newest
-			// attackers are the ones still counted.
-			type holder struct {
-				key     string
-				started time.Time
-			}
-			holders := make([]holder, 0, len(s.auth.attempts))
-			for key, entry := range s.auth.attempts {
-				holders = append(holders, holder{key, entry.started})
-			}
-			sort.Slice(holders, func(i, j int) bool { return holders[i].started.Before(holders[j].started) })
-			shed := len(holders) / 4
-			if shed < 1 {
-				shed = 1
-			}
-			for _, h := range holders[:shed] {
-				delete(s.auth.attempts, h.key)
+	}
+	if len(s.auth.attempts) >= maxLoginAttemptsTracked {
+		for key := range s.auth.attempts {
+			delete(s.auth.attempts, key)
+			if len(s.auth.attempts) < maxLoginAttemptsTracked*3/4 {
+				break
 			}
 		}
 	}
 	attempt, found := s.auth.attempts[ip]
-	if found && time.Since(attempt.started) > 15*time.Minute {
-		delete(s.auth.attempts, ip)
-		attempt, found = s.auth.attempts[ip]
-	}
 	if !found {
 		attempt = loginAttempt{started: time.Now()}
 	}
@@ -200,7 +249,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.auth.sessions[sessionValue] = time.Now().Add(sessionTTL)
 	s.persistSessionsLocked()
 	s.auth.mu.Unlock()
-	http.SetCookie(w, sessionCookie(sessionValue, 3600, cookieSecure(r)))
+	http.SetCookie(w, sessionCookie(sessionValue, 3600, requestSecure(r)))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -212,7 +261,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "logout requires POST", http.StatusMethodNotAllowed)
 		return
 	}
-	clearSessionCookie(w, cookieSecure(r))
+	clearSessionCookie(w, requestSecure(r))
 	if cookie, err := r.Cookie("sdrstream_session"); err == nil {
 		s.auth.mu.Lock()
 		delete(s.auth.sessions, cookie.Value)
@@ -263,7 +312,7 @@ func (s *Server) wrapAuth(mux *http.ServeMux) http.Handler {
 		}
 		s.auth.mu.Unlock()
 		if !ok {
-			clearSessionCookie(w, cookieSecure(r))
+			clearSessionCookie(w, requestSecure(r))
 			if resource {
 				http.Error(w, "access denied", http.StatusUnauthorized)
 				return
@@ -272,7 +321,7 @@ func (s *Server) wrapAuth(mux *http.ServeMux) http.Handler {
 			return
 		}
 		if renew {
-			http.SetCookie(w, sessionCookie(cookie.Value, 3600, cookieSecure(r)))
+			http.SetCookie(w, sessionCookie(cookie.Value, 3600, requestSecure(r)))
 		}
 		mux.ServeHTTP(w, r)
 	})
@@ -280,21 +329,33 @@ func (s *Server) wrapAuth(mux *http.ServeMux) http.Handler {
 
 // stateFile locates a small JSON state file. SDRSTREAM_STATE_DIR overrides
 // the directory (use a persistent volume to survive container rebuilds, or a
-// test temp dir to isolate runs); the default is the OS temp dir.
+// test temp dir to isolate runs); the default is a private per-user
+// directory, never the shared OS temp dir itself: filenames there are
+// predictable and the directory is world-searchable, which would expose the
+// session table to other local users.
 func stateFile(name string) string {
 	if dir := os.Getenv("SDRSTREAM_STATE_DIR"); dir != "" {
 		return filepath.Join(dir, name)
 	}
-	return filepath.Join(os.TempDir(), name)
+	return filepath.Join(defaultStateDir(), name)
 }
 
-// writeStateFile atomically persists one JSON state file, creating
-// SDRSTREAM_STATE_DIR first when it does not exist yet.
+// defaultStateDir is a per-user directory under the OS temp dir. The uid
+// keeps different local users apart, and writeStateFile creates it 0700.
+func defaultStateDir() string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("sdrstream-state-%d", os.Getuid()))
+}
+
+// writeStateFile atomically persists one JSON state file, creating the
+// state directory (private to this user) first when it does not exist yet.
 func writeStateFile(path string, b []byte) {
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return
 		}
+		// An earlier run (or another local user squatting the predictable
+		// name) may have left the directory more open; pull it back.
+		_ = os.Chmod(dir, 0o700)
 	}
 	tmp := path + ".tmp"
 	if os.WriteFile(tmp, b, 0o600) == nil {
@@ -304,7 +365,11 @@ func writeStateFile(path string, b []byte) {
 
 func authSessionFile() string { return stateFile("sdrstream-auth-sessions.json") }
 func (s *Server) persistSessionsLocked() {
-	b, err := json.Marshal(s.auth.sessions)
+	s.auth.pruneSessionsLocked()
+	b, err := json.Marshal(sessionFile{
+		Fingerprint: passwordFingerprint(os.Getenv("SDRSTREAM_UI_PASSWORD")),
+		Sessions:    s.auth.sessions,
+	})
 	if err != nil {
 		return
 	}

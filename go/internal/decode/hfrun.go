@@ -68,6 +68,9 @@ type SessionOptions struct {
 	SkipInactive    bool          // skip targets whose schedule says off-air
 	RecordFullAudio bool          // keep AudioWAV on every result, not only failures
 	WSPath          string        // preflight-selected Kiwi WebSocket path style
+	// AllowPrivate permits dialing loopback/private hosts (local receivers,
+	// tests). Leave false for directory-sourced stations.
+	AllowPrivate bool
 }
 
 func (o *SessionOptions) defaults() {
@@ -106,6 +109,7 @@ func RunHFSession(ctx context.Context, server string, targets []HFTarget, opts S
 	}
 	kiwiOptions := kiwisdr.DefaultOptions()
 	kiwiOptions.WSPath = opts.WSPath
+	kiwiOptions.AllowPrivate = opts.AllowPrivate
 	client, err := kiwisdr.New(server, kiwiOptions)
 	if err != nil {
 		return nil, targets, err

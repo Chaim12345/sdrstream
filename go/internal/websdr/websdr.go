@@ -33,6 +33,14 @@ import (
 // StreamPath is the WebSDR WebSocket endpoint.
 const StreamPath = "/~~stream"
 
+// maxFrameBytes caps one websocket frame (review: 1-4 MiB read limit on
+// every dial). WebSDR frames are small vocoder blocks; 1 MiB is generous.
+const maxFrameBytes = 1 << 20
+
+// writeTimeout bounds every control write (tune, squelch, retune after
+// reconnect) so a stuck peer cannot wedge the writer.
+const writeTimeout = 10 * time.Second
+
 // Chunk is one decoded block of WebSDR audio.
 type Chunk struct {
 	Samples    []int16
@@ -66,6 +74,9 @@ type Options struct {
 	ReconnectMax     time.Duration
 	OpenTimeout      time.Duration
 	IdleTimeout      time.Duration
+	// AllowPrivate permits dialing loopback/private hosts (local receivers,
+	// tests). Leave false for directory-sourced stations.
+	AllowPrivate bool
 }
 
 // DefaultOptions are polite defaults for a public server.
@@ -156,17 +167,27 @@ func (c *Client) Connect(ctx context.Context) error {
 	return c.connect(ctx)
 }
 
+// dialer builds the websocket dialer, guarded against non-public targets
+// unless the caller opted in to private/loopback receivers.
+func (c *Client) dialer() *websocket.Dialer {
+	d := &websocket.Dialer{HandshakeTimeout: c.Options.OpenTimeout}
+	if !c.Options.AllowPrivate {
+		d.NetDialContext = common.PublicDialContext(c.Options.OpenTimeout)
+	}
+	return d
+}
+
 func (c *Client) connect(ctx context.Context) error {
 	c.vocoder.Reset()
 	c.sequence = 0
 	// WebSDR validates the Origin header and drops the connection without it.
-	dialer := &websocket.Dialer{HandshakeTimeout: c.Options.OpenTimeout}
 	header := http.Header{}
 	header.Set("Origin", c.Origin)
-	conn, _, err := dialer.DialContext(ctx, c.URL, header)
+	conn, _, err := c.dialer().DialContext(ctx, c.URL, header)
 	if err != nil {
 		return err
 	}
+	conn.SetReadLimit(maxFrameBytes)
 	c.mu.Lock()
 	c.conn = conn
 	c.mu.Unlock()
@@ -174,10 +195,17 @@ func (c *Client) connect(ctx context.Context) error {
 	return nil
 }
 
-// Close stops the reader and closes the event channel.
+// Close stops the reader and closes the socket. Closing the connection is
+// what actually unblocks a read parked in ReadMessage; closing quit alone
+// left the socket open until the server noticed.
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
 		close(c.quit)
+		c.mu.Lock()
+		if c.conn != nil {
+			c.conn.Close()
+		}
+		c.mu.Unlock()
 	})
 }
 
@@ -225,16 +253,16 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
 			if delay > c.Options.ReconnectMax && c.Options.ReconnectMax > 0 {
 				delay = c.Options.ReconnectMax
 			}
-			dialer := &websocket.Dialer{HandshakeTimeout: c.Options.OpenTimeout}
 			header := http.Header{}
 			header.Set("Origin", c.Origin)
 			dialCtx, dialCancel := context.WithTimeout(ctx, c.Options.OpenTimeout)
-			newConn, _, dialErr := dialer.DialContext(dialCtx, c.URL, header)
+			newConn, _, dialErr := c.dialer().DialContext(dialCtx, c.URL, header)
 			dialCancel()
 			if dialErr != nil {
 				c.LastError = dialErr
 				continue
 			}
+			newConn.SetReadLimit(maxFrameBytes)
 			conn.Close()
 			conn = newConn
 			c.mu.Lock()
@@ -243,8 +271,11 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
 			c.vocoder.Reset()
 			c.sequence = 0
 			if c.tuning != "" {
-				_ = conn.WriteControl(websocket.TextMessage,
-					[]byte("GET /~~param?"+c.tuning), time.Now().Add(5*time.Second))
+				// A retune is a data frame, not a control frame: send it
+				// with WriteMessage under a write deadline.
+				_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+				_ = conn.WriteMessage(websocket.TextMessage,
+					[]byte("GET /~~param?"+c.tuning))
 			}
 			continue
 		}
@@ -359,26 +390,63 @@ func formatFloat(value float64) string {
 }
 
 // Record collects audio for duration and returns the concatenated samples
-// and the samplerate they were captured at.
+// and the samplerate they were captured at. A dead reader must not look
+// like a quiet receiver: when the stream fails and no audio arrived, the
+// reader's error is returned instead of clean silence.
 func (c *Client) Record(ctx context.Context, duration time.Duration) ([]int16, int, error) {
 	var samples []int16
 	rate := 8000
-	deadline := time.After(duration)
+	var lastErr error
+	deadline := time.NewTimer(duration)
+	defer deadline.Stop()
 	for {
 		select {
-		case <-deadline:
+		case <-deadline.C:
+			if len(samples) == 0 && lastErr != nil {
+				return samples, rate, lastErr
+			}
 			return samples, rate, nil
 		case <-ctx.Done():
 			return samples, rate, ctx.Err()
 		case event, ok := <-c.events:
 			if !ok {
+				if lastErr != nil {
+					return samples, rate, lastErr
+				}
 				return samples, rate, nil
 			}
-			if event.Type == "audio" {
+			switch event.Type {
+			case "audio":
 				chunk := event.Value.(Chunk)
 				samples = append(samples, chunk.Samples...)
 				rate = chunk.Samplerate
+			case "error":
+				if err, ok := event.Value.(error); ok {
+					lastErr = err
+				}
 			}
+		}
+	}
+}
+
+// DrainAudio discards buffered audio events. Call it after Tune: frames
+// captured at the old frequency would otherwise pollute the start of the
+// next recording.
+func (c *Client) DrainAudio() {
+	// Pull everything out first; re-publishing inside the loop could
+	// cycle a full buffer of control events forever.
+	var keep []Event
+	for {
+		select {
+		case event := <-c.events:
+			if event.Type != "audio" {
+				keep = append(keep, event)
+			}
+		default:
+			for _, event := range keep {
+				c.publish(event)
+			}
+			return
 		}
 	}
 }

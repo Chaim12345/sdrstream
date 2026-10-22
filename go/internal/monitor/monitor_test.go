@@ -705,3 +705,19 @@ func TestChooseModeUsesTheBand(t *testing.T) {
 		t.Errorf("explicit mode overridden: %q", got)
 	}
 }
+
+func TestDecodeDataFindsSAME(t *testing.T) {
+	const header = "ZCZC-WXR-SVR-039173+0045-2951830-KCLE/NWS-"
+	const rate = 16000
+	var s []float64
+	s = append(s, make([]float64, rate)...)
+	for i := 0; i < 3; i++ {
+		s = append(s, decode.SAMEModulate(header, rate)...)
+		s = append(s, make([]float64, rate)...)
+	}
+	m := New(Options{})
+	mode, detail, ok := m.decodeData(context.Background(), s, rate, 0)
+	if !ok || mode != "same" || !strings.Contains(detail, "Severe Thunderstorm Warning") || !strings.Contains(detail, header) {
+		t.Fatalf("mode=%q ok=%v detail=%q", mode, ok, detail)
+	}
+}

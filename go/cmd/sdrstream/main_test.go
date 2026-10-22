@@ -4,16 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/chaim12345/sdrstream/go/internal/web"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/chaim12345/sdrstream/go/internal/decode"
 	"github.com/chaim12345/sdrstream/go/internal/kiwisdr"
+	"github.com/chaim12345/sdrstream/go/internal/web"
 )
 
 // A descriptor exhaustion on this machine must not look like a receiver
@@ -152,6 +156,9 @@ func TestPreflightDirectoryStationIdentity(t *testing.T) {
 		{"WebSDR", `<script src="websdr.js"></script>`, true},
 		{"WebSDR", `<html>plain site</html>`, false},
 	}
+	old := directoryPreflightHTTPClient
+	directoryPreflightHTTPClient = func() *http.Client { return &http.Client{Timeout: 8 * time.Second} }
+	defer func() { directoryPreflightHTTPClient = old }()
 	for _, tt := range tests {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, tt.body) }))
 		err := preflightDirectoryStation(context.Background(), tt.kind, server.URL)
@@ -229,5 +236,98 @@ func TestLooksLikeKiwiDoesNotClaimOpenWebRX(t *testing.T) {
 		if got := looksLikeKiwi(test.host); got != test.want {
 			t.Errorf("looksLikeKiwi(%q) = %v, want %v", test.host, got, test.want)
 		}
+	}
+}
+func TestPreflightOutcomeMapsLocalVerdictsToSkips(t *testing.T) {
+	for _, verdict := range []string{kiwisdr.VerdictBackoff, kiwisdr.VerdictBudget} {
+		if got := preflightOutcome(verdict); got != (scanOutcome{skipped: true}) {
+			t.Errorf("%s: got %+v, want skipped", verdict, got)
+		}
+	}
+	if got := preflightOutcome(kiwisdr.VerdictTimeout); got != (scanOutcome{timedOut: true}) {
+		t.Errorf("timeout: got %+v", got)
+	}
+	for _, verdict := range []string{kiwisdr.VerdictBusy, kiwisdr.VerdictDead} {
+		if got := preflightOutcome(verdict); got != (scanOutcome{refused: true}) {
+			t.Errorf("%s: got %+v, want refused", verdict, got)
+		}
+	}
+}
+
+func TestNormalizeStationOutcomeTreatsOwnDeadlineAsSkip(t *testing.T) {
+	parent := context.Background()
+	stationCtx, cancel := context.WithTimeout(parent, time.Millisecond)
+	<-stationCtx.Done()
+	defer cancel()
+	got := normalizeStationOutcome(stationCtx, parent, scanOutcome{timedOut: true})
+	if got != (scanOutcome{skipped: true}) {
+		t.Fatalf("own session deadline must become a skip, got %+v", got)
+	}
+	// Parent cancellation is a shutdown, not a skip-worthy station result.
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	stationCtx2, cancel2 := context.WithTimeout(parentCtx, time.Minute)
+	parentCancel()
+	defer cancel2()
+	got = normalizeStationOutcome(stationCtx2, parentCtx, scanOutcome{timedOut: true})
+	if got != (scanOutcome{timedOut: true}) {
+		t.Fatalf("parent shutdown must keep the original outcome, got %+v", got)
+	}
+	// A still-running station context changes nothing.
+	stationCtx3, cancel3 := context.WithCancel(parent)
+	defer cancel3()
+	got = normalizeStationOutcome(stationCtx3, parent, scanOutcome{refused: true})
+	if got != (scanOutcome{refused: true}) {
+		t.Fatalf("live station ctx: got %+v", got)
+	}
+}
+
+// TestJukeboxAPRSTempWAVRemoved: the jukebox APRS fast path writes a temp
+// WAV for the decoder; every outcome - including a successful decode that
+// records the capture - must remove it. Regression test for the leak where
+// the decoded-and-continued path skipped the remove.
+func TestJukeboxAPRSTempWAVRemoved(t *testing.T) {
+	samples, rate, err := decode.ReadWAV("../../../tests/data/ref_aprs.wav")
+	if err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	capturesDir := t.TempDir()
+	wavPath := filepath.Join(t.TempDir(), "sdrstream-aprs-test.wav")
+	server := &web.Server{}
+	states := []string{}
+	update := func(state, result string) { states = append(states, state) }
+
+	// The zero Server has no gallery directory, so AddLiveArtifact fails
+	// and the call reports not-recorded - but the APRS decode itself
+	// succeeded (the capture WAV proves it) and the temp file must still be
+	// gone. That is the path that used to leak.
+	tryJukeboxAPRS(server, samples, rate, wavPath, capturesDir, 144800000, "jukebox.spdns.eu", update)
+
+	if _, err := os.Stat(wavPath); !os.IsNotExist(err) {
+		t.Fatalf("temp WAV leaked: %v", err)
+	}
+	entries, err := os.ReadDir(capturesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), ".wav") {
+		t.Fatalf("capture not recorded: %v", entries)
+	}
+}
+
+// TestJukeboxAPRSNoSignalAlsoRemovesTemp: a recording without APRS packets
+// takes the early-exit path, which must remove the temp file too.
+func TestJukeboxAPRSNoSignalAlsoRemovesTemp(t *testing.T) {
+	samples := make([]float64, 8000)
+	capturesDir := t.TempDir()
+	wavPath := filepath.Join(t.TempDir(), "sdrstream-aprs-test.wav")
+	server := &web.Server{}
+	if tryJukeboxAPRS(server, samples, 8000, wavPath, capturesDir, 144800000, "jukebox.spdns.eu", func(string, string) {}) {
+		t.Fatal("silence reported as decoded")
+	}
+	if _, err := os.Stat(wavPath); !os.IsNotExist(err) {
+		t.Fatalf("temp WAV leaked on the no-decode path: %v", err)
+	}
+	if entries, _ := os.ReadDir(capturesDir); len(entries) != 0 {
+		t.Fatalf("silence produced captures: %v", entries)
 	}
 }

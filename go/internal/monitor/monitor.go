@@ -1099,6 +1099,15 @@ func (m *Monitor) ClassifyForScan(ctx context.Context, samples []float64, rate i
 // gated.
 func (m *Monitor) decodeData(ctx context.Context, samples []float64, rate int, bandwidthHz float64) (mode, detail string, ok bool) {
 	narrowChannel := bandwidthHz <= 0 || bandwidthHz <= 4000
+	// SAME (NOAA Weather Radio / EAS) headers are validated field by field,
+	// so this is safe to try on any audio and cannot invent traffic.
+	if alerts := decode.SAMEScan(samples, rate); len(alerts) > 0 {
+		lines := make([]string, 0, len(alerts))
+		for _, a := range alerts {
+			lines = append(lines, a.String()+" | "+a.Raw)
+		}
+		return "same", strings.Join(lines, " | "), true
+	}
 	// APRS and Morse need a file, so the samples go to a temporary WAV.
 	path, err := writeTempWAV(samples, rate)
 	if err == nil {
@@ -1196,10 +1205,12 @@ func (m *Monitor) decodeData(ctx context.Context, samples []float64, rate int, b
 				return "psk31", text, true
 			}
 		}
-		if text := decode.RTTYDecode(samples, rate, 0, 0, 0); text != "" {
-			if plausibleNarrowbandText(text) {
-				return "rtty", text, true
+		// Both polarities are needed for real services; keep the review text gate.
+		if text, inverted := decode.RTTYDecodeAuto(samples, rate, 0, 0, 0); text != "" && plausibleNarrowbandText(text) {
+			if inverted {
+				return "rtty", text + " [inverted mark/space]", true
 			}
+			return "rtty", text, true
 		}
 		// SSTV is intentionally disabled in live classification until the
 		// independent per-line sync decoder passes real-frame review.

@@ -105,6 +105,12 @@ func resampleLinear(samples []float64, from, to int) []float64 {
 	if from == to || len(samples) == 0 {
 		return samples
 	}
+	if from <= 0 || to <= 0 {
+		// A non-positive rate has no meaningful resample; dividing by it
+		// would produce a negative or unbounded output length. Treat it
+		// as "no resampling possible" and hand the samples back.
+		return samples
+	}
 	ratio := float64(from) / float64(to)
 	outLen := int(float64(len(samples)) / ratio)
 	out := make([]float64, outLen)

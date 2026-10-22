@@ -6,7 +6,12 @@ A-law-like companding curve that differs from the ITU G.711 A-law table in 32
 of its 256 entries, so it is reproduced verbatim rather than computed.
 
 Values are taken from the public WebSDR HTML5 client (``websdr-sound.js``),
-copyright 2013-2025 PA3FWM, which permits redistribution as part of a client.
+copyright 2013-2025 PA3FWM. NO PERMISSION TO REDISTRIBUTE OR REUSE THIS TABLE
+HAS BEEN OBTAINED. Upstream says the client code is "all rights reserved" and
+may only be served unmodified by the original WebSDR server to original
+clients; the server documentation says reusing parts of the code in other
+software is not allowed without the author's explicit prior permission.
+TODO: obtain explicit permission from PA3FWM or replace the table (see NOTICE).
 """
 
 #: Maps an 8-bit stream byte to a signed 16-bit sample.
