@@ -767,6 +767,12 @@ func cmdRelays(args []string) error {
 // monitorVoiceOptions builds the speech options for the monitor, applying a
 // built-in radio phraseology prompt when the caller does not supply one: the
 // jargon is the part whisper gets wrong on its own.
+// monitorNIMOptions builds the hosted NVIDIA speech backend options from
+// the environment; an empty key disables that backend.
+func monitorNIMOptions() voice.NIMOptions {
+	return voice.DefaultNIMOptions()
+}
+
 func monitorVoiceOptions(language string, threads, beam int, prompt string) voice.Options {
 	if prompt == "" {
 		prompt = "Radio traffic. Callsign, over, roger, copy, QSO, CQ, frequency, signal report, antenna, transponder, runway, tower, ground, approach, contact, squawk, wind, heading, cleared."
@@ -818,21 +824,22 @@ func cmdMonitor(args []string) error {
 	defer source.Close()
 
 	instance := monitor.New(monitor.Options{
-		Source:       source,
-		Strategy:     *strategy,
-		StartHz:      *startHz,
-		EndHz:        *endHz,
-		StepHz:       *stepHz,
-		Dwell:        *stepDwell,
-		ThresholdDB:  *threshold,
-		Listen:       *listen,
-		Mode:         *mode,
-		Voice:        *voiceOn,
-		VoiceOptions: monitorVoiceOptions(*voiceLang, *voiceThreads, *voiceBeam, *voicePrompt),
-		OutDir:       *out,
-		Name:         *server,
-		Label:        *label,
-		Logf:         func(format string, args ...interface{}) { fmt.Printf(format+"\n", args...) },
+		Source:          source,
+		Strategy:        *strategy,
+		StartHz:         *startHz,
+		EndHz:           *endHz,
+		StepHz:          *stepHz,
+		Dwell:           *stepDwell,
+		ThresholdDB:     *threshold,
+		Listen:          *listen,
+		Mode:            *mode,
+		Voice:           *voiceOn,
+		VoiceOptions:    monitorVoiceOptions(*voiceLang, *voiceThreads, *voiceBeam, *voicePrompt),
+		VoiceNIMOptions: monitorNIMOptions(),
+		OutDir:          *out,
+		Name:            *server,
+		Label:           *label,
+		Logf:            func(format string, args ...interface{}) { fmt.Printf(format+"\n", args...) },
 		OnActivity: func(activity monitor.Activity) {
 			line := fmt.Sprintf("#%d %s %.4f MHz %s",
 				activity.ID, activity.Started.UTC().Format("15:04:05"),
@@ -856,7 +863,7 @@ func cmdMonitor(args []string) error {
 	}
 	fmt.Printf("monitoring %s (%s); spectrum threshold %.0f dB, listen %s, voice %v\n",
 		*server, *kind, *threshold, *listen, *voiceOn)
-	if !voice.Available(monitorVoiceOptions(*voiceLang, *voiceThreads, *voiceBeam, *voicePrompt)) {
+	if !voice.Available(monitorVoiceOptions(*voiceLang, *voiceThreads, *voiceBeam, *voicePrompt)) && !voice.NIMAvailable(monitorNIMOptions()) {
 		fmt.Println("note: no speech backend found; voice traffic is reported but not transcribed")
 	}
 	if *minutes > 0 {
@@ -1478,25 +1485,26 @@ func cmdWeb(args []string) error {
 					log.Printf("gallery: save live image: %v", err)
 				}
 			},
-			Source:         source,
-			Strategy:       *monitorStrategy,
-			Channels:       channels,
-			ChannelPause:   *monitorChannelPause,
-			StartHz:        *monitorStart,
-			EndHz:          *monitorEnd,
-			StepHz:         *monitorStep,
-			ThresholdDB:    *monitorThreshold,
-			Dwell:          *monitorDwell,
-			Listen:         *monitorListen,
-			Mode:           *monitorMode,
-			Voice:          *monitorVoice,
-			VoiceOptions:   monitorVoiceOptions(*monitorVoiceLang, *monitorVoiceThreads, *monitorVoiceBeam, *monitorVoicePrompt),
-			MultimonBinary: *monitorMultimon,
-			DirewolfBinary: *monitorDirewolf,
-			OutDir:         *monitorOut,
-			Name:           *monitorServer,
-			Label:          *monitorLabel,
-			Logf:           func(format string, args ...interface{}) { log.Printf("monitor: "+format, args...) },
+			Source:          source,
+			Strategy:        *monitorStrategy,
+			Channels:        channels,
+			ChannelPause:    *monitorChannelPause,
+			StartHz:         *monitorStart,
+			EndHz:           *monitorEnd,
+			StepHz:          *monitorStep,
+			ThresholdDB:     *monitorThreshold,
+			Dwell:           *monitorDwell,
+			Listen:          *monitorListen,
+			Mode:            *monitorMode,
+			Voice:           *monitorVoice,
+			VoiceOptions:    monitorVoiceOptions(*monitorVoiceLang, *monitorVoiceThreads, *monitorVoiceBeam, *monitorVoicePrompt),
+			VoiceNIMOptions: monitorNIMOptions(),
+			MultimonBinary:  *monitorMultimon,
+			DirewolfBinary:  *monitorDirewolf,
+			OutDir:          *monitorOut,
+			Name:            *monitorServer,
+			Label:           *monitorLabel,
+			Logf:            func(format string, args ...interface{}) { log.Printf("monitor: "+format, args...) },
 		})
 		if *monitorOut != "" {
 			if err := os.MkdirAll(*monitorOut, 0o755); err != nil {
@@ -1652,7 +1660,7 @@ func cmdDecode(args []string) error {
 			if len(segments) == 0 {
 				fmt.Println("   voice: no speech detected")
 			} else {
-				transcript, err := voice.Transcribe(context.Background(), samples, rate, voice.DefaultOptions())
+				transcript, err := voice.TranscribeBest(context.Background(), samples, rate, voice.DefaultOptions(), voice.DefaultNIMOptions())
 				if err != nil {
 					fmt.Printf("   voice: %v\n", err)
 				} else {
@@ -2250,7 +2258,7 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 			return result
 		}
 		decodeCtx, cancelDecode := context.WithTimeout(ctx, 12*time.Second)
-		kind, decoder, detail, ok := monitor.New(monitor.Options{MultimonBinary: multimonPath, DirewolfBinary: direwolfPath, Voice: true, VoiceOptions: monitorVoiceOptions("en", 2, 1, "weather, radio, forecast")}).ClassifyForScan(decodeCtx, samples, rate, 3000)
+		kind, decoder, detail, ok := monitor.New(monitor.Options{MultimonBinary: multimonPath, DirewolfBinary: direwolfPath, Voice: true, VoiceOptions: monitorVoiceOptions("en", 2, 1, "weather, radio, forecast"), VoiceNIMOptions: monitorNIMOptions()}).ClassifyForScan(decodeCtx, samples, rate, 3000)
 		cancelDecode()
 		if !ok || detail == "" {
 			update("no verified decode", "")
