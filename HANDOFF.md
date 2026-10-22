@@ -40,14 +40,26 @@ session added:
   heuristic also no longer claims every `:8073` host (OpenWebRX's default
   port), and `kiwisdr` preflight accepts full URLs instead of building
   `http://http//host/status`.
+* **HF voice from the Kiwi fleet** — `decodeHF` deliberately leaves voice
+  targets unverified; the Kiwi scanner now transcribes the captured WAV with
+  the NIM-first backend, applies the live gate, saves the audio, and
+  publishes the transcript. Shannon VOLMET 5505 USB is the first HF target
+  (25 s listen) and was live-verified on a public KiwiSDR: the scan row
+  decoded "wind 340 degrees, 18 knots, gusting to 8 knots…". Repeat visits
+  now register only the targets they will tune, so a decoded row is no
+  longer reset to "queued" before the receiver is retuned. The header's
+  "verified activity" pill also counts scanner/gallery decodes, not only
+  monitor activity.
 * `AGENTS.md` records the standing directives (personal use: licensing is not
   a gate; prefer NIM over local).
 
 Build and tests pass for the touched packages (`voice`, `rdio`, `web`,
-`monitor`, `decode`, `cmd`). Live-verified: Shannon VOLMET on 5505 kHz USB
-(`websdr.ewi.utwente.nl`) transcribes through NIM to "G-point 16, QMH 1025…
-Wind 200 degrees, 7 knots…"; the OpenWebRX spectrum survey at
-`sdr.ladar.club` detects and classifies peaks with no invented RTTY.
+`monitor`, `decode`, `cmd`). Live-verified: a web scan of
+`kiwisdr.johnnorton.co.uk:8073` produced repeated verified Shannon VOLMET
+transcripts on 5505 kHz USB (Manchester, Zurich, Geneva, Stockholm Arlanda,
+Milan Malpensa METARs), visible in the Scan board and the "verified live
+decodes" Gallery; the OpenWebRX spectrum survey at `sdr.ladar.club` detects
+and classifies peaks with no invented RTTY.
 
 ## What the tool does
 
@@ -62,8 +74,9 @@ original port source.
 * **Fleet scanner** (`web --scan-open-directory`, `--scan-kiwi-directory`) —
   bounded parallel scan of receiverbook stations with a 49→100 concurrency
   ramp, load guard, per-host blocklist/backoff, and verified results into the
-  gallery. It currently tunes a fixed target list (amateur/aviation/marine/FM)
-  per station.
+  gallery. OpenWebRX stations survey their own FFT; KiwiSDR walks the HF
+  target list (VOLMET, RTTY, CW, NAVTEX, WEFAX, FT8/WSPR); WebSDR still tunes
+  fixed VHF/UHF targets.
 * **Decoders** (`go/internal/decode`) — AFSK/AX.25, Morse, DTMF, RTTY, PSK31,
   SSTV (VIS + Martin image decode), POCSAG, FLEX, EAS/SAME, NAVTEX, ACARS,
   HFDL, FT8/WSPR, APT, plus the transmission scanner.

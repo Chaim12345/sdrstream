@@ -1530,6 +1530,11 @@ func cmdWeb(args []string) error {
 		}
 	}
 	server := web.New(*capturesDir, *galleryDir)
+	// The board state is persisted with the server; seed the scanner's copy
+	// so a restart does not rewrite decoded rows as "queued".
+	scansMu.Lock()
+	scans = server.ScanStatuses()
+	scansMu.Unlock()
 	server.NoAuth = *noAuth
 	rdioQueue := rdio.NewQueue(rdio.Options{
 		BaseURL:     *rdioURL,
@@ -2559,7 +2564,7 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 			addScan(server, web.ScanStatus{StationType: stationType, Station: host, State: state, Result: reason, UpdatedAt: time.Now()})
 			return scanOutcome{refused: preflight.Verdict != kiwisdr.VerdictTimeout, timedOut: preflight.Verdict == kiwisdr.VerdictTimeout}
 		}
-		return scanKiwiStation(ctx, server, host, targetLimit, active, updateMetrics, preflight.WSPath)
+		return scanKiwiStation(ctx, server, host, targetLimit, capturesDir, active, updateMetrics, preflight.WSPath)
 	}
 	active.Add(1)
 	updateMetrics()
@@ -2943,16 +2948,83 @@ func looksLikeKiwi(host string) bool {
 	return strings.Contains(text, "kiwisdr") || strings.Contains(text, "kiwi")
 }
 
-func scanKiwiStation(ctx context.Context, server *web.Server, host string, targetLimit int, active *atomic.Int64, updateMetrics func(), wsPath string) scanOutcome {
+// transcribeHFVoice is a seam for tests. HF voice targets are captured by the
+// Kiwi session without a decoder, then turned into text here with the same
+// NIM-first backend as the live monitor.
+var transcribeHFVoice = func(ctx context.Context, samples []float64, rate int) (voice.Transcript, error) {
+	return voice.TranscribeBest(ctx, samples, rate,
+		monitorVoiceOptions("en", 2, 1, "marine weather, aviation, radio, forecast"),
+		voice.DefaultNIMOptions())
+}
+
+// kiwiVoiceActivity turns a captured HF voice result into a verified gallery
+// activity. decodeHF never transcribes voice, so the Kiwi scanner would other-
+// wise mark every VOLMET/weather/time-signal capture as unverified. When
+// capturesDir is set the WAV is kept too, which also feeds the Rdio hook.
+func kiwiVoiceActivity(ctx context.Context, host string, result decode.HFResult, capturesDir string) (monitor.Activity, error) {
+	if len(result.AudioWAV) == 0 {
+		return monitor.Activity{}, errors.New("no audio captured")
+	}
+	file, err := os.CreateTemp("", "sdrstream-kiwi-voice-*.wav")
+	if err != nil {
+		return monitor.Activity{}, err
+	}
+	name := file.Name()
+	defer os.Remove(name)
+	if _, err := file.Write(result.AudioWAV); err != nil {
+		file.Close()
+		return monitor.Activity{}, err
+	}
+	if err := file.Close(); err != nil {
+		return monitor.Activity{}, err
+	}
+	samples, rate, err := decode.ReadWAV(name)
+	if err != nil {
+		return monitor.Activity{}, err
+	}
+	transcript, err := transcribeHFVoice(ctx, samples, rate)
+	if err != nil {
+		return monitor.Activity{}, err
+	}
+	text := strings.TrimSpace(transcript.Text)
+	if err := verify.Live("voice", "speech", text, nil); err != nil {
+		return monitor.Activity{}, err
+	}
+	activity := monitor.Activity{
+		ID:          int(time.Now().UnixNano()),
+		Started:     result.Started,
+		FrequencyHz: result.Target.DialKHz * 1000,
+		Kind:        "voice",
+		Mode:        "speech",
+		Detail:      text,
+		Source:      host,
+	}
+	if capturesDir != "" {
+		source := strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
+		name := fmt.Sprintf("VOICE_%dkHz_voice_%s_%d.wav", int(result.Target.DialKHz), safeCaptureName(source), activity.ID)
+		path := filepath.Join(capturesDir, name)
+		if err := os.MkdirAll(capturesDir, 0o755); err == nil {
+			if err := os.WriteFile(path, result.AudioWAV, 0o644); err == nil {
+				activity.AudioPath = path
+			}
+		}
+	}
+	return activity, nil
+}
+
+func scanKiwiStation(ctx context.Context, server *web.Server, host string, targetLimit int, capturesDir string, active *atomic.Int64, updateMetrics func(), wsPath string) scanOutcome {
 	targets := decode.HFBroadcasts
+	if targetLimit > 0 && targetLimit < len(targets) {
+		targets = targets[:targetLimit]
+	}
 	keys := make(map[string]string, len(targets))
 	for _, target := range targets {
 		if target.ActiveNow(time.Now()) {
-			keys[target.Name] = addScan(server, web.ScanStatus{StationType: "KiwiSDR", Station: host, FrequencyHz: target.DialKHz * 1000, Mode: target.Mode, State: "queued", UpdatedAt: time.Now()})
+			// Only plan the targets this visit will actually tune. Queuing all
+			// 45 targets made the board lose the decoded row: the next visit's
+			// addScan reset it to "queued" before the receiver was even tuned.
+			keys[target.Name] = ensureScan(server, web.ScanStatus{StationType: "KiwiSDR", Station: host, FrequencyHz: target.DialKHz * 1000, Mode: target.Mode, State: "queued", UpdatedAt: time.Now()})
 		}
-	}
-	if targetLimit > 0 && targetLimit < len(targets) {
-		targets = targets[:targetLimit]
 	}
 	active.Add(1)
 	updateMetrics()
@@ -2980,6 +3052,22 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 		processed[result.Target.Name] = true
 		key := keys[result.Target.Name]
 		if key == "" {
+			continue
+		}
+		if result.Target.Kind == "voice" {
+			activity, verr := kiwiVoiceActivity(ctx, host, result, capturesDir)
+			if verr != nil {
+				setScanResult(server, key, "unverified decode", verr.Error())
+				continue
+			}
+			if activity.AudioPath != "" {
+				server.AddCaptureMetadata(filepath.Base(activity.AudioPath), "voice", host, activity.Detail, activity.FrequencyHz)
+			}
+			if err := server.AddLiveArtifact(activity, nil); err != nil {
+				setScanResult(server, key, "error", err.Error())
+				continue
+			}
+			setScanResult(server, key, "decoded", activity.Detail)
 			continue
 		}
 		if !result.Live() {
@@ -3044,6 +3132,22 @@ func addScan(server *web.Server, entry web.ScanStatus) string {
 	}
 	server.UpsertScanStatus(entry)
 	return key
+}
+
+// ensureScan registers a target once without resetting a result from an
+// earlier visit. A repeat station visit must not replace a decoded transcript
+// with "queued" just because the receiver is being retuned.
+func ensureScan(server *web.Server, entry web.ScanStatus) string {
+	key := scanStatusKey(entry)
+	scansMu.Lock()
+	for i := range scans {
+		if scanStatusKey(scans[i]) == key {
+			scansMu.Unlock()
+			return key
+		}
+	}
+	scansMu.Unlock()
+	return addScan(server, entry)
 }
 
 func scanStatusKey(s web.ScanStatus) string {

@@ -724,7 +724,16 @@ func (s *Server) persistScanStateLocked() {
 	writeStateFile(scanStateFile(), b)
 }
 
-// SetMonitor attaches a live monitor to the server.
+// ScanStatuses returns a copy of the current scan board rows, including the
+// ones loaded from disk at startup.
+func (s *Server) ScanStatuses() []ScanStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ScanStatus(nil), s.scans...)
+}
+
+// SetScanStatuses replaces the board with the scanner's current snapshot and
+// appends changed rows to the connection log.
 func (s *Server) SetScanStatuses(scans []ScanStatus) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1040,12 +1049,49 @@ func (s *Server) handleTestFixtures(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	instance := s.monitor
+	live := append([]LiveGalleryItem(nil), s.liveGallery...)
 	s.mu.Unlock()
-	if instance == nil {
-		writeJSON(w, []monitor.Activity{})
-		return
+
+	var items []monitor.Activity
+	if instance != nil {
+		items = instance.Activities()
 	}
-	writeJSON(w, instance.Activities())
+	// The activity pill is the UI's "verified traffic" total. Scanner and
+	// feed decodes only live in the gallery, so merge them in (skipping
+	// anything the monitor already reported; monitor decodes are also saved
+	// to the gallery and would otherwise be counted twice).
+	seen := make(map[string]bool, len(items))
+	for _, a := range items {
+		seen[activityDedupeKey(a)] = true
+	}
+	for i, it := range live {
+		kind := "data"
+		switch {
+		case it.Kind == "image":
+			kind = "image"
+		case it.Mode == "speech" || it.Kind == "voice":
+			kind = "voice"
+		}
+		a := monitor.Activity{
+			ID:          i + 1,
+			Started:     it.Start,
+			FrequencyHz: float64(it.FrequencyHz),
+			Kind:        kind,
+			Mode:        it.Mode,
+			Detail:      it.Text,
+			Source:      it.Station,
+		}
+		if seen[activityDedupeKey(a)] {
+			continue
+		}
+		items = append(items, a)
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].Started.After(items[j].Started) })
+	writeJSON(w, items)
+}
+
+func activityDedupeKey(a monitor.Activity) string {
+	return fmt.Sprintf("%d|%.0f|%s|%s", a.Started.UnixNano(), a.FrequencyHz, a.Kind, a.Detail)
 }
 
 // handleLive returns the monitor's point-in-time view: receiver identity,

@@ -32,6 +32,18 @@ type HFTarget struct {
 // ("CQ CQ CQ DE DDK2 DDH7 DDK9").
 var HFBroadcasts = []HFTarget{
 	{
+		// Shannon VOLMET transmits a continuous loop of METAR/TAF reports
+		// on 5505 kHz USB. Verified live 2026-10-22 on a public KiwiSDR:
+		// "This is Shannon Volmet ... TNH 1002 ..." at 09:20Z. A 25 s
+		// window is needed for a complete report; shorter clips often catch
+		// a pause and the ASR hallucinates ("Thank you."), which the live
+		// gate rejects. It is first in the list so a small target cap still
+		// gives a fleet Kiwi visit a voice sample.
+		Name: "Shannon VOLMET 5505", Kind: "voice",
+		CarrierKHz: 5505.0, DialKHz: 5505.0, Mode: "usb",
+		Listen: 25 * time.Second,
+	},
+	{
 		Name: "DWD RTTY 4583 (night)", Kind: "rtty",
 		CarrierKHz: 4583.0, DialKHz: 4581.1, Mode: "usb",
 		Baud: 50, MarkHz: 1675, SpaceHz: 2125, Inverted: true,

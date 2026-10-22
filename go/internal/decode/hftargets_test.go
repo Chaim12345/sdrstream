@@ -6,10 +6,14 @@ import (
 )
 
 // The restored non-satellite HF monitoring list: broadcast, utility,
-// NAVTEX, time signals and weather fax/RTTY. Exactly 44 targets.
+// NAVTEX, time signals and weather fax/RTTY, plus the Shannon VOLMET voice
+// sample. Exactly 45 targets.
 func TestHFBroadcastsRestoredList(t *testing.T) {
-	if len(HFBroadcasts) != 44 {
-		t.Fatalf("HFBroadcasts has %d targets, want 44", len(HFBroadcasts))
+	if len(HFBroadcasts) != 45 {
+		t.Fatalf("HFBroadcasts has %d targets, want 45", len(HFBroadcasts))
+	}
+	if HFBroadcasts[0].Name != "Shannon VOLMET 5505" || HFBroadcasts[0].Kind != "voice" {
+		t.Fatalf("first target = %q (%s), want the Shannon VOLMET voice sample", HFBroadcasts[0].Name, HFBroadcasts[0].Kind)
 	}
 	seen := map[string]bool{}
 	knownKinds := map[string]bool{

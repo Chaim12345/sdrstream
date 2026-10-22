@@ -365,6 +365,25 @@ func TestExpiredSessionsAreDroppedOnLoad(t *testing.T) {
 	}
 }
 
+func TestActivityIncludesLiveGalleryDecodes(t *testing.T) {
+	s := &Server{liveGallery: []LiveGalleryItem{{
+		Station: "kiwi.test", Start: time.Now().UTC(), Mode: "speech",
+		FrequencyHz: 5505000, Kind: "text", Text: "This is Shannon Volmet.",
+	}}}
+	r := httptest.NewRecorder()
+	s.Handler().ServeHTTP(r, httptest.NewRequest("GET", "/api/activity.json", nil))
+	if r.Code != http.StatusOK {
+		t.Fatalf("status = %d", r.Code)
+	}
+	var items []monitor.Activity
+	if err := json.Unmarshal(r.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Kind != "voice" || items[0].FrequencyHz != 5505000 || !strings.Contains(items[0].Detail, "Shannon Volmet") {
+		t.Fatalf("activity = %+v, want the live gallery voice decode", items)
+	}
+}
+
 func TestAddLiveArtifactPersistsAndServesVerifiedText(t *testing.T) {
 	dir := t.TempDir()
 	s := &Server{galleryDir: dir}

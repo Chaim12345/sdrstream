@@ -168,6 +168,14 @@ Slices (a)–(g) landed in PR #4. Two integration changes followed:
   arrived after connect. Preflight keeps its own 10 s budget and the source
   uses the station context. The Kiwi type check also trusts the directory
   type instead of guessing from port 8073, which OpenWebRX shares.
+* **Kiwi HF voice is transcribed, not just captured.** `decodeHF` leaves voice
+  targets unverified by design; `scanKiwiStation` now reads the captured WAV,
+  transcribes it with the NIM-first backend, applies the live gate, writes the
+  WAV to the captures directory and publishes the transcript (which also
+  reaches the Rdio hook). Shannon VOLMET 5505 USB is the first HF target with a
+  25 s listen and was live-verified with a real METAR report. A repeat visit
+  registers only the targets it will tune, so a decoded row survives the next
+  "queued" transition; the activity pill counts these gallery decodes too.
 
 Remaining:
 
