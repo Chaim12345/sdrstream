@@ -199,6 +199,11 @@ type Server struct {
 	// status.json constantly and wavInfo opens every file each time.
 	capturesCache   []Capture
 	capturesCacheAt time.Time
+	// receiverLedgerSeen remembers which archived captures already have a
+	// proof-ledger entry (keyed by archive filename); receiverLedgerLoaded
+	// marks the one-time seed from the ledger file after a restart.
+	receiverLedgerSeen   map[string]bool
+	receiverLedgerLoaded bool
 	// obsCache memoises SatNOGS observation lookups per NORAD id so the
 	// map popups do not hit the network API (or disk cache) on every open.
 	obsCache map[int]obsCacheEntry
@@ -430,6 +435,7 @@ func (s *Server) scanCaptures() []Capture {
 	}
 	s.mu.Unlock()
 	out := s.listCaptures()
+	s.syncReceiverLedger(out)
 	s.mu.Lock()
 	s.capturesCache = out
 	s.capturesCacheAt = time.Now()

@@ -43,9 +43,10 @@ func load(ctx context.Context, path, url string) ([]byte, error) {
 }
 func main() {
 	eibi := flag.String("eibi", "", "local EiBi eibi.txt (otherwise fetch once)")
+	extra := flag.String("extra", "", "local supplemental EiBi-format file merged into the schedule (e.g. NAVTEX slots)")
 	noaa := flag.String("noaa", "", "local NOAA Boston text (otherwise fetch once)")
 	source := flag.String("source", "both", "eibi, noaa, or both")
-	match := flag.String("match", "", "case-insensitive station/product substring")
+	match := flag.String("match", "", "case-insensitive station/product substring; comma-separated alternatives match any")
 	freq := flag.Float64("freq", 0, "optional exact carrier frequency in kHz")
 	kind := flag.String("kind", "", "optional broadcast, rtty, navtex or wefax filter")
 	receivers := flag.String("receivers", "", "JSON receiver array file, required for capture")
@@ -93,13 +94,39 @@ func main() {
 			}
 			entries = append(entries, v...)
 			if !noaaWarned {
-				log.Print("NOAA Boston source is dated 2018; current hosted timetable is not proof of transmission")
+				valid, updated := hfschedule.NOAAValidity(strings.NewReader(string(b)))
+				log.Printf("NOAA Boston timetable header: valid %q, updated %q; the hosted schedule is a planning source, not proof of transmission", valid, updated)
 				noaaWarned = true
+			}
+		}
+		if *extra != "" {
+			b, err := os.ReadFile(*extra)
+			if err != nil {
+				return nil, err
+			}
+			v, err := hfschedule.ParseEiBi(strings.NewReader(string(b)))
+			if err != nil {
+				return nil, fmt.Errorf("extra schedule: %w", err)
+			}
+			entries = append(entries, v...)
+		}
+		var terms []string
+		for _, term := range strings.Split(*match, ",") {
+			if t := strings.TrimSpace(strings.ToLower(term)); t != "" {
+				terms = append(terms, t)
 			}
 		}
 		var filtered []hfschedule.Entry
 		for _, e := range entries {
-			if strings.Contains(strings.ToLower(e.Target.Name), strings.ToLower(*match)) && (*kind == "" || e.Target.Kind == *kind) && (*freq == 0 || e.Target.CarrierKHz == *freq) {
+			name := strings.ToLower(e.Target.Name)
+			matched := len(terms) == 0
+			for _, t := range terms {
+				if strings.Contains(name, t) {
+					matched = true
+					break
+				}
+			}
+			if matched && (*kind == "" || e.Target.Kind == *kind) && (*freq == 0 || e.Target.CarrierKHz == *freq) {
 				filtered = append(filtered, e)
 			}
 		}

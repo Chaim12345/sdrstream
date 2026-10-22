@@ -29,6 +29,7 @@ type LedgerEntry struct {
 	FetchedAt time.Time `json:"fetched_at"`
 	DecodedBy string    `json:"decoded_by"`
 	Ref       string    `json:"ref,omitempty"`
+	Receiver  string    `json:"receiver,omitempty"` // receiver ID for source="receiver" captures
 	Lat       float64   `json:"lat,omitempty"`
 	Lon       float64   `json:"lon,omitempty"`
 }

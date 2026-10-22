@@ -88,11 +88,11 @@ func (s *Server) handleLedgerCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="sdrstream-ledger.csv"`)
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"source", "kind", "label", "detail", "provider_time", "fetched_at", "decoded_by", "ref"})
+	_ = cw.Write([]string{"source", "kind", "label", "detail", "provider_time", "fetched_at", "decoded_by", "ref", "receiver"})
 	if l := s.ledger(); l != nil {
 		for _, e := range l.Query(r.URL.Query().Get("source"), ledgerLimit(r)) {
 			_ = cw.Write([]string{csvSafe(e.Source), csvSafe(e.Kind), csvSafe(e.Label), csvSafe(e.Detail),
-				e.ProviderT.UTC().Format(time.RFC3339), e.FetchedAt.UTC().Format(time.RFC3339), csvSafe(e.DecodedBy), csvSafe(e.Ref)})
+				e.ProviderT.UTC().Format(time.RFC3339), e.FetchedAt.UTC().Format(time.RFC3339), csvSafe(e.DecodedBy), csvSafe(e.Ref), csvSafe(e.Receiver)})
 		}
 	}
 	cw.Flush()

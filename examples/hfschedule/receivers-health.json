@@ -1,0 +1,16 @@
+[
+  {
+    "URL": "http://websdr.ewi.utwente.nl:8901",
+    "Type": "websdr",
+    "MinKHz": 0,
+    "MaxKHz": 29160,
+    "Priority": 0
+  },
+  {
+    "URL": "kiwisdr.johnnorton.co.uk:8073",
+    "Type": "kiwi",
+    "MinKHz": 0,
+    "MaxKHz": 30000,
+    "Priority": 1
+  }
+]

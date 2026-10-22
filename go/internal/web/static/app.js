@@ -199,11 +199,19 @@ function captureProof(c) {
     r.append(l, v); pf.appendChild(r);
   };
   row('saved audio', c.url ? link(c.url, c.path) : c.path);
+  if (c.url) {
+    const audio = document.createElement('audio');
+    audio.className = 'proof-audio'; audio.controls = true; audio.preload = 'none'; audio.src = c.url;
+    row('listen', audio);
+  }
   row('receiver', c.receiver || 'unknown');
   const started = new Date(c.start);
   row('recorded (UTC)', isNaN(started) ? String(c.start || 'unknown') : started.toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z'));
   if (c.frequency_hz) row('frequency', mhz(c.frequency_hz) + (c.mode ? ' ' + c.mode : ''));
-  row('decode text', c.decode || 'no decode text saved for this clip');
+  const raw = document.createElement('pre');
+  raw.className = 'proof-decode';
+  raw.textContent = c.decode || 'no decode text saved for this clip';
+  row('raw decode', raw);
   row('verified', c.verified ? 'yes - live quality gate passed' : 'no' + (c.gate ? ' - ' + c.gate : ''));
   row('origin', c.target ? 'scheduled target "' + c.target + '"' : 'blind scan (no named target)');
   row('archive', c.samples + ' samples at ' + c.rate + ' Hz');
@@ -1334,7 +1342,7 @@ function renderFeeds() {
  const note=el('feeds-note'); note.textContent='updated '+relTime(feedsSnapshot.updated_at)+staleSrc.map(s=>' · '+s.name+': STALE, last fetch '+relTime(s.last_ok)).join('')+sources.filter(s=>s.state==='disabled'||s.state==='error').map(s=>' · '+s.name+': '+(s.last_error||s.detail||s.state)).join('');
  const list=el('feeds-list'); list.textContent=''; const shown=items.filter(i=>!feedsSourceFilter||i.source===feedsSourceFilter);
  if(!shown.length){list.innerHTML='<div class="empty">no live data yet - feeds are connecting</div>';return}
- shown.slice(0,120).forEach(it=>{const c=document.createElement('div');c.className='card-activity feed-'+(it.kind||'data');const r=document.createElement('div');r.className='row';const label=document.createElement('span');label.className='freq';label.textContent=it.label;const badge=document.createElement('span');badge.className='badge feed-src';badge.textContent=it.source;const t=document.createElement('span');t.className='muted';t.textContent=relTime(it.time);r.append(label,badge,t);if(it.ref){const a=document.createElement('a');a.href=safeURL(it.ref);a.target='_blank';a.rel='noopener noreferrer';a.textContent='source';r.append(a)}const pb=document.createElement('button');pb.className='chip';pb.textContent='proof';const pf=document.createElement('div');pf.className='meta';pf.hidden=true;pf.textContent='provider time '+fmtDate(it.time)+' · fetched '+(it.fetched_at?fmtDate(it.fetched_at):'unknown')+' · decoded by '+(it.decoded_by||'provider')+' · source '+it.source+(((feedsSnapshot.sources||[]).find(x=>x.name===it.source)||{}).license?' · licence '+(feedsSnapshot.sources.find(x=>x.name===it.source).license):'');pb.onclick=()=>{pf.hidden=!pf.hidden};r.append(pb);c.appendChild(r);c.appendChild(pf);if(it.detail){const d=document.createElement('div');d.className='detail';d.textContent=it.detail;c.appendChild(d)}if(it.has_pos){const m=document.createElement('div');m.className='meta';m.textContent=it.lat.toFixed(3)+', '+it.lon.toFixed(3);c.appendChild(m)}list.appendChild(c)});
+ shown.slice(0,120).forEach(it=>{const c=document.createElement('div');c.className='card-activity feed-'+(it.kind||'data');const r=document.createElement('div');r.className='row';const label=document.createElement('span');label.className='freq';label.textContent=it.label;const badge=document.createElement('span');badge.className='badge feed-src';badge.textContent=it.source;const t=document.createElement('span');t.className='muted';t.textContent=relTime(it.time);r.append(label,badge,t);if(it.ref){const a=document.createElement('a');a.href=safeURL(it.ref);a.target='_blank';a.rel='noopener noreferrer';a.textContent='source';r.append(a)}const pb=document.createElement('button');pb.className='chip';pb.textContent='proof';const pf=document.createElement('div');pf.className='meta';pf.hidden=true;pf.textContent='provider time '+fmtDate(it.time)+' · fetched '+(it.fetched_at?fmtDate(it.fetched_at):'unknown')+' · decoded by '+(it.decoded_by||'provider')+' · source '+it.source+(((feedsSnapshot.sources||[]).find(x=>x.name===it.source)||{}).license?' · licence '+(feedsSnapshot.sources.find(x=>x.name===it.source).license):'');if(it.receiver)pf.textContent+=' · receiver '+it.receiver;if(it.ref&&it.ref.indexOf('/audio/')===0){const au=document.createElement('audio');au.className='proof-audio';au.controls=true;au.preload='none';au.src=it.ref;pf.appendChild(au)};pb.onclick=()=>{pf.hidden=!pf.hidden};r.append(pb);c.appendChild(r);c.appendChild(pf);if(it.detail){const d=document.createElement('div');d.className='detail';d.textContent=it.detail;c.appendChild(d)}if(it.has_pos){const m=document.createElement('div');m.className='meta';m.textContent=it.lat.toFixed(3)+', '+it.lon.toFixed(3);c.appendChild(m)}list.appendChild(c)});
 }
 
 function renderPublicPanels(sources) {
