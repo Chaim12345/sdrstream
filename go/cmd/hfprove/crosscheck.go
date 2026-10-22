@@ -15,10 +15,50 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
+
+	"github.com/chaim12345/sdrstream/go/internal/feeds"
 	"time"
 )
 
 const crossUA = "sdrstream (https://github.com/Chaim12345/sdrstream)"
+
+// pskrCollector gathers PSK Reporter MQTT spots during a run.
+type pskrCollector struct {
+	mu    sync.Mutex
+	spots map[string][]feeds.PSKSpot // sender callsign -> spots seen
+	n     int
+}
+
+func newPSKRCollector() *pskrCollector {
+	return &pskrCollector{spots: map[string][]feeds.PSKSpot{}}
+}
+
+func (c *pskrCollector) add(sp feeds.PSKSpot) {
+	c.mu.Lock()
+	c.spots[sp.Sender] = append(c.spots[sp.Sender], sp)
+	c.n++
+	c.mu.Unlock()
+}
+
+// heardBy returns the receivers that spotted sender in the given mode
+// (empty mode matches any).
+func (c *pskrCollector) heardBy(sender, mode string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	seen := map[string]bool{}
+	var out []string
+	for _, sp := range c.spots[sender] {
+		if mode != "" && sp.Mode != "" && sp.Mode != mode {
+			continue
+		}
+		if sp.Receiver != "" && !seen[sp.Receiver] {
+			seen[sp.Receiver] = true
+			out = append(out, sp.Receiver)
+		}
+	}
+	return out
+}
 
 var callsignRE = regexp.MustCompile(`^[A-Z0-9]{1,3}[0-9][A-Z][A-Z0-9]*(/[A-Z0-9]+)?$`)
 
@@ -52,61 +92,6 @@ func wsprSender(text string) string {
 		return ""
 	}
 	return strings.ToUpper(f[0])
-}
-
-// adifField pulls one <name:len>value field out of an ADIF record.
-func adifField(rec, name string) string {
-	re := regexp.MustCompile(`(?i)<` + name + `:\d+(?::[a-z])?>([^<]*)`)
-	m := re.FindStringSubmatch(rec)
-	if m == nil {
-		return ""
-	}
-	return strings.TrimSpace(m[1])
-}
-
-// pskrSpots queries the documented PSKReporter retrieval API for spots of
-// one sender callsign in the last `window` and returns receiver callsigns.
-// One HTTP request per callsign, caller paces.
-func pskrSpots(ctx context.Context, client *http.Client, callsign string, window time.Duration) ([]string, error) {
-	u := fmt.Sprintf("https://retrieve.pskreporter.info/query?senderCallsign=%s&flowStartSeconds=-%d&rronly=1",
-		callsign, int(window.Seconds()))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", crossUA)
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode == http.StatusTooManyRequests {
-		// The retrieval API rate-limits aggressively (and some egress IPs
-		// are throttled wholesale). One polite retry, then give up.
-		resp.Body.Close()
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(3 * time.Second):
-		}
-		if resp, err = client.Do(req); err != nil {
-			return nil, err
-		}
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("pskreporter: HTTP %d", resp.StatusCode)
-	}
-	var out []string
-	for _, rec := range strings.Split(string(body), "<eoh>") {
-		if rc := adifField(rec, "receiver_callsign"); rc != "" {
-			out = append(out, rc)
-		}
-	}
-	return out, nil
 }
 
 // wsprLiveSpots queries wspr.live's ClickHouse JSON API for spots of the

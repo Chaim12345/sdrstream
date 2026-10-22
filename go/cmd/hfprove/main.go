@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/decode"
+	"github.com/chaim12345/sdrstream/go/internal/feeds"
 	"github.com/chaim12345/sdrstream/go/internal/kiwisdr"
 	"github.com/chaim12345/sdrstream/go/internal/websdr"
 )
@@ -116,6 +117,8 @@ func main() {
 	crosscheck := flag.Bool("crosscheck", false, "cross-check decodes against PSKReporter (FT8) and wspr.live (WSPR)")
 	ledger := flag.String("ledger", "", "append proof-ledger JSONL items (with audio paths) to this file")
 	grace := flag.Duration("grace", 75*time.Second, "wait after the WSPR window before querying wspr.live (spot upload lag)")
+	ft8Grace := flag.Duration("ft8grace", 25*time.Second, "wait after the FT8 slot for PSKReporter spot uploads before cross-checking")
+	pskrTopic := flag.String("pskrtopic", "", "PSK Reporter MQTT topic override (default: feeds.PSKReporter, Israel receivers; use e.g. pskr/filter/v2/+/FT8/+/+/+/+/+/263 for FT8 heard in the Netherlands)")
 	flag.Parse()
 	if *server == "" {
 		log.Fatal("-server required")
@@ -125,6 +128,26 @@ func main() {
 	skipped := map[string]bool{}
 	for _, s := range splitComma(*skip) {
 		skipped[s] = true
+	}
+	// PSK Reporter MQTT spot collection for the FT8 cross-check: the polite
+	// real-time route (the HTTP retrieval API rate-limits shared egress IPs).
+	coll := newPSKRCollector()
+	pskrCtx, pskrStop := context.WithCancel(context.Background())
+	defer pskrStop()
+	pskrReady := make(chan struct{})
+	if *crosscheck && !skipped["ft8"] {
+		go func() {
+			if err := (&feeds.PSKReporter{Topic: *pskrTopic}).RunSpots(pskrCtx, coll.add, func() { close(pskrReady) }); err != nil {
+				log.Printf("pskreporter mqtt: %v", err)
+				close(pskrReady)
+			}
+		}()
+		select {
+		case <-pskrReady:
+			fmt.Println("pskreporter mqtt: subscribed, collecting spots")
+		case <-time.After(15 * time.Second):
+			log.Printf("pskreporter mqtt: not ready after 15 s, cross-check will report unverified")
+		}
 	}
 	if *band == "40m" {
 		if *ft8Freq == 0 {
@@ -217,22 +240,10 @@ func main() {
 					if *out != "" {
 						audio = filepath.Join(*out, "ft8_"+start.Format("150405")+"Z.wav")
 					}
-					seen := map[string]bool{}
-					spots := map[string][]string{}
-					if *crosscheck {
-						for _, m := range msgs {
-							for _, c := range ft8Senders(m.Text) {
-								if seen[c] || len(seen) >= 10 {
-									continue
-								}
-								seen[c] = true
-								if rc, err := pskrSpots(ctx, httpClient, c, 15*time.Minute); err == nil {
-									spots[c] = rc
-								} else {
-									log.Printf("pskreporter %s: %v", c, err)
-								}
-								time.Sleep(300 * time.Millisecond)
-							}
+					if *crosscheck && len(msgs) > 0 {
+						if wait := time.Until(slotStart.Add(15 * time.Second).Add(*ft8Grace)); wait > 0 {
+							fmt.Printf("  waiting %s for pskreporter spot uploads (%d spots so far)\n", wait.Round(time.Second), coll.n)
+							time.Sleep(wait)
 						}
 					}
 					for _, m := range msgs {
@@ -240,9 +251,9 @@ func main() {
 						ref := ""
 						if *crosscheck {
 							for _, c := range ft8Senders(m.Text) {
-								if len(spots[c]) > 0 {
+								if rc := coll.heardBy(c, "FT8"); len(rc) > 0 {
 									verified = "verified live"
-									ref = fmt.Sprintf("pskreporter: %s heard by %s", c, strings.Join(spots[c][:min(3, len(spots[c]))], ","))
+									ref = fmt.Sprintf("pskreporter mqtt: %s heard by %s", c, strings.Join(rc[:min(3, len(rc))], ","))
 								}
 							}
 						}

@@ -188,6 +188,100 @@ func (p *PSKReporter) RunReady(ctx context.Context, emit func(Item), ready func(
 	}
 }
 
+// PSKSpot is the raw view of one PSK Reporter spot: sender, receiver,
+// mode, band and time, for callers that match decodes against spots.
+type PSKSpot struct {
+	Sender   string
+	Receiver string
+	Mode     string
+	Band     string
+	FreqHz   int64
+	Time     time.Time
+}
+
+// ParsePSKSpotRaw converts one MQTT payload into a PSKSpot.
+func ParsePSKSpotRaw(payload []byte, now time.Time) (PSKSpot, bool) {
+	var s pskSpot
+	if err := json.Unmarshal(payload, &s); err != nil || s.SenderCall == "" {
+		return PSKSpot{}, false
+	}
+	when := now
+	if s.UnixTime > 0 {
+		when = time.Unix(s.UnixTime, 0)
+	}
+	return PSKSpot{
+		Sender:   strings.ToUpper(s.SenderCall),
+		Receiver: strings.ToUpper(s.ReceiverCall),
+		Mode:     strings.ToUpper(s.Mode),
+		Band:     s.Band,
+		FreqHz:   s.Freq,
+		Time:     when,
+	}, true
+}
+
+// RunSpots streams raw spots until the connection drops. It is RunReady
+// with the raw spot view instead of the normalised Item.
+func (p *PSKReporter) RunSpots(ctx context.Context, emit func(PSKSpot), ready func()) error {
+	dial := p.dial
+	if dial == nil {
+		dial = func(ctx context.Context, addr, clientID string, keepalive time.Duration) (mqttConn, error) {
+			return mqttDial(ctx, addr, clientID, keepalive)
+		}
+	}
+	client, err := dial(ctx, p.server(), fmt.Sprintf("sdrstream-%d", p.now().UnixNano()%1e6), 60*time.Second)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	if err := client.subscribe(p.topic()); err != nil {
+		return err
+	}
+	if ready != nil {
+		ready()
+	}
+	type publish struct {
+		payload []byte
+		err     error
+	}
+	ch := make(chan publish, 256)
+	go func() {
+		defer close(ch)
+		for {
+			_, payload, err := client.nextPublish()
+			if err != nil {
+				ch <- publish{err: err}
+				return
+			}
+			select {
+			case ch <- publish{payload: payload}:
+			default:
+			}
+		}
+	}()
+	ping := time.NewTicker(45 * time.Second)
+	defer ping.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case msg, ok := <-ch:
+			if !ok || msg.err != nil {
+				if msg.err != nil {
+					return msg.err
+				}
+				return fmt.Errorf("mqtt reader stopped")
+			}
+			if sp, ok := ParsePSKSpotRaw(msg.payload, p.now()); ok {
+				emit(sp)
+			}
+		case <-ping.C:
+			if err := client.ping(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
