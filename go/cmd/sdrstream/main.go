@@ -1360,16 +1360,24 @@ func cmdWeb(args []string) error {
 	galleryDir := fs.String("gallery-dir", "", "directory for SatNOGS gallery artefacts (default: cache/gallery)")
 	scanStations := fs.String("scan-stations", "", "comma-separated public receivers for bounded parallel scan (one connection per receiver)")
 	scanStart := fs.Int("scan-start-connections", 49, "initial scanner concurrency ramp step")
-	scanMax := fs.Int("scan-max-connections", 100, "integrator scanner maximum concurrency (hard limit 100)")
+	scanMax := fs.Int("scan-max-connections", 100, "integrator scanner maximum concurrency (hard limit 1000)")
 	scanRamp := fs.String("scan-ramp", "49,100", "comma-separated ramp steps, capped by --scan-max-connections")
 	scanGoodRate := fs.Float64("scan-advance-error-rate", 0.15, "advance if a completed wave has refusal+timeout rate below this fraction")
 	scanRefusalBackoff := fs.Float64("scan-backoff-refusal-rate", 0.30, "step down if a completed wave refusal rate exceeds this fraction")
 	scanLoadAdvance := fs.Float64("scan-advance-load-ratio", 0.70, "advance only below this load-average/core ratio")
-	scanLoadBackoff := fs.Float64("scan-backoff-load-ratio", 0.90, "step down above this load-average/core ratio")
+	scanLoadBackoff := fs.Float64("scan-backoff-load-ratio", 0.90, "deprecated: the load guard owns load step-down (see --scan-guard-drop-*)")
 	scanBandwidth := fs.Float64("scan-bandwidth-limit-mbps", 20, "estimated aggregate receive bandwidth limit in Mbit/s")
 	scanStreamKbps := fs.Float64("scan-stream-kbps", 100, "estimated bandwidth per active receiver stream in kbit/s")
 	scanTargetLimit := fs.Int("scan-target-limit", 40, "maximum sequential frequencies per station visit (1..40)")
 	scanStationSession := fs.Duration("scan-station-session", 5*time.Minute, "maximum connection duration per station visit (<=5m)")
+	scanGuardWindow := fs.Duration("scan-guard-window", 30*time.Second, "rolling window for the scanner load mean")
+	scanGuardDropRatio := fs.Float64("scan-guard-drop-ratio", 0.85, "drop one ramp step only after the rolling load mean stays above this ratio")
+	scanGuardDropFor := fs.Duration("scan-guard-drop-for", 60*time.Second, "sustained overload required before the load guard drops a step")
+	scanGuardRestoreRatio := fs.Float64("scan-guard-restore-ratio", 0.65, "restore one held step after the rolling load mean stays below this ratio")
+	scanGuardRestoreFor := fs.Duration("scan-guard-restore-for", 60*time.Second, "sustained calm required before the load guard restores a step")
+	scanGuardMaxRSS := fs.Uint64("scan-guard-max-rss-mib", 512, "hard RSS cap in MiB: reaching it forces an immediate step down")
+	scanGuardMaxFDs := fs.Int("scan-guard-max-fds", 400000, "hard open file descriptor cap: reaching it forces an immediate step down")
+	scanGuardMaxGoroutines := fs.Int("scan-guard-max-goroutines", 256000, "hard goroutine cap: reaching it forces an immediate step down")
 	monitorServer := fs.String("monitor-server", "", "receiver to monitor for live traffic (empty = no monitoring)")
 	monitorLabel := fs.String("monitor-label", "", "programme or station label for monitor activities and gallery entries")
 	monitorKind := fs.String("monitor-kind", "openwebrx", "monitor receiver protocol: openwebrx, websdr or kiwi")
@@ -1418,7 +1426,8 @@ func cmdWeb(args []string) error {
 		if err != nil {
 			return err
 		}
-		go runParallelScan(context.Background(), server, strings.Split(*scanStations, ","), *monitorMultimon, *monitorDirewolf, config)
+		guard := newLoadGuard(*scanGuardWindow, *scanGuardDropFor, *scanGuardRestoreFor, *scanGuardDropRatio, *scanGuardRestoreRatio, *scanGuardMaxRSS<<20, *scanGuardMaxFDs, *scanGuardMaxGoroutines)
+		go runParallelScan(context.Background(), server, strings.Split(*scanStations, ","), *monitorMultimon, *monitorDirewolf, config, guard)
 	}
 	if *monitorServer != "" {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1696,15 +1705,16 @@ type scanConfig struct {
 	start, maximum                       int
 	ramp                                 []int
 	advanceErrorRate, backoffRefusalRate float64
-	advanceLoadRatio, backoffLoadRatio   float64
-	bandwidthLimitMbps, streamKbps       float64
-	targetLimit                          int
-	stationSession                       time.Duration
+	// backoffLoadRatio is deprecated: the load guard owns load step-down.
+	advanceLoadRatio, backoffLoadRatio float64
+	bandwidthLimitMbps, streamKbps     float64
+	targetLimit                        int
+	stationSession                     time.Duration
 }
 
 func newScanConfig(start, maximum int, ramp string, advanceError, backoffRefusal, advanceLoad, backoffLoad, bandwidth, streamKbps float64, targetLimit int, stationSession time.Duration) (scanConfig, error) {
-	if maximum < 1 || maximum > 100 {
-		return scanConfig{}, fmt.Errorf("--scan-max-connections must be 1..100")
+	if maximum < 1 || maximum > scanHardMaxConnections {
+		return scanConfig{}, fmt.Errorf("--scan-max-connections must be 1..%d", scanHardMaxConnections)
 	}
 	if targetLimit < 1 || targetLimit > 40 {
 		return scanConfig{}, fmt.Errorf("--scan-target-limit must be 1..40")
@@ -1750,7 +1760,10 @@ func newScanConfig(start, maximum int, ramp string, advanceError, backoffRefusal
 	return scanConfig{start: start, maximum: maximum, ramp: steps, advanceErrorRate: advanceError, backoffRefusalRate: backoffRefusal, advanceLoadRatio: advanceLoad, backoffLoadRatio: backoffLoad, bandwidthLimitMbps: bandwidth, streamKbps: streamKbps, targetLimit: targetLimit, stationSession: stationSession}, nil
 }
 
-func runParallelScan(ctx context.Context, server *web.Server, receivers []string, multimonPath, direwolfPath string, cfg scanConfig) {
+func runParallelScan(ctx context.Context, server *web.Server, receivers []string, multimonPath, direwolfPath string, cfg scanConfig, guard *loadGuard) {
+	if guard == nil {
+		guard = newLoadGuard(0, 0, 0, 0, 0, 0, 0, 0)
+	}
 	unique := make([]string, 0, len(receivers))
 	seen := map[string]bool{}
 	for _, raw := range receivers {
@@ -1774,17 +1787,21 @@ func runParallelScan(ctx context.Context, server *web.Server, receivers []string
 	current.Store(int64(min(cfg.maximum, cfg.start)))
 	var active atomic.Int64
 	var metricsMu sync.Mutex
+	var guardMu sync.Mutex
 	refusals, timeouts := 0, 0
 	coreCount := runtime.NumCPU()
 	updateMetrics := func() {
 		load := readLoadAverage()
+		guardMu.Lock()
+		guard.observe(time.Now(), load/float64(max(1, coreCount)))
+		guardMu.Unlock()
 		metricsMu.Lock()
 		cumulativeRefusals, cumulativeTimeouts := refusals, timeouts
 		metricsMu.Unlock()
 		target, paused := server.ScanControl()
-		server.SetScanMetrics(web.ScanMetrics{RampStep: int(current.Load()), MaxConnections: cfg.maximum, TargetConcurrency: target, Paused: paused, ActiveConnections: int(active.Load()), Refusals: cumulativeRefusals, Timeouts: cumulativeTimeouts, LoadAverage: load, CoreCount: coreCount, EstimatedBandwidthMbps: float64(active.Load()) * cfg.streamKbps / 1000, BandwidthLimitMbps: cfg.bandwidthLimitMbps, MemoryBytes: func() uint64 { var m runtime.MemStats; runtime.ReadMemStats(&m); return m.Sys }(), OpenFDs: func() int { x, _ := os.ReadDir("/proc/self/fd"); return len(x) }()})
+		server.SetScanMetrics(web.ScanMetrics{RampStep: int(current.Load()), MaxConnections: cfg.maximum, TargetConcurrency: target, Paused: paused, ActiveConnections: int(active.Load()), Refusals: cumulativeRefusals, Timeouts: cumulativeTimeouts, LoadAverage: load, CoreCount: coreCount, EstimatedBandwidthMbps: float64(active.Load()) * cfg.streamKbps / 1000, BandwidthLimitMbps: cfg.bandwidthLimitMbps, MemoryBytes: func() uint64 { var m runtime.MemStats; runtime.ReadMemStats(&m); return m.Sys }(), OpenFDs: openFDCount()})
 	}
-	server.SetScanMetrics(web.ScanMetrics{RampStep: int(current.Load()), MaxConnections: cfg.maximum, TargetConcurrency: cfg.start, CoreCount: coreCount, BandwidthLimitMbps: cfg.bandwidthLimitMbps, MemoryBytes: func() uint64 { var m runtime.MemStats; runtime.ReadMemStats(&m); return m.Sys }(), OpenFDs: func() int { x, _ := os.ReadDir("/proc/self/fd"); return len(x) }()})
+	server.SetScanMetrics(web.ScanMetrics{RampStep: int(current.Load()), MaxConnections: cfg.maximum, TargetConcurrency: cfg.start, CoreCount: coreCount, BandwidthLimitMbps: cfg.bandwidthLimitMbps, MemoryBytes: func() uint64 { var m runtime.MemStats; runtime.ReadMemStats(&m); return m.Sys }(), OpenFDs: openFDCount()})
 	updateMetrics()
 	type result struct {
 		host    string
@@ -1912,10 +1929,15 @@ func runParallelScan(ctx context.Context, server *web.Server, receivers []string
 			updateMetrics()
 			// Decide after each 20 completed stations, not after the slowest one in a fixed wave.
 			if completedInWindow >= 20 {
+				now := time.Now()
 				loadRatio := readLoadAverage() / float64(max(1, coreCount))
 				refusalRate := float64(windowRefusals) / float64(completedInWindow)
 				errorRate := float64(windowIssues) / float64(completedInWindow)
-				stageIndex = nextRampStage(stageIndex, len(steps), refusalRate, errorRate, loadRatio, float64(current.Load())*cfg.streamKbps/1000, cfg)
+				guardMu.Lock()
+				loadMean := guard.observe(now, loadRatio)
+				stage := nextRampStage(stageIndex, len(steps), refusalRate, errorRate, loadMean, float64(current.Load())*cfg.streamKbps/1000, cfg)
+				stageIndex = guard.adjust(now, stage, len(steps), readRSSBytes(), openFDCount(), runtime.NumGoroutine())
+				guardMu.Unlock()
 				current.Store(int64(min(cfg.maximum, steps[stageIndex])))
 				completedInWindow, windowIssues, windowRefusals = 0, 0, 0
 				updateMetrics()
@@ -1927,15 +1949,17 @@ func runParallelScan(ctx context.Context, server *web.Server, receivers []string
 // nextRampStage applies the scanner's configured error, refusal, load and
 // bandwidth gates to one completed sample window. Timeouts count as errors
 // for advance decisions, while refusal rate alone controls refusal backoff.
-func nextRampStage(stage, stageCount int, refusalRate, errorRate, loadRatio, bandwidthMbps float64, cfg scanConfig) int {
+// Load only gates advances here: load-driven step-down belongs to the load
+// guard, which requires sustained overload before shedding a step.
+func nextRampStage(stage, stageCount int, refusalRate, errorRate, loadMean, bandwidthMbps float64, cfg scanConfig) int {
 	if stageCount <= 0 {
 		return 0
 	}
 	stage = min(max(stage, 0), stageCount-1)
-	if (refusalRate > cfg.backoffRefusalRate || loadRatio > cfg.backoffLoadRatio) && stage > 0 {
+	if refusalRate > cfg.backoffRefusalRate && stage > 0 {
 		return stage - 1
 	}
-	if errorRate < cfg.advanceErrorRate && loadRatio < cfg.advanceLoadRatio && bandwidthMbps < cfg.bandwidthLimitMbps && stage+1 < stageCount {
+	if errorRate < cfg.advanceErrorRate && loadMean < cfg.advanceLoadRatio && bandwidthMbps < cfg.bandwidthLimitMbps && stage+1 < stageCount {
 		return stage + 1
 	}
 	return stage
@@ -1968,15 +1992,10 @@ type resourceStatus struct {
 }
 
 func resourceSafeConcurrency(cores int) resourceStatus {
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
-	entries, err := os.ReadDir("/proc/self/fd")
-	fds := len(entries)
-	if err != nil {
-		fds = 0
-	}
-	safe := (cores <= 0 || readLoadAverage()/float64(cores) < .70) && mem.Sys < 2<<30 && (fds == 0 || fds < 4096)
-	return resourceStatus{memoryBytes: mem.Sys, openFDs: fds, safe: safe}
+	rss := readRSSBytes()
+	fds := openFDCount()
+	safe := (cores <= 0 || readLoadAverage()/float64(cores) < .70) && rss < guardMaxRSSBytes && (fds == 0 || fds < guardMaxFDs) && runtime.NumGoroutine() < guardMaxGoroutines
+	return resourceStatus{memoryBytes: rss, openFDs: fds, safe: safe}
 }
 
 func readLoadAverage() float64 {
@@ -1990,6 +2009,31 @@ func readLoadAverage() float64 {
 	}
 	value, _ := strconv.ParseFloat(fields[0], 64)
 	return value
+}
+
+// readRSSBytes reports the process resident set size, falling back to the
+// runtime heap-system figure when /proc is unavailable.
+func readRSSBytes() uint64 {
+	b, err := os.ReadFile("/proc/self/statm")
+	if err == nil {
+		fields := strings.Fields(string(b))
+		if len(fields) >= 2 {
+			if pages, err := strconv.ParseUint(fields[1], 10, 64); err == nil && pages > 0 {
+				return pages * uint64(os.Getpagesize())
+			}
+		}
+	}
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return m.Sys
+}
+
+func openFDCount() int {
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return 0
+	}
+	return len(entries)
 }
 
 func scanStation(ctx context.Context, server *web.Server, stationType, host string, targetLimit int, multimonPath, direwolfPath string, active *atomic.Int64, updateMetrics func()) scanOutcome {

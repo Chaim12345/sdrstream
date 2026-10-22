@@ -19,8 +19,11 @@ func TestNewScanConfigCapsRampAndStartsAtConfiguredStep(t *testing.T) {
 	if _, err := newScanConfig(101, 100, "20,50", .15, .30, .70, .90, 20, 100, 40, 5*time.Minute); err == nil {
 		t.Fatal("start above maximum accepted")
 	}
-	if _, err := newScanConfig(20, 101, "20,50", .15, .30, .70, .90, 20, 100, 40, 5*time.Minute); err == nil {
+	if _, err := newScanConfig(20, scanHardMaxConnections+1, "20,50", .15, .30, .70, .90, 20, 100, 40, 5*time.Minute); err == nil {
 		t.Fatal("maximum above hard cap accepted")
+	}
+	if _, err := newScanConfig(20, scanHardMaxConnections, "20,50", .15, .30, .70, .90, 20, 100, 40, 5*time.Minute); err != nil {
+		t.Fatalf("hard cap maximum rejected: %v", err)
 	}
 }
 
@@ -82,7 +85,10 @@ func TestRampUsesTimeoutsForAdvanceAndRefusalsForBackoff(t *testing.T) {
 	if got := nextRampStage(2, 3, .31, .31, .2, 2, cfg); got != 1 {
 		t.Fatalf("did not back off on excessive refusal rate: %d", got)
 	}
-	if got := nextRampStage(2, 3, .1, .1, .91, 2, cfg); got != 1 {
-		t.Fatalf("did not back off on excessive load: %d", got)
+	// Load no longer sheds a step inside one window: that decision belongs
+	// to the load guard, which requires sustained overload. A hot window
+	// only blocks the advance.
+	if got := nextRampStage(2, 3, .1, .1, .91, 2, cfg); got != 2 {
+		t.Fatalf("load step-down leaked into the window gate (guard owns it): %d", got)
 	}
 }
