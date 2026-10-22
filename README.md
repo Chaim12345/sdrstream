@@ -602,3 +602,17 @@ That is your call to make, not this library's.
 MIT. The WebSDR companding table in `sdrstream/_websdr_table.py` is reproduced
 from the public WebSDR HTML5 client (copyright 2013–2025 PA3FWM), which permits
 redistribution as part of a client.
+
+## Live public feeds (Live data tab)
+
+The web server streams ADS-B (adsb.lol), APRS-IS, PSK Reporter, Reverse Beacon
+Network and WSPRnet into the **Live data** tab only; nothing from the feeds is
+mixed into the detection views. `--feeds-lat/--feeds-lon` set the centre and
+`--no-feeds` turns them off. `sdrstream feeds -listen 25s` prints a one-shot
+status.
+
+AIS (aisstream.io) is optional and off by default. It needs a free API key,
+read from the `SDRSTREAM_AIS_KEY` environment variable (preferred, keeps it out
+of the process list) or `--ais-key`. The key is never stored on disk by
+sdrstream. Without it the AIS source shows as "disabled" with that hint and the
+other feeds are unaffected.

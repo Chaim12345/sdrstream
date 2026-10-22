@@ -24,7 +24,7 @@ func Start(ctx context.Context, m *Manager, lat, lon float64, aisKey string) {
 		&RBN{},
 	}
 	if aisKey == "" {
-		m.Disable("aisstream", "ais", "needs a free aisstream.io API key (OAuth signup at aisstream.io), then restart with --ais-key")
+		m.Disable("aisstream", "ais", "needs a free aisstream.io API key (OAuth signup at aisstream.io), then set SDRSTREAM_AIS_KEY (or pass --ais-key) and restart; optional, all other feeds run without it")
 	} else {
 		streams = append(streams, &AIS{Key: aisKey})
 	}
