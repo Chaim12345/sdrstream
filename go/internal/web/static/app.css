@@ -582,3 +582,5 @@ kbd {
 .proof-row { display: flex; gap: 8px; font: 11px var(--mono); margin: 2px 0; }
 .proof-label { color: var(--muted); min-width: 110px; flex: none; }
 .proof-value { overflow-wrap: anywhere; word-break: break-word; }
+.proof-audio { display: block; width: 260px; max-width: 100%; height: 28px; margin-top: 4px; }
+.proof-decode { margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; font: 11px var(--mono); }
