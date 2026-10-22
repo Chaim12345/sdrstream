@@ -80,6 +80,9 @@ type Options struct {
 	Voice bool
 	// VoiceOptions configures the speech backend.
 	VoiceOptions voice.Options
+	// VoiceNIMOptions configures the hosted NVIDIA speech backend, which is
+	// tried first when an API key is set (empty disables it).
+	VoiceNIMOptions voice.NIMOptions
 	// MultimonBinary and DirewolfBinary opt in to local external decoders.
 	MultimonBinary string
 	DirewolfBinary string
@@ -875,8 +878,8 @@ func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, ban
 			m.opts.Logf("voice: signal present but no speech detected")
 			return hit.Kind, "", ""
 		}
-		if m.opts.Voice && voice.Available(m.opts.VoiceOptions) {
-			transcript, err := voice.Transcribe(ctx, samples, rate, m.opts.VoiceOptions)
+		if m.opts.Voice && (voice.Available(m.opts.VoiceOptions) || voice.NIMAvailable(m.opts.VoiceNIMOptions)) {
+			transcript, err := voice.TranscribeBest(ctx, samples, rate, m.opts.VoiceOptions, m.opts.VoiceNIMOptions)
 			if err == nil && transcript.Text != "" {
 				verdict := voice.GuardTranscript(samples, rate, transcript.Text)
 				if verdict.Rejected {
