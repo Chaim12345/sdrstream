@@ -62,3 +62,10 @@ func TestFeedCardsShowProofDetails(t *testing.T) {
 		}
 	}
 }
+
+func TestFeedsNoteFlagsStaleSources(t *testing.T) {
+	b, _ := staticFS.ReadFile("static/app.js")
+	if !strings.Contains(string(b), "STALE, last fetch") {
+		t.Fatal("stale-source marker missing from app.js")
+	}
+}

@@ -1,9 +1,22 @@
 # Handoff
 
-State of the tree at the time of writing: branch `master`, last commit
-`a8a092e Use a local noise floor, add backpressure, tighten the RTTY gate`.
-Nothing is running: the web server, the monitor and whisper have all been
-stopped, and port 8000 is free.
+This file describes the code on the `sdrstream-team-integration` line.
+Older text below was written on `master` (commit `a8a092e`) and parts of it
+are historical: check `git log` before trusting a status claim. Whether the
+app is running is a deployment fact, not something this file can state.
+
+## Health, metrics and the proof ledger
+
+* `GET /healthz` - unauthenticated liveness probe, returns only `{"ok":true}`.
+* `GET /api/metrics.json` (login) - uptime, capture count, scan outcomes and
+  per feed source: state, items now, new items in the last hour and since
+  boot. Counts are first sightings seen by this process and reset on restart.
+* `GET /api/ledger.json` and `/api/ledger.csv` (login, `?source=`, `?limit=`)
+  - append-only record of every first sighting: provider time, our fetch
+  time, who decoded it (`provider` for every current feed) and a link to the
+  provider. It is sdrstream's normalised view, not the raw upstream bytes.
+  File: `sdrstream-ledger.jsonl` in the state dir, rotated at 16 MiB.
+* Each feed card in the UI has a "proof" toggle with the same fields.
 
 ## What the tool does
 
