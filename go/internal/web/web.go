@@ -168,6 +168,7 @@ type ScanMetrics struct {
 
 type Server struct {
 	mu                sync.Mutex
+	satsched          interface{ StatusesJSON() interface{} }
 	captures          []Capture
 	passes            []PassInfo
 	gallery           []gallery.Item
@@ -679,6 +680,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/captures.json", s.handleCaptures)
 	mux.HandleFunc("/api/satellites.json", s.handleSatellites)
 	mux.HandleFunc("/api/passes.json", s.handlePasses)
+	mux.HandleFunc("/api/satfollow.json", s.handleSatfollow)
 	mux.HandleFunc("/api/observations.json", s.handleObservations)
 	mux.HandleFunc("/api/gallery.json", s.handleGallery)
 	mux.HandleFunc("/api/test-fixtures.json", s.handleTestFixtures)
@@ -943,6 +945,27 @@ func (s *Server) handleGalleryFile(w http.ResponseWriter, r *http.Request) {
 
 // SetFeeds attaches live public feeds to the server.
 func (s *Server) SetFeeds(m *feeds.Manager) { s.mu.Lock(); s.feeds = m; s.mu.Unlock() }
+
+// SetSatsched registers the pass scheduler's status provider. The provider
+// interface is structural so web does not import the scheduler (which
+// imports web).
+func (s *Server) SetSatsched(provider interface{ StatusesJSON() interface{} }) {
+	s.mu.Lock()
+	s.satsched = provider
+	s.mu.Unlock()
+}
+
+// handleSatfollow reports the automatic pass scheduler's decisions.
+func (s *Server) handleSatfollow(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	provider := s.satsched
+	s.mu.Unlock()
+	if provider == nil {
+		writeJSON(w, map[string]interface{}{"enabled": false})
+		return
+	}
+	writeJSON(w, map[string]interface{}{"enabled": true, "statuses": provider.StatusesJSON()})
+}
 
 func (s *Server) handleFeeds(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()

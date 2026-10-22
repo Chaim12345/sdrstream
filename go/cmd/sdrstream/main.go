@@ -44,6 +44,7 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/satellite"
 	"github.com/chaim12345/sdrstream/go/internal/satellites"
 	"github.com/chaim12345/sdrstream/go/internal/satnogs"
+	"github.com/chaim12345/sdrstream/go/internal/satsched"
 	"github.com/chaim12345/sdrstream/go/internal/sources"
 	"github.com/chaim12345/sdrstream/go/internal/verify"
 	"github.com/chaim12345/sdrstream/go/internal/voice"
@@ -73,6 +74,7 @@ commands:
   observations show real SatNOGS receptions of a satellite
   gallery      collect real payload images/text from SatNOGS observations
   satdecode    fetch SatNOGS audio/frames and decode telemetry, APT, SSTV
+  satfollow    automatically record satellite passes by priority and decode them
   decode       demodulate recorded WAV files (AFSK/APRS, Morse)
   scan         scan a WAV for transmissions (voice, data, CW)
   bands        sweep receiver bands and report live traffic
@@ -122,6 +124,8 @@ func main() {
 		err = cmdGallery(args)
 	case "satdecode":
 		err = cmdSatdecode(args)
+	case "satfollow":
+		err = cmdSatfollow(args)
 	case "web":
 		err = cmdWeb(args)
 	case "feeds":
@@ -1477,6 +1481,7 @@ func cmdWeb(args []string) error {
 	capturesMaxGB := fs.Float64("captures-max-gb", 0, "prune oldest captures above this size in GiB (0 = no size limit)")
 	capturesRetain := fs.Duration("captures-retain", 0, "prune captures older than this (0 = no age limit)")
 	galleryDir := fs.String("gallery-dir", "", "directory for SatNOGS gallery artefacts (default: cache/gallery)")
+	satFollow := fs.String("satfollow", "", `comma-separated satellites to auto-record by pass priority (empty = off; "default" = NOAA 15/19/18, ISS)`)
 	scanStations := fs.String("scan-stations", "", "comma-separated public receivers for bounded parallel scan (one connection per receiver)")
 	scanOpenDirectory := fs.Bool("scan-open-directory", false, "scan OpenWebRX and WebSDR entries from receiverbook")
 	scanKiwiDirectory := fs.Bool("scan-kiwi-directory", false, "scan free-slot KiwiSDR entries from cached public directory")
@@ -1570,6 +1575,24 @@ func cmdWeb(args []string) error {
 		}
 	}
 	server := web.New(*capturesDir, *galleryDir)
+	if *satFollow != "" {
+		var priority []string
+		if *satFollow != "default" {
+			priority = strings.Split(*satFollow, ",")
+		}
+		scheduler := satsched.New(satsched.Options{
+			CapturesDir: *capturesDir, Priority: priority, Server: server,
+		})
+		server.SetSatsched(scheduler)
+		schedCtx, schedCancel := context.WithCancel(ctx)
+		defer schedCancel()
+		go func() {
+			if err := scheduler.Run(schedCtx); err != nil && schedCtx.Err() == nil {
+				log.Printf("satfollow: %v", err)
+			}
+		}()
+		log.Printf("satfollow: automatic pass recording enabled")
+	}
 	// Rotation cursors survive a restart when the operator keeps the state
 	// file; a corrupt or missing file just starts coverage from the top.
 	configureRotationState(*scanState, log.Printf)
@@ -3596,4 +3619,25 @@ func cmdSources(args []string) error {
 	}
 	fmt.Printf("sources: %s\n", strings.Join(summary, ", "))
 	return nil
+}
+
+func cmdSatfollow(args []string) error {
+	fs := flag.NewFlagSet("satfollow", flag.ExitOnError)
+	priority := fs.String("satellites", "default", "comma-separated satellites in priority order")
+	capturesDir := fs.String("captures-dir", "captures", "where pass recordings go")
+	minEl := fs.Float64("min-elevation", 25, "minimum peak elevation to bother a receiver")
+	once := fs.Bool("once", false, "print the next planned passes and exit")
+	offline := fs.Bool("offline-tle", false, "use cached TLEs only")
+	fs.Parse(args)
+	var names []string
+	if *priority != "default" {
+		names = strings.Split(*priority, ",")
+	}
+	scheduler := satsched.New(satsched.Options{
+		CapturesDir: *capturesDir, MinElevation: *minEl, Priority: names, Offline: *offline,
+	})
+	if *once {
+		return scheduler.PlanOnce()
+	}
+	return scheduler.Run(context.Background())
 }
