@@ -526,3 +526,74 @@ func TestScanEndpointsConcurrentUpdates(t *testing.T) {
 		}
 	}
 }
+
+// TestSameOriginPOSTNullOriginFallback pins the fallback chain for an
+// Origin of "null": privacy-hardened browsers send it on ordinary
+// same-site form posts (they must not be locked out), while a bare "null"
+// with no corroborating signal is the signature of a sandboxed cross-site
+// document and stays refused. Fetch-metadata (Sec-Fetch-Site) outranks the
+// Referer; a foreign explicit Origin can never be overridden.
+func TestSameOriginPOSTNullOriginFallback(t *testing.T) {
+	cases := []struct {
+		name                      string
+		origin, secFetch, referer string
+		want                      bool
+	}{
+		{"no headers at all", "", "", "", true},
+		{"origin match https", "https://example.com", "", "", true},
+		{"origin match http", "http://example.com", "", "", true},
+		{"foreign origin", "https://evil.example", "", "", false},
+		{"foreign origin beats good sec-fetch", "https://evil.example", "same-origin", "", false},
+		{"null + sec-fetch same-origin", "null", "same-origin", "", true},
+		{"null + sec-fetch same-site", "null", "same-site", "", true},
+		{"null + sec-fetch none (user-initiated)", "null", "none", "", true},
+		{"null + sec-fetch cross-site", "null", "cross-site", "", false},
+		{"null + referer same host", "null", "", "https://example.com/login", true},
+		{"null + referer other host", "null", "", "https://evil.example/x", false},
+		{"null + bad referer", "null", "", "://not-a-url", false},
+		{"null alone refused", "null", "", "", false},
+		{"empty origin + sec-fetch cross-site", "", "cross-site", "", false},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodPost, "http://example.com/login", nil)
+		if tc.origin != "" {
+			req.Header.Set("Origin", tc.origin)
+		}
+		if tc.secFetch != "" {
+			req.Header.Set("Sec-Fetch-Site", tc.secFetch)
+		}
+		if tc.referer != "" {
+			req.Header.Set("Referer", tc.referer)
+		}
+		if got := sameOriginPOST(req); got != tc.want {
+			t.Errorf("%s: sameOriginPOST = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestLoginNullOriginWithFetchMetadata: end-to-end, a login POST carrying
+// Origin: null plus same-origin fetch metadata succeeds; null alone fails.
+func TestLoginNullOriginWithFetchMetadata(t *testing.T) {
+	t.Setenv("SDRSTREAM_STATE_DIR", t.TempDir())
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "test-demo-password")
+	handler := (&Server{}).Handler()
+	post := func(origin, secFetch string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("password=test-demo-password"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if secFetch != "" {
+			req.Header.Set("Sec-Fetch-Site", secFetch)
+		}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, req)
+		return recorder
+	}
+	if r := post("null", "same-origin"); r.Code != http.StatusSeeOther {
+		t.Fatalf("null-origin login with same-origin fetch metadata: status=%d, want 303", r.Code)
+	}
+	if r := post("null", ""); r.Code != http.StatusForbidden {
+		t.Fatalf("bare null-origin login: status=%d, want 403", r.Code)
+	}
+}

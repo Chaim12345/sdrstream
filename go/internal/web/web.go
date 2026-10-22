@@ -1137,7 +1137,7 @@ func (s *Server) handleScanControl(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	if r.Header.Get("Origin") != "https://"+r.Host && r.Header.Get("Origin") != "http://"+r.Host {
+	if !sameOriginPOST(r) {
 		http.Error(w, "same-origin required", http.StatusForbidden)
 		return
 	}
@@ -1183,7 +1183,7 @@ func (s *Server) handleMonitorControl(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	if r.Header.Get("Origin") != "https://"+r.Host && r.Header.Get("Origin") != "http://"+r.Host {
+	if !sameOriginPOST(r) {
 		http.Error(w, "same-origin required", http.StatusForbidden)
 		return
 	}
@@ -1392,7 +1392,7 @@ func (s *Server) handleTune(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	if r.Header.Get("Origin") != "https://"+r.Host && r.Header.Get("Origin") != "http://"+r.Host {
+	if !sameOriginPOST(r) {
 		http.Error(w, "same-origin required", http.StatusForbidden)
 		return
 	}
