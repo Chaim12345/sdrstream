@@ -104,6 +104,10 @@ type Client struct {
 	ws      *websocket.Conn
 	adpcm   adpcmState
 	curFreq int64
+	// tunedAt is when the last SET freq line went out; Record discards
+	// the audio still in flight from the previous frequency until
+	// tunedAt+tuneSettle, then starts the capture clock.
+	tunedAt time.Time
 	curMode string
 	refused error // set by handleText when the server refuses the session
 
@@ -219,7 +223,78 @@ func (c *Client) tuneSend(freqHz int64, mode string) error {
 	line := fmt.Sprintf("SET mod=%s low_cut=%d high_cut=%d freq=%.3f",
 		mode, band[0], band[1], freqKHz)
 	c.ws.SetWriteDeadline(time.Now().Add(writeDeadline(c)))
-	return c.ws.WriteMessage(websocket.TextMessage, []byte(line))
+	err := c.ws.WriteMessage(websocket.TextMessage, []byte(line))
+	if err == nil {
+		c.tunedAt = time.Now()
+	}
+	return err
+}
+
+// tuneSettle is how long after a tune Record discards audio (review M4):
+// frames already in flight from the old frequency. The discard happens
+// inside Record, BEFORE its duration clock starts, so the caller still
+// gets the full requested duration of post-tune audio. Cost: Record can
+// take up to tuneSettle longer than the duration. A var so tests can
+// shorten it.
+var tuneSettle = 250 * time.Millisecond
+
+// settleAfterTune reads and drops post-tune-pending audio until the
+// settle instant. Compressed frames are still decoded (and discarded) so
+// the ADPCM predictor state stays continuous. Text/MSG frames are handled
+// as usual. The first audio frame that arrives at or after the settle
+// instant is returned, not dropped, so the capture loses nothing.
+//
+// Reads here must never end on a read deadline: gorilla/websocket makes a
+// timeout permanent for the connection, which would kill the session. The
+// wait is bounded by the idle timeout (and ctx's deadline) like Record's
+// own reads, and the settle instant is checked after each frame, so the
+// drain can overshoot by at most one frame interval.
+func (c *Client) settleAfterTune(ctx context.Context) ([]int16, error) {
+	if c.tunedAt.IsZero() {
+		return nil, nil
+	}
+	until := c.tunedAt.Add(tuneSettle)
+	c.tunedAt = time.Time{}
+	for time.Now().Before(until) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		readTimeout := c.opts.IdleTimeout
+		if d, ok := ctx.Deadline(); ok {
+			if u := time.Until(d); u < readTimeout {
+				readTimeout = u
+			}
+		}
+		if readTimeout < 50*time.Millisecond {
+			readTimeout = 50 * time.Millisecond
+		}
+		c.ws.SetReadDeadline(time.Now().Add(readTimeout))
+		kind, data, err := c.ws.ReadMessage()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, err
+		}
+		if kind == websocket.TextMessage {
+			c.handleText(string(data))
+			continue
+		}
+		if len(data) >= 4 && string(data[:3]) == "MSG" {
+			c.handleText("MSG " + string(data[4:]))
+			continue
+		}
+		if c.refused != nil {
+			return nil, nil
+		}
+		if len(data) >= 10 && string(data[:3]) == "SND" {
+			chunk := decodeSampleBlock(data[3], data[10:], &c.adpcm)
+			if !time.Now().Before(until) {
+				return chunk.Samples, nil // first post-settle audio belongs to the capture
+			}
+		}
+	}
+	return nil, nil
 }
 
 func (c *Client) reconnectForTune() error {
@@ -254,12 +329,16 @@ func (c *Client) Record(ctx context.Context, duration time.Duration) ([]int16, i
 	if c.ws == nil {
 		return nil, 0, fmt.Errorf("kiwisdr: not connected")
 	}
+	pending, err := c.settleAfterTune(ctx)
+	if err != nil {
+		return nil, 12000, err
+	}
 	deadline := time.NewTimer(duration)
 	defer deadline.Stop()
 	end := time.Now().Add(duration)
 	keepalive := time.NewTicker(time.Second)
 	defer keepalive.Stop()
-	var out []int16
+	out := pending
 	rate := 12000
 	reconnects := 0
 	for {
