@@ -39,9 +39,26 @@ func Text(kind, text, anchor string) Result {
 	}
 	upper := strings.ToUpper(text)
 	if kind == "navtex" && strings.Contains(upper, "ZCZC") && (strings.Contains(upper, "NAVAREA") || strings.Contains(upper, "METAREA")) && strings.Contains(upper, "NNNN") {
-		return Result{true, "NAVTEX framing and area"}
+		return Result{true, fmt.Sprintf("NAVTEX framing and area (%d maritime words)", MaritimeWordHits(text))}
 	}
 	return Result{false, "expected service anchor missing"}
+}
+
+// maritimeWords are common NAVTEX/maritime-weather terms. They are reported in
+// the gate reason as supporting evidence only; the NAVTEX framing and area
+// anchors above remain the sole publication criteria.
+var maritimeWords = []string{"NAVAREA", "METAREA", "WARNING", "GALE", "STORM", "WIND", "WAVES", "SWELL", "VISIBILITY", "FORECAST", "SEA", "COAST", "MARINERS", "NAVIGATION", "LIGHT", "BUOY", "HAZARD", "CANCEL"}
+
+// MaritimeWordHits counts distinct maritime words present in text.
+func MaritimeWordHits(text string) int {
+	upper := strings.ToUpper(text)
+	n := 0
+	for _, w := range maritimeWords {
+		if strings.Contains(upper, w) {
+			n++
+		}
+	}
+	return n
 }
 
 // CW requires a known callsign anchor, preventing random Morse from publishing.
