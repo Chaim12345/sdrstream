@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"image/png"
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -190,3 +191,22 @@ func readableText(text string, minimum int, ratio float64) bool {
 	}
 	return float64(printable)/float64(total) >= ratio && float64(letters)/float64(total) >= 0.45
 }
+
+// FTX gates FT8/FT4 decodes. Every reported message already passed LDPC
+// parity and a CRC-14 inside the decoder, so a single decode of a message
+// that also contains a plausible amateur callsign is real. FT4 stays
+// unverified against over-the-air audio, so it never publishes.
+func FTX(count int, verifiedProtocol bool, text string) Result {
+	if count == 0 {
+		return Result{false, "no CRC-valid messages"}
+	}
+	if !verifiedProtocol {
+		return Result{false, "FT4 decoder verified on synthetic audio only"}
+	}
+	if !callsignLike.MatchString(text) {
+		return Result{false, "no callsign in decoded text"}
+	}
+	return Result{true, fmt.Sprintf("%d CRC-14 verified FT8 messages", count)}
+}
+
+var callsignLike = regexp.MustCompile(`\b[A-Z0-9]{1,3}[0-9][A-Z]{1,4}\b`)
