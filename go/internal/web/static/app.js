@@ -205,6 +205,7 @@ function renderCaptures(status) {
         audio.controls = true; audio.preload = 'none'; audio.src = c.url;
         audio.setAttribute('aria-label', 'listen to ' + (c.satellite || 'capture'));
         card.appendChild(audio);
+        card.appendChild(recordButtonFor(audio));
         const open = document.createElement('div'); open.style.marginTop = '6px';
         open.appendChild(link(c.url, c.path));
         card.appendChild(open);
@@ -1120,6 +1121,300 @@ async function refreshBandCond() {
   } catch {}
 }
 
+/* ---------- receiver panel: mode / step / squelch ---------- */
+const RX_MODES = ['auto', 'nfm', 'fm', 'wfm', 'am', 'usb', 'lsb', 'cw'];
+const RX_STEPS = [1000, 2500, 5000, 10000, 12500, 25000, 50000, 100000];
+const fmtStep = hz => hz >= 1000 ? (hz / 1000) + 'k' : hz + '';
+let rxState = { mode: '', step_hz: 0, threshold_db: 0 };
+let rxPostTimer = null;
+
+function buildRxControls() {
+  const modes = el('rx-modes');
+  RX_MODES.forEach(m => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'seg-btn'; b.textContent = m; b.dataset.mode = m;
+    b.addEventListener('click', () => postMonitorControl({ mode: m }));
+    modes.appendChild(b);
+  });
+  const steps = el('rx-steps');
+  RX_STEPS.forEach(s => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'seg-btn'; b.textContent = fmtStep(s); b.dataset.step = s;
+    b.title = s / 1000 + ' kHz dial step';
+    b.addEventListener('click', () => postMonitorControl({ step_hz: s }));
+    steps.appendChild(b);
+  });
+  const squelch = el('squelch');
+  squelch.addEventListener('input', () => {
+    el('squelch-value').textContent = '+' + squelch.value + ' dB';
+    // Debounce: a dragged slider would otherwise POST dozens of times.
+    clearTimeout(rxPostTimer);
+    rxPostTimer = setTimeout(() => postMonitorControl({ threshold_db: +squelch.value }), 250);
+  });
+}
+async function postMonitorControl(fields) {
+  try {
+    const body = new URLSearchParams(fields);
+    const info = await fetchJSON('/api/monitor/control', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body,
+    });
+    applyRxState(info);
+    toast('receiver updated', undefined, false);
+  } catch (err) {
+    toast('receiver control failed: ' + err, undefined, true);
+    refreshReceiverPanel();
+  }
+}
+function applyRxState(info) {
+  if (!info) return;
+  if (info.mode) rxState.mode = info.mode;
+  if (info.step_hz) rxState.step_hz = info.step_hz;
+  if (info.threshold_db) rxState.threshold_db = info.threshold_db;
+  document.querySelectorAll('#rx-modes .seg-btn').forEach(b => b.classList.toggle('on', b.dataset.mode === rxState.mode));
+  document.querySelectorAll('#rx-steps .seg-btn').forEach(b => b.classList.toggle('on', +b.dataset.step === rxState.step_hz));
+  if (rxState.threshold_db) {
+    el('squelch').value = rxState.threshold_db;
+    el('squelch-value').textContent = '+' + rxState.threshold_db + ' dB';
+  }
+}
+async function refreshReceiverPanel() {
+  const panel = el('panel-receiver');
+  try {
+    const live = await fetchJSON('/api/live.json');
+    if (!live || !live.available) {
+      el('rx-offline').textContent = 'monitor offline';
+      el('freq-display').textContent = '—';
+      el('rx-sub').textContent = '';
+      el('rx-bw').textContent = '';
+      panel.classList.add('offline');
+      return;
+    }
+    panel.classList.remove('offline');
+    el('rx-offline').textContent = (live.label || live.name || 'monitored receiver');
+    const fd = el('freq-display');
+    fd.textContent = '';
+    if (live.spectrum_ok && live.centre_hz) {
+      const mhzStr = (live.centre_hz / 1e6).toFixed(5);
+      mhzStr.split('').forEach(ch => {
+        const d = document.createElement('span');
+        d.className = 'digit' + (ch === '.' ? ' dot' : '');
+        d.textContent = ch;
+        fd.appendChild(d);
+      });
+      const unit = document.createElement('span');
+      unit.className = 'freq-unit'; unit.textContent = 'MHz';
+      fd.appendChild(unit);
+      el('rx-sub').textContent = (live.strategy || '') + ' · span ' + ((live.span_hz || 0) / 1e6).toFixed(3) + ' MHz';
+    } else {
+      fd.textContent = live.strategy || 'listening';
+      el('rx-sub').textContent = 'this receiver sends no spectrum - centre frequency unknown';
+    }
+    applyRxState(live);
+    const peaks = (live.on_air || []).slice().sort((a, b) => b.level_db - a.level_db);
+    el('rx-bw').textContent = peaks.length
+      ? 'strongest signal ' + mhz(peaks[0].frequency_hz) + ' · ' + (peaks[0].bandwidth_hz / 1000).toFixed(1) + ' kHz wide'
+      : 'no signal over the squelch right now';
+  } catch {
+    el('rx-offline').textContent = 'monitor offline';
+    panel.classList.add('offline');
+  }
+}
+
+/* ---------- decoder message panel ---------- */
+let msglogMode = '';
+let msglogStuck = false; // user scrolled up: do not yank the log to the bottom
+function decodedItems() {
+  return (activityItems || []).filter(a => a.detail && a.mode)
+    .slice().sort((a, b) => new Date(a.started) - new Date(b.started));
+}
+function renderMsglog() {
+  const box = el('msglog');
+  const items = decodedItems().filter(a => !msglogMode || a.mode === msglogMode);
+  // Rebuild only when the content changed; a rebuilt log loses the scroll spot.
+  const key = items.map(a => a.started + a.mode + a.detail).join('|') + '#' + msglogMode;
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  box.textContent = '';
+  if (!items.length) {
+    box.innerHTML = '<div class="empty">' + (msglogMode ? 'no ' + msglogMode + ' messages' : 'nothing decoded yet') + '</div>';
+  }
+  items.slice(-300).forEach(a => {
+    const line = document.createElement('div');
+    line.className = 'msgline ' + (a.kind || '');
+    const t = document.createElement('span');
+    t.className = 'msg-time'; t.textContent = fmtTime(a.started);
+    const m = document.createElement('span');
+    m.className = 'msg-mode'; m.textContent = a.mode;
+    const f = document.createElement('span');
+    f.className = 'msg-freq'; f.textContent = mhz(a.frequency_hz);
+    const d = document.createElement('span');
+    d.className = 'msg-detail'; d.textContent = a.detail;
+    line.append(t, m, f, d);
+    box.appendChild(line);
+  });
+  if (!msglogStuck) box.scrollTop = box.scrollHeight;
+  el('msglog-state').textContent = items.length + ' messages' + (msglogMode ? ' · ' + msglogMode : '') + (msglogStuck ? ' · scroll paused' : '');
+  // Rebuild the decoder filter chips from the modes present in the data.
+  const modes = [...new Set(decodedItems().map(a => a.mode))].sort();
+  const bar = el('msglog-modes');
+  const barKey = modes.join('|') + '#' + msglogMode;
+  if (bar.dataset.key !== barKey) {
+    bar.dataset.key = barKey;
+    bar.textContent = '';
+    const mk = (label, value) => {
+      const b = document.createElement('button');
+      b.className = 'chip' + (value === msglogMode ? ' on' : '');
+      b.textContent = label; b.dataset.dmode = value;
+      b.addEventListener('click', () => { msglogMode = value; renderMsglog(); });
+      bar.appendChild(b);
+    };
+    mk('all', '');
+    modes.forEach(m => mk(m, m));
+  }
+}
+function msglogText() {
+  return decodedItems().filter(a => !msglogMode || a.mode === msglogMode)
+    .map(a => fmtTime(a.started) + ' ' + a.mode + ' ' + mhz(a.frequency_hz) + '  ' + a.detail).join('\n');
+}
+el('msglog-copy').addEventListener('click', async () => {
+  const text = msglogText();
+  if (!text) { toast('nothing to copy', undefined, true); return; }
+  try { await navigator.clipboard.writeText(text); toast('messages copied', undefined, true); }
+  catch { toast('clipboard blocked by the browser', undefined, true); }
+});
+el('msglog-export').addEventListener('click', () => {
+  const text = msglogText();
+  if (!text) { toast('nothing to export', undefined, true); return; }
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  downloadFile('sdrstream-messages-' + stamp + '.txt', text, 'text/plain');
+});
+el('msglog').addEventListener('scroll', () => {
+  const box = el('msglog');
+  msglogStuck = box.scrollTop + box.clientHeight < box.scrollHeight - 40;
+  el('msglog-state').textContent = el('msglog-state').textContent.replace(/ · scroll paused$/, '') + (msglogStuck ? ' · scroll paused' : '');
+});
+
+/* ---------- in-browser audio recording ---------- */
+let recorder = null;
+function recordButtonFor(audio) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'rec-btn';
+  btn.title = 'Record this playback to a file';
+  btn.setAttribute('aria-label', 'record this playback to a file');
+  btn.textContent = '\u25CF';
+  btn.addEventListener('click', () => toggleRecording(btn, audio));
+  return btn;
+}
+function toggleRecording(btn, audio) {
+  if (recorder) {
+    recorder.stop();
+    return;
+  }
+  const capture = audio.captureStream || audio.mozCaptureStream;
+  if (!capture || typeof MediaRecorder === 'undefined') {
+    toast('recording is not supported in this browser', undefined, true);
+    return;
+  }
+  let rec;
+  try { rec = new MediaRecorder(capture.call(audio)); }
+  catch { toast('recording is not supported in this browser', undefined, true); return; }
+  const chunks = [];
+  rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  rec.onstop = () => {
+    document.querySelectorAll('.rec-btn.recording').forEach(b => b.classList.remove('recording'));
+    recorder = null;
+    if (!chunks.length) { toast('nothing was recorded - press play first', undefined, true); return; }
+    const type = rec.mimeType || 'audio/webm';
+    const ext = type.includes('ogg') ? 'ogg' : 'webm';
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    downloadFile('sdrstream-recording-' + stamp + '.' + ext, new Blob(chunks, { type }), type);
+    toast('recording saved', undefined, true);
+  };
+  recorder = rec;
+  btn.classList.add('recording');
+  if (audio.paused) audio.play();
+  rec.start();
+  audio.addEventListener('ended', () => { if (recorder === rec) rec.stop(); }, { once: true });
+}
+
+/* ---------- keyboard shortcuts ---------- */
+const viewOrder = () => [...document.querySelectorAll('.mainnav button[data-view]')].map(b => b.dataset.view);
+function kbdToggleHelp(force) {
+  const box = el('kbd-help');
+  box.hidden = force !== undefined ? !force : !box.hidden;
+  if (!box.hidden) el('kbd-close').focus();
+}
+el('kbd-close').addEventListener('click', () => kbdToggleHelp(false));
+el('kbd-help').addEventListener('click', e => { if (e.target === el('kbd-help')) kbdToggleHelp(false); });
+let allMuted = false;
+document.addEventListener('keydown', e => {
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'select' || tag === 'textarea' || e.target.isContentEditable) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const views = viewOrder();
+  const current = document.querySelector('.mainnav button.active')?.dataset.view;
+  const idx = views.indexOf(current);
+  if (e.key === '?') { kbdToggleHelp(); e.preventDefault(); return; }
+  if (e.key === 'Escape') { kbdToggleHelp(false); return; }
+  if (!el('kbd-help').hidden) return;
+  if (e.key >= '0' && e.key <= '9') {
+    const n = e.key === '0' ? 9 : +e.key - 1;
+    if (views[n]) { showView(views[n]); e.preventDefault(); }
+    return;
+  }
+  switch (e.key) {
+    case 'ArrowRight': if (views[idx + 1]) { showView(views[idx + 1]); e.preventDefault(); } break;
+    case 'ArrowLeft': if (views[idx - 1]) { showView(views[idx - 1]); e.preventDefault(); } break;
+    case '/':
+      showView('activity');
+      setTimeout(() => el('activity-search').focus(), 60);
+      e.preventDefault();
+      break;
+    case 'e':
+      el('activity-export-json').click();
+      break;
+    case 't': {
+      const order = ['dark', 'light', 'auto'];
+      settings.theme = order[(order.indexOf(settings.theme) + 1) % order.length];
+      saveSettings(); applyTheme(); syncSettingsView();
+      toast('theme: ' + settings.theme, undefined, true);
+      break;
+    }
+    case 'm':
+      allMuted = !allMuted;
+      document.querySelectorAll('audio').forEach(a => { a.muted = allMuted; });
+      toast(allMuted ? 'all players muted' : 'players unmuted', undefined, true);
+      break;
+  }
+});
+
+/* ---------- mobile touch: swipe between views ---------- */
+(function swipeNav() {
+  const main = el('main');
+  let startX = 0, startY = 0, tracking = false;
+  main.addEventListener('touchstart', e => {
+    const t = e.target;
+    // Do not hijack gestures that belong to a control or the map.
+    if (t.closest('canvas, audio, input, select, .leaflet-container, .msglog, .feed, .gallery, a, button')) { tracking = false; return; }
+    tracking = true;
+    startX = e.changedTouches[0].clientX;
+    startY = e.changedTouches[0].clientY;
+  }, { passive: true });
+  main.addEventListener('touchend', e => {
+    if (!tracking) return;
+    tracking = false;
+    const dx = e.changedTouches[0].clientX - startX;
+    const dy = e.changedTouches[0].clientY - startY;
+    if (Math.abs(dx) < 72 || Math.abs(dy) > 56) return;
+    const views = viewOrder();
+    const current = document.querySelector('.mainnav button.active')?.dataset.view;
+    const idx = views.indexOf(current);
+    const next = dx < 0 ? views[idx + 1] : views[idx - 1];
+    if (next) showView(next);
+  }, { passive: true });
+})();
+
 /* ---------- settings view ---------- */
 let spectrumTimer = null;
 let activityTimer = null;
@@ -1158,7 +1453,11 @@ function initSettingsView() {
 // the router, so an early #map route would hit the temporal dead zone.
 applyTheme();
 initSettingsView();
+buildRxControls();
 if (location.hash && el('view-' + location.hash.slice(1))) showView(location.hash.slice(1)); else showView('overview');
+refreshReceiverPanel(); renderMsglog();
+setInterval(refreshReceiverPanel, 3000);
+setInterval(renderMsglog, 4000);
 refreshStatus(); refreshSats(); refreshGallery(); refreshStations(); refreshScans(); refreshActivity(); refreshFeeds(); refreshSources(false); refreshBandCond(); refreshLive();
 el('sources-refresh').onclick = () => refreshSources(true);
 setInterval(refreshStatus, 5000);

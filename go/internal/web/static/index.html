@@ -31,6 +31,7 @@
   <button data-view="overview" class="active" aria-current="page"><span class="ico">&#9673;</span><span class="lbl">Overview</span></button>
   <button data-view="map"><span class="ico">&#8982;</span><span class="lbl">Map</span></button>
   <button data-view="activity"><span class="ico">&#8779;</span><span class="lbl">Activity</span></button>
+  <button data-view="decodes"><span class="ico">&#9679;</span><span class="lbl">Decodes</span></button>
   <button data-view="passes"><span class="ico">&#9650;</span><span class="lbl">Passes</span></button>
   <button data-view="gallery"><span class="ico">&#9702;</span><span class="lbl">Gallery</span></button>
   <button data-view="captures"><span class="ico">&#9834;</span><span class="lbl">Captures</span></button>
@@ -79,6 +80,28 @@
         <span class="muted">peak <b class="mono" id="signal-peak">--</b> dB</span>
       </div>
       <div class="onair-list" id="onair-list"><span class="muted">no signal over the threshold right now</span></div>
+    </div>
+    <div class="panel" id="panel-receiver">
+      <div class="panel-head">
+        <h2>Receiver</h2>
+        <span class="muted" id="rx-offline">monitor offline</span>
+      </div>
+      <div class="freq-display" id="freq-display" aria-label="Centre frequency of the monitored receiver">&#8212;</div>
+      <div class="rx-sub muted" id="rx-sub"></div>
+      <div class="ctl-row">
+        <span class="ctl-label">mode</span>
+        <div class="seg" id="rx-modes" role="group" aria-label="Listening mode"></div>
+      </div>
+      <div class="ctl-row">
+        <span class="ctl-label">step</span>
+        <div class="seg" id="rx-steps" role="group" aria-label="Dial step"></div>
+      </div>
+      <div class="ctl-row">
+        <span class="ctl-label">squelch</span>
+        <input type="range" id="squelch" min="1" max="40" step="1" value="8" aria-label="Squelch, dB above the noise floor">
+        <output id="squelch-value" for="squelch">+8 dB</output>
+      </div>
+      <div class="muted rx-bw" id="rx-bw"></div>
     </div>
     <div class="panel" id="panel-receivers">
       <div class="panel-head">
@@ -155,6 +178,18 @@
     </div>
     <div class="feed feed-full" id="feed" role="log" aria-live="polite" aria-label="Detected transmissions"><div class="empty">no traffic seen yet</div></div>
     <button id="activity-more" class="btn" hidden>show more</button>
+  </section>
+
+  <section id="view-decodes" class="view" aria-label="Decoder messages">
+    <div class="toolbar" role="group" aria-label="Filter by decoder" id="msglog-modes">
+      <button class="chip on" data-dmode="">all</button>
+    </div>
+    <div class="msglog" id="msglog" role="log" aria-live="polite" aria-label="Decoder message log"><div class="empty">nothing decoded yet</div></div>
+    <div class="toolbar">
+      <button id="msglog-copy" class="chip" type="button">copy</button>
+      <button id="msglog-export" class="chip" type="button">export .txt</button>
+      <span class="muted" id="msglog-state" role="status"></span>
+    </div>
   </section>
 
   <section id="view-passes" class="view" aria-label="Passes">
@@ -286,6 +321,24 @@
 </main>
 
 <div id="toasts" aria-live="polite" aria-label="Notifications"></div>
+
+<div id="kbd-help" hidden role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+  <div class="kbd-card">
+    <div class="panel-head"><h2>Keyboard shortcuts</h2><button id="kbd-close" class="linklike" aria-label="Close">close</button></div>
+    <table class="kbd-table">
+      <tbody>
+        <tr><td><kbd>1</kbd>&hellip;<kbd>0</kbd></td><td>jump to a view (the nav order)</td></tr>
+        <tr><td><kbd>&larr;</kbd> <kbd>&rarr;</kbd></td><td>previous / next view</td></tr>
+        <tr><td><kbd>/</kbd></td><td>search the decodes</td></tr>
+        <tr><td><kbd>e</kbd></td><td>export the filtered decodes as JSON</td></tr>
+        <tr><td><kbd>t</kbd></td><td>cycle theme: dark, light, follow the phone</td></tr>
+        <tr><td><kbd>m</kbd></td><td>mute / unmute every player</td></tr>
+        <tr><td><kbd>?</kbd></td><td>this help</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>close dialogs</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
 
 <div id="lightbox" hidden role="dialog" aria-modal="true" aria-label="Image viewer">
   <button id="lightbox-close" aria-label="Close">&times;</button>

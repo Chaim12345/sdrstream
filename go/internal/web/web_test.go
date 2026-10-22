@@ -687,3 +687,57 @@ func TestScanCaptureMetadataSurvivesReload(t *testing.T) {
 		t.Fatalf("capture metadata = %+v", got)
 	}
 }
+
+// TestMonitorControl exercises the live receiver knobs: method and origin
+// checks, validation, no-monitor 404, and that accepted values show up in
+// the monitor's live snapshot.
+func TestMonitorControl(t *testing.T) {
+	post := func(server *Server, origin, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "http://example.test/api/monitor/control", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Origin", origin)
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	noMonitor := &Server{}
+	if rec := post(noMonitor, "http://example.test", "threshold_db=12"); rec.Code != http.StatusNotFound {
+		t.Fatalf("no monitor: status = %d, want 404", rec.Code)
+	}
+
+	server := &Server{}
+	instance := monitor.New(monitor.Options{ThresholdDB: 8, StepHz: 25000, Mode: "auto"})
+	server.SetMonitor(instance)
+
+	req := httptest.NewRequest("GET", "/api/monitor/control", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET: status = %d, want 405", rec.Code)
+	}
+	if rec := post(server, "http://evil.test", "threshold_db=12"); rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin: status = %d, want 403", rec.Code)
+	}
+	for _, body := range []string{"threshold_db=0", "threshold_db=99", "step_hz=7777", "mode=ssb"} {
+		if rec := post(server, "http://example.test", body); rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400", body, rec.Code)
+		}
+	}
+	rec = post(server, "http://example.test", "threshold_db=14&step_hz=12500&mode=nfm")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid: status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	info := instance.Live()
+	if info.ThresholdDB != 14 || info.StepHz != 12500 || info.Mode != "nfm" {
+		t.Fatalf("live snapshot = %+v", info)
+	}
+	// A partial update keeps the other knobs.
+	if rec := post(server, "http://example.test", "threshold_db=6"); rec.Code != http.StatusOK {
+		t.Fatalf("partial: status = %d", rec.Code)
+	}
+	info = instance.Live()
+	if info.ThresholdDB != 6 || info.StepHz != 12500 || info.Mode != "nfm" {
+		t.Fatalf("after partial update = %+v", info)
+	}
+}

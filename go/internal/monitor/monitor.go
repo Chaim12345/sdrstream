@@ -123,6 +123,7 @@ type job struct {
 // Monitor watches a source and keeps the activity log.
 type Monitor struct {
 	opts Options
+	ctrl liveControls
 	jobs chan job
 
 	mu         sync.Mutex
@@ -220,6 +221,8 @@ type LiveInfo struct {
 	NoiseFloorDB float64     `json:"noise_floor_db"`
 	PeakDB       float64     `json:"peak_db"`
 	ThresholdDB  float64     `json:"threshold_db"`
+	Mode         string      `json:"mode,omitempty"`
+	StepHz       float64     `json:"step_hz,omitempty"`
 	OnAir        []OnAirPeak `json:"on_air"`
 	UpdatedAt    time.Time   `json:"updated_at"`
 }
@@ -234,7 +237,7 @@ func (m *Monitor) Live() LiveInfo {
 	info := LiveInfo{
 		Name: m.opts.Name, Label: m.opts.Label, Strategy: m.opts.Strategy,
 		SpectrumOK: ok, CentreHz: centre, SpanHz: span,
-		ThresholdDB: m.opts.ThresholdDB, UpdatedAt: time.Now(),
+		ThresholdDB: m.thresholdDB(), Mode: m.listenMode(), StepHz: m.dialStepHz(), UpdatedAt: time.Now(),
 		OnAir: []OnAirPeak{},
 	}
 	if !ok || len(bins) == 0 {
@@ -341,7 +344,7 @@ func (m *Monitor) sweepOnce(ctx context.Context, start, end float64) error {
 	// floating point drifts, and the last step of the band would be
 	// missed.
 	for index := 0; ; index++ {
-		frequency := math.Round(start + float64(index)*m.opts.StepHz)
+		frequency := math.Round(start + float64(index)*m.dialStepHz())
 		if frequency > end {
 			break
 		}
@@ -370,7 +373,7 @@ func (m *Monitor) sweepOnce(ctx context.Context, start, end float64) error {
 		levels[i] = s.levelDB
 	}
 	floor := median(levels)
-	limit := floor + m.opts.ThresholdDB
+	limit := floor + m.thresholdDB()
 	// A receiver with AGC gives every step the same level, which makes
 	// the level useless for telling traffic from noise. Only when the
 	// levels actually differ across the band does the threshold mean
@@ -391,7 +394,7 @@ func (m *Monitor) sweepOnce(ctx context.Context, start, end float64) error {
 		if !normalised && s.levelDB < limit {
 			continue
 		}
-		if len(ranges) > 0 && s.frequency-ranges[len(ranges)-1][1] <= m.opts.StepHz*1.5 {
+		if len(ranges) > 0 && s.frequency-ranges[len(ranges)-1][1] <= m.dialStepHz()*1.5 {
 			ranges[len(ranges)-1][1] = s.frequency
 			continue
 		}
@@ -487,8 +490,8 @@ func (m *Monitor) handleHit(ctx context.Context, frequency float64, hit decode.B
 	// A wideband signal is FM voice, a narrow one is a sideband or a
 	// beacon; try both and keep whichever gives the better answer.
 	modes := []string{"usb", "fm"}
-	if m.opts.Mode != "auto" && m.opts.Mode != "" {
-		modes = []string{m.opts.Mode}
+	if m.listenMode() != "auto" && m.listenMode() != "" {
+		modes = []string{m.listenMode()}
 	}
 	select {
 	case m.jobs <- job{
@@ -648,7 +651,7 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 	for i := 0; i <= len(bins); i++ {
 		above := false
 		if i < len(bins) {
-			above = bins[i] > floors[i]+m.opts.ThresholdDB
+			above = bins[i] > floors[i]+m.thresholdDB()
 		}
 		if above && start < 0 {
 			start = i
@@ -726,8 +729,8 @@ func ChooseMode(mode string, bandwidthHz float64) string {
 // know the signal's bandwidth yet, so it uses a sideband mode, which also
 // passes packet signals through well enough to decode them.
 func (m *Monitor) surveyMode() string {
-	if m.opts.Mode != "auto" && m.opts.Mode != "" {
-		return m.opts.Mode
+	if m.listenMode() != "auto" && m.listenMode() != "" {
+		return m.listenMode()
 	}
 	return "usb"
 }
@@ -778,7 +781,7 @@ func (m *Monitor) report(ctx context.Context, candidate *candidate) {
 		frequency:  candidate.frequency,
 		bandwidth:  candidate.bandwidth,
 		levelDB:    candidate.levelDB,
-		modes:      []string{ChooseMode(m.opts.Mode, candidate.bandwidth)},
+		modes:      []string{ChooseMode(m.listenMode(), candidate.bandwidth)},
 		activityID: activity.ID,
 	}:
 	default:
