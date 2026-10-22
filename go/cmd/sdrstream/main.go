@@ -1914,18 +1914,31 @@ func runParallelScan(ctx context.Context, server *web.Server, receivers []string
 			if completedInWindow >= 20 {
 				loadRatio := readLoadAverage() / float64(max(1, coreCount))
 				refusalRate := float64(windowRefusals) / float64(completedInWindow)
-				if (refusalRate > cfg.backoffRefusalRate || loadRatio > cfg.backoffLoadRatio) && stageIndex > 0 {
-					stageIndex--
-					current.Store(int64(min(cfg.maximum, steps[stageIndex])))
-				} else if refusalRate <= cfg.backoffRefusalRate && loadRatio < cfg.advanceLoadRatio && float64(current.Load())*cfg.streamKbps/1000 < cfg.bandwidthLimitMbps && stageIndex+1 < len(steps) {
-					stageIndex++
-					current.Store(int64(min(cfg.maximum, steps[stageIndex])))
-				}
+				errorRate := float64(windowIssues) / float64(completedInWindow)
+				stageIndex = nextRampStage(stageIndex, len(steps), refusalRate, errorRate, loadRatio, float64(current.Load())*cfg.streamKbps/1000, cfg)
+				current.Store(int64(min(cfg.maximum, steps[stageIndex])))
 				completedInWindow, windowIssues, windowRefusals = 0, 0, 0
 				updateMetrics()
 			}
 		}
 	}
+}
+
+// nextRampStage applies the scanner's configured error, refusal, load and
+// bandwidth gates to one completed sample window. Timeouts count as errors
+// for advance decisions, while refusal rate alone controls refusal backoff.
+func nextRampStage(stage, stageCount int, refusalRate, errorRate, loadRatio, bandwidthMbps float64, cfg scanConfig) int {
+	if stageCount <= 0 {
+		return 0
+	}
+	stage = min(max(stage, 0), stageCount-1)
+	if (refusalRate > cfg.backoffRefusalRate || loadRatio > cfg.backoffLoadRatio) && stage > 0 {
+		return stage - 1
+	}
+	if errorRate < cfg.advanceErrorRate && loadRatio < cfg.advanceLoadRatio && bandwidthMbps < cfg.bandwidthLimitMbps && stage+1 < stageCount {
+		return stage + 1
+	}
+	return stage
 }
 
 func minDuration(a, b time.Duration) time.Duration {

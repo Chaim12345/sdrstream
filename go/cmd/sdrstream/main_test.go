@@ -67,3 +67,22 @@ func TestScanStatusIndexesRemainStablePastDisplayWindow(t *testing.T) {
 		t.Fatalf("last stable status = %+v", got)
 	}
 }
+
+func TestRampUsesTimeoutsForAdvanceAndRefusalsForBackoff(t *testing.T) {
+	cfg, err := newScanConfig(20, 100, "20,49,100", .15, .30, .70, .90, 20, 100, 40, 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := nextRampStage(0, 3, 0, .20, .2, 2, cfg); got != 0 {
+		t.Fatalf("advanced despite timeout/error rate above gate: %d", got)
+	}
+	if got := nextRampStage(0, 3, 0, .14, .2, 2, cfg); got != 1 {
+		t.Fatalf("did not advance below configured error rate: %d", got)
+	}
+	if got := nextRampStage(2, 3, .31, .31, .2, 2, cfg); got != 1 {
+		t.Fatalf("did not back off on excessive refusal rate: %d", got)
+	}
+	if got := nextRampStage(2, 3, .1, .1, .91, 2, cfg); got != 1 {
+		t.Fatalf("did not back off on excessive load: %d", got)
+	}
+}
