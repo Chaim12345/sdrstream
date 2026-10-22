@@ -100,6 +100,9 @@ func TestFFTMatchesDFT(t *testing.T) {
 // The FT4 decoder has no real-audio verification yet; this only proves the
 // protocol constants round-trip against an independent encoder.
 func TestFT4SyntheticFixture(t *testing.T) {
+	if _, err := os.Stat("testdata/ft8/synthetic_ft4_K1ABC_W9XYZ_-11.wav.fixture"); err != nil {
+		t.Skip("fixture absent")
+	}
 	samples, rate, err := ReadWAV("testdata/ft8/synthetic_ft4_K1ABC_W9XYZ_-11.wav.fixture")
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +121,11 @@ func TestFT4SyntheticFixture(t *testing.T) {
 // 46 s at 7119 Hz through the WebSDR vocoder. Real over-the-air audio, no
 // reference list: every message is accepted only through LDPC plus CRC-14.
 func TestFT8LiveWebSDRCapture(t *testing.T) {
-	samples, rate, err := ReadWAV("testdata/ft8/live_websdr_utwente_7074kHz_20261022T052841Z.wav")
+	const live = "testdata/ft8/live_websdr_utwente_7074kHz_20261022T052841Z.wav"
+	if _, err := os.Stat(live); err != nil {
+		t.Skip("live capture fixture absent")
+	}
+	samples, rate, err := ReadWAV(live)
 	if err != nil {
 		t.Fatal(err)
 	}
