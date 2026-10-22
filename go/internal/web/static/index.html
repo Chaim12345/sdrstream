@@ -37,6 +37,7 @@
   <button data-view="stations"><span class="ico">&#8962;</span><span class="lbl">Stations</span></button>
   <button data-view="satellites"><span class="ico">&#10022;</span><span class="lbl">Satellites</span></button>
   <button data-view="feeds"><span class="ico">&#9788;</span><span class="lbl">Live data</span></button>
+  <button data-view="settings"><span class="ico">&#9881;</span><span class="lbl">Settings</span></button>
   <button id="nav-more" aria-expanded="false"><span class="ico">⋯</span><span class="lbl">More</span></button>
 </nav>
 
@@ -100,7 +101,26 @@
       <button class="chip" data-kind="cw">cw</button>
       <button class="chip" data-kind="carrier">carrier</button>
     </div>
+    <div class="toolbar" role="search" aria-label="Search and narrow decodes">
+      <label class="sr-only" for="activity-search">Search decodes</label>
+      <input type="search" id="activity-search" placeholder="Search decoded text, decoder, frequency">
+      <label class="sr-only" for="activity-mode">Decoder</label>
+      <select id="activity-mode" aria-label="Filter by decoder"><option value="">all decoders</option></select>
+      <label class="sr-only" for="activity-window">Time window</label>
+      <select id="activity-window" aria-label="Time window">
+        <option value="">all time</option>
+        <option value="900">last 15 min</option>
+        <option value="3600">last hour</option>
+        <option value="86400">last 24 h</option>
+      </select>
+    </div>
+    <div class="toolbar" aria-label="Export decodes">
+      <button id="activity-export-json" class="chip" type="button">Export JSON</button>
+      <button id="activity-export-csv" class="chip" type="button">Export CSV</button>
+      <span class="muted" id="activity-summary" role="status"></span>
+    </div>
     <div class="feed feed-full" id="feed" role="log" aria-live="polite" aria-label="Detected transmissions"><div class="empty">no traffic seen yet</div></div>
+    <button id="activity-more" class="btn" hidden>show more</button>
   </section>
 
   <section id="view-passes" class="view" aria-label="Passes">
@@ -159,6 +179,62 @@
         <thead><tr><th>name</th><th>norad</th><th>downlink</th><th>mode</th><th>relay</th><th>status</th><th>receivers</th></tr></thead>
         <tbody></tbody>
       </table>
+    </div>
+  </section>
+
+  <section id="view-settings" class="view" aria-label="Settings">
+    <div class="panel">
+      <h2>Appearance</h2>
+      <div class="setting-row">
+        <label for="set-theme">Theme</label>
+        <select id="set-theme">
+          <option value="dark">dark</option>
+          <option value="light">light</option>
+          <option value="auto">follow the phone</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <label for="set-compact">Compact cards</label>
+        <input type="checkbox" id="set-compact">
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Live updates</h2>
+      <div class="setting-row">
+        <label for="set-spectrum-rate">Spectrum refresh</label>
+        <select id="set-spectrum-rate">
+          <option value="1000">every second</option>
+          <option value="2000">every 2 seconds</option>
+          <option value="5000">every 5 seconds</option>
+          <option value="0">off</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <label for="set-activity-rate">Activity refresh</label>
+        <select id="set-activity-rate">
+          <option value="4000">every 4 seconds</option>
+          <option value="10000">every 10 seconds</option>
+          <option value="30000">every 30 seconds</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <label for="set-toasts">Notify on new activity</label>
+        <input type="checkbox" id="set-toasts" checked>
+      </div>
+      <div class="setting-row">
+        <label for="set-page-size">Decodes per page</label>
+        <select id="set-page-size">
+          <option value="25">25</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+        </select>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Stored</h2>
+      <p class="muted">Settings live in this browser only; nothing is sent to the server.</p>
+      <button id="set-reset" class="btn" type="button">Reset to defaults</button>
     </div>
   </section>
 </main>
