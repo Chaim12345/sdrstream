@@ -414,15 +414,29 @@ function drawSpectrum(bins, centre, span) {
   bins.forEach((v, i) => { const x = (i / (bins.length - 1)) * w, y = h - ((v - min) / range) * (h - 12) - 6; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
   ctx.stroke();
   // Mark the peaks the monitor reports as on air right now.
-  (lastLive && lastLive.on_air || []).forEach(p => {
+  (lastLive && lastLive.on_air || []).forEach((p, pi) => {
     if (!span) return;
     const x = ((p.frequency_hz - (centre - span / 2)) / span) * w;
     if (x < 0 || x > w) return;
     ctx.strokeStyle = 'rgba(52,211,153,.9)'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
     ctx.fillStyle = 'rgba(52,211,153,.9)'; ctx.font = (9 * ratio) + 'px ui-monospace, monospace';
-    ctx.fillText('ON AIR', Math.min(x + 3, w - 40 * ratio), 10 * ratio);
+    // Stagger labels so close peaks do not print over each other.
+    ctx.fillText('ON AIR', Math.min(x + 3, w - 40 * ratio), (10 + (pi % 3) * 9) * ratio);
   });
+  // The red VFO cursor: where the user clicked to listen.
+  if (lastLive && lastLive.tuned_hz && span) {
+    const tx = ((lastLive.tuned_hz - (centre - span / 2)) / span) * w;
+    if (tx >= 0 && tx <= w) {
+      ctx.strokeStyle = '#f87171'; ctx.lineWidth = Math.max(1, ratio);
+      ctx.setLineDash([4 * ratio, 3 * ratio]);
+      ctx.beginPath(); ctx.moveTo(tx, 0); ctx.lineTo(tx, h); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#f87171'; ctx.font = (9 * ratio) + 'px ui-monospace, monospace';
+      ctx.fillText(mhz(lastLive.tuned_hz), Math.min(tx + 4, w - 70 * ratio), h - 4 * ratio);
+    }
+  }
+  drawBookmarkFlags(ctx, w, centre, span, ratio);
   el('spec-lo').textContent = mhz(centre - span / 2);
   el('spec-mid').textContent = mhz(centre);
   el('spec-hi').textContent = mhz(centre + span / 2);
@@ -465,6 +479,7 @@ async function refreshSpectrum() {
       lastFrame = spec;
       drawSpectrum(spec.bins, spec.centre_hz, spec.span_hz);
       pushWaterfall(spec.bins);
+      renderBookmarkBar();
       setMonitor('monitoring');
     } else {
       setMonitor('no spectrum');
@@ -687,6 +702,11 @@ function renderSignal(live) {
   el('signal-level').textContent = overFloor.toFixed(1);
   el('signal-floor').textContent = (live.noise_floor_db || 0).toFixed(0);
   el('signal-peak').textContent = (live.peak_db || 0).toFixed(0);
+  el('signal-sunit').textContent = sUnit(live.peak_db || -130, live.centre_hz || 0);
+  el('tuned-freq').textContent = live.tuned_hz ? mhz(live.tuned_hz) : '--';
+  // Peak hold: decays half a dB per one-second poll.
+  peakHold = Math.max(overFloor, peakHold - 0.5);
+  el('meter-peakhold').style.left = Math.min(100, peakHold / 60 * 100) + '%';
   const thrPct = Math.min(100, (live.threshold_db || 8) / 60 * 100);
   el('meter-threshold').style.left = thrPct + '%';
   el('meter-threshold-label').textContent = '+' + (live.threshold_db || 8) + ' dB';
@@ -777,6 +797,94 @@ function renderDecodes() {
     box.appendChild(line);
   });
 }
+
+
+/* ---------- click-to-tune, S-units, bookmarks (HTML5 SDR client parity) ---------- */
+let peakHold = 0;
+// S-unit estimate: S9 is -73 dBm below 30 MHz and -93 dBm above, 6 dB per
+// S-point. Honest estimate: the receiver sends calibrated dB, not dBm at
+// the antenna, so the UI labels it "est.".
+function sUnit(db, hz) {
+  const ref = hz && hz < 30e6 ? -73 : -93;
+  const over = db - ref;
+  if (over <= -54) return 'S0';
+  if (over < 0) return 'S' + Math.max(1, Math.round(9 + over / 6));
+  return 'S9+' + Math.round(over);
+}
+async function tuneAt(hz) {
+  if (!hz || hz <= 0) return;
+  try {
+    const body = new URLSearchParams({ frequency_hz: String(Math.round(hz)) });
+    const r = await fetchJSON('/api/tune.json', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+    toast('listening at ' + mhz(r.tuned_hz) + (r.queued ? '' : ' (worker busy)'));
+  } catch (e) { toast('tune failed: ' + e); }
+}
+function canvasFreq(ev, canvas) {
+  if (!lastFrame || !lastFrame.span_hz) return 0;
+  const rect = canvas.getBoundingClientRect();
+  const frac = (ev.clientX - rect.left) / rect.width;
+  if (frac < 0 || frac > 1) return 0;
+  return lastFrame.centre_hz - lastFrame.span_hz / 2 + frac * lastFrame.span_hz;
+}
+['spectrum', 'waterfall'].forEach(id => {
+  const c = el(id);
+  if (!c) return;
+  c.style.cursor = 'crosshair';
+  c.addEventListener('click', ev => { const hz = canvasFreq(ev, c); if (hz > 0) tuneAt(hz); });
+});
+// Bookmarks: satellites from the catalogue plus the user's own, kept in
+// localStorage. Flags draw along the top of the spectrum; chips under the
+// axis tune on tap.
+let userBookmarks = [];
+try { userBookmarks = JSON.parse(localStorage.getItem('sdrstream-bookmarks') || '[]'); } catch { userBookmarks = []; }
+function allBookmarks() {
+  const marks = [];
+  (latestStatus && latestStatus.satellites || []).forEach(s => { if (s.downlink_hz > 0) marks.push({ name: s.name, hz: s.downlink_hz, kind: 'sat' }); });
+  userBookmarks.forEach(b => marks.push({ name: b.name, hz: b.hz, kind: 'user' }));
+  return marks;
+}
+function drawBookmarkFlags(ctx, w, centre, span, ratio) {
+  if (!span) return;
+  const lo = centre - span / 2;
+  ctx.font = (9 * ratio) + 'px ui-monospace, monospace';
+  allBookmarks().forEach(b => {
+    const x = ((b.hz - lo) / span) * w;
+    if (x < 0 || x > w) return;
+    ctx.fillStyle = b.kind === 'user' ? '#fbbf24' : 'rgba(125,138,160,.85)';
+    ctx.beginPath();
+    ctx.moveTo(x, 0); ctx.lineTo(x + 4 * ratio, 6 * ratio); ctx.lineTo(x - 4 * ratio, 6 * ratio);
+    ctx.closePath(); ctx.fill();
+    const label = String(b.name).slice(0, 12);
+    ctx.fillText(label, Math.min(Math.max(x + 5 * ratio, 0), Math.max(0, w - 60 * ratio)), 8 * ratio);
+  });
+}
+function renderBookmarkBar() {
+  const bar = el('bookmark-bar');
+  if (!bar) return;
+  bar.textContent = '';
+  if (!lastFrame || !lastFrame.span_hz) return;
+  const lo = lastFrame.centre_hz - lastFrame.span_hz / 2, hi = lastFrame.centre_hz + lastFrame.span_hz / 2;
+  const inSpan = allBookmarks().filter(b => b.hz >= lo && b.hz <= hi);
+  if (!inSpan.length) return;
+  inSpan.slice(0, 12).forEach(b => {
+    const chip = document.createElement('button');
+    chip.className = 'chip bookmark-chip ' + b.kind;
+    chip.textContent = String(b.name).slice(0, 16) + ' ' + mhz(b.hz);
+    chip.title = 'listen at ' + mhz(b.hz);
+    chip.addEventListener('click', () => tuneAt(b.hz));
+    bar.appendChild(chip);
+  });
+}
+const bookmarkAdd = el('bookmark-add');
+if (bookmarkAdd) bookmarkAdd.addEventListener('click', () => {
+  const hz = (lastLive && lastLive.tuned_hz) || (lastFrame && lastFrame.centre_hz) || 0;
+  if (!hz) return;
+  const name = prompt('Name for bookmark at ' + mhz(hz), '');
+  if (name === null) return;
+  userBookmarks.push({ name: name.slice(0, 24) || mhz(hz), hz: Math.round(hz) });
+  try { localStorage.setItem('sdrstream-bookmarks', JSON.stringify(userBookmarks.slice(-50))); } catch {}
+  renderBookmarkBar();
+});
 
 /* ---------- scan board ---------- */
 let scanLogSince = 0;

@@ -494,6 +494,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/activity.json", s.handleActivity)
 	mux.HandleFunc("/api/spectrum.json", s.handleSpectrum)
 	mux.HandleFunc("/api/live.json", s.handleLive)
+	mux.HandleFunc("/api/tune.json", s.handleTune)
 	mux.HandleFunc("/api/stations.json", s.handleStations)
 	mux.HandleFunc("/api/map.json", s.handleMap)
 	mux.HandleFunc("/api/tiles/", s.handleTile)
@@ -978,6 +979,38 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	info := instance.Live()
 	info.Available = true
 	writeJSON(w, info)
+}
+
+
+// handleTune parks the monitor on a frequency the user clicked in the
+// waterfall and queues an immediate listen there (click-to-tune).
+func (s *Server) handleTune(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("Origin") != "https://"+r.Host && r.Header.Get("Origin") != "http://"+r.Host {
+		http.Error(w, "same-origin required", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	hz, err := strconv.ParseFloat(r.FormValue("frequency_hz"), 64)
+	if err != nil || hz <= 0 {
+		http.Error(w, "frequency_hz must be a positive number", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	instance := s.monitor
+	s.mu.Unlock()
+	if instance == nil {
+		http.Error(w, "no monitor is running", http.StatusNotFound)
+		return
+	}
+	queued := instance.RequestListen(hz, r.FormValue("mode"))
+	writeJSON(w, map[string]any{"tuned_hz": hz, "queued": queued})
 }
 
 // handleSpectrum returns the latest spectrum frame from the monitored

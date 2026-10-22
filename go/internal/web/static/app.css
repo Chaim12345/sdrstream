@@ -454,3 +454,16 @@ tr:hover td { background: var(--panel-2); }
   .pill-onair .dot, .onair-chip, .rx-dot.pulse, .rx-card.onair .rx-state, .meter-fill.hot { animation: none; }
   .meter-fill { transition: none; }
 }
+
+/* ---------- HTML5 SDR client parity (feature/ui-live) ---------- */
+.meter-peakhold {
+  position: absolute; top: 0; bottom: 0; width: 2px;
+  background: #fff; opacity: .85; box-shadow: 0 0 4px rgba(255,255,255,.8);
+  transition: left 300ms ease;
+}
+.bookmark-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.bookmark-chip { font: 11px var(--mono); }
+.bookmark-chip.sat { border-color: var(--accent-dim); color: var(--accent); }
+.bookmark-chip.user { border-color: #5b4a1a; color: var(--warn); }
+.tune-hint { font-size: 11px; margin-top: 4px; }
+#spectrum, #waterfall { touch-action: manipulation; }

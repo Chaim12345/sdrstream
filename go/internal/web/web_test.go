@@ -687,3 +687,35 @@ func TestScanCaptureMetadataSurvivesReload(t *testing.T) {
 		t.Fatalf("capture metadata = %+v", got)
 	}
 }
+
+func TestTuneEndpoint(t *testing.T) {
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "")
+	s := &Server{}
+	// No monitor: tuning is not possible.
+	r := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/tune.json", strings.NewReader("frequency_hz=144400000"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://example.com")
+	s.Handler().ServeHTTP(r, req)
+	if r.Code != http.StatusNotFound {
+		t.Fatalf("no monitor: status %d", r.Code)
+	}
+	// With a monitor the tune is accepted and echoed.
+	s.SetMonitor(monitor.New(monitor.Options{Source: liveTestSource{}, Name: "test rx"}))
+	bad := httptest.NewRecorder()
+	s.Handler().ServeHTTP(bad, req)
+	if bad.Code != http.StatusOK {
+		t.Fatalf("tune with monitor: status %d", bad.Code)
+	}
+	if !strings.Contains(bad.Body.String(), `"tuned_hz": 144400000`) {
+		t.Fatalf("tune response: %s", bad.Body.String())
+	}
+	// Cross-origin posts are refused.
+	xr := httptest.NewRecorder()
+	xreq := httptest.NewRequest(http.MethodPost, "/api/tune.json", strings.NewReader("frequency_hz=144400000"))
+	xreq.Header.Set("Origin", "https://evil.example")
+	s.Handler().ServeHTTP(xr, xreq)
+	if xr.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin tune: status %d", xr.Code)
+	}
+}
