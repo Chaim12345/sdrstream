@@ -16,6 +16,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -53,6 +54,24 @@ func wer(ref, hyp []string) (errs, n int) {
 		}
 	}
 	return d[len(ref)][len(hyp)], len(ref)
+}
+
+// extList collects -ext name='command {wav}' flags: an external backend is
+// any command that takes a 16 kHz mono WAV path in place of {wav} and
+// prints the transcript on stdout (e.g. a script that calls NVIDIA NIM
+// Whisper or Parakeet; keys come from the environment, never the flag).
+type extList []string
+
+func (e *extList) String() string     { return strings.Join(*e, ";") }
+func (e *extList) Set(v string) error { *e = append(*e, v); return nil }
+
+func runExt(spec, wav string) string {
+	_, cmd, _ := strings.Cut(spec, "=")
+	out, err := exec.Command("sh", "-c", strings.ReplaceAll(cmd, "{wav}", wav)).Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
 }
 
 type biquad struct{ b0, b1, b2, a1, a2, x1, x2, y1, y2 float64 }
@@ -102,6 +121,8 @@ func main() {
 	snr := flag.Float64("snr", 10, "SNR in dB for the simulated radio channel")
 	gap := flag.Float64("gap", 3, "seconds of noise-only audio before and after the speech")
 	limit := flag.Int("n", 0, "use at most this many files (0 = all)")
+	var ext extList
+	flag.Var(&ext, "ext", "external backend name='command {wav}' (repeatable)")
 	flag.Parse()
 	files, _ := filepath.Glob(filepath.Join(*dir, "*.wav"))
 	sort.Strings(files)
@@ -148,6 +169,14 @@ func main() {
 			r, _ := voice.TranscribeASR(context.Background(), v.s, rate, asr)
 			e2, _ := wer(ref, normalise(r.Text))
 			add(v.name+"/asr", e2, n, time.Since(t0))
+			for _, spec := range ext {
+				name, _, _ := strings.Cut(spec, "=")
+				tmp := filepath.Join(os.TempDir(), "asreval-ext.wav")
+				_ = voice.WriteWAV(tmp, voice.Resample(v.s, rate, 16000), 16000)
+				t0 = time.Now()
+				e3, _ := wer(ref, normalise(runExt(spec, tmp)))
+				add(v.name+"/"+name, e3, n, time.Since(t0))
+			}
 			w := float64(e2) / float64(n)
 			if w <= 0.1 {
 				confOK = append(confOK, r.Confidence)
