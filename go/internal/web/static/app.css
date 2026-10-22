@@ -316,3 +316,17 @@ tr:hover td { background: var(--panel-2); }
 
 @media(max-width:899px){.mobile-scroll-cue{display:block;font-size:12px}.mainnav button:not([hidden]){flex:1 1 20%}}@media(min-width:900px){.mobile-scroll-cue{display:none}}
 .mainnav button[hidden] { display: none; }
+
+/* data sources health + band conditions */
+.src-status { font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: 1px; }
+.src-live { color: var(--good); }
+.src-stale { color: var(--warn); }
+.src-unreachable { color: var(--bad); }
+.src-restricted { color: var(--muted); }
+.src-needs-key { color: var(--accent); }
+.src-note { font-size: 12px; color: var(--muted); }
+.bc-chip { display: inline-block; border: 1px solid var(--accent-dim); border-radius: 8px; padding: 1px 6px; margin: 2px 2px 0 0; font: 11px var(--mono); }
+.bc-good { color: var(--good); }
+.bc-fair { color: var(--warn); }
+.bc-poor { color: var(--bad); }
+#band-conditions { font-size: 12px; margin: 4px 2px 8px; }

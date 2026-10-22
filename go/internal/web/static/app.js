@@ -561,7 +561,7 @@ async function refreshScans() {
       title.appendChild(b); title.appendChild(state);
       card.appendChild(title);
       const meta = document.createElement('div'); meta.className = 'card-meta';
-      meta.textContent = mhz(x.frequency_hz) + ' · ' + (x.mode || '—') + (x.result ? ' · ' + x.result : '');
+      meta.textContent = mhz(x.frequency_hz) + ' · ' + (x.mode || '—') + (x.band_condition ? ' · ' + x.band_condition + ' (advisory)' : '') + (x.result ? ' · ' + x.result : '');
       card.appendChild(meta);
       box.appendChild(card);
     });
@@ -748,11 +748,60 @@ function renderFeeds() {
  shown.slice(0,120).forEach(it=>{const c=document.createElement('div');c.className='card-activity feed-'+(it.kind||'data');const r=document.createElement('div');r.className='row';const label=document.createElement('span');label.className='freq';label.textContent=it.label;const badge=document.createElement('span');badge.className='badge feed-src';badge.textContent=it.source;const t=document.createElement('span');t.className='muted';t.textContent=relTime(it.time);r.append(label,badge,t);if(it.ref){const a=document.createElement('a');a.href=it.ref;a.target='_blank';a.rel='noopener';a.textContent='source';r.append(a)}c.appendChild(r);if(it.detail){const d=document.createElement('div');d.className='detail';d.textContent=it.detail;c.appendChild(d)}if(it.has_pos){const m=document.createElement('div');m.className='meta';m.textContent=it.lat.toFixed(3)+', '+it.lon.toFixed(3);c.appendChild(m)}list.appendChild(c)});
 }
 
+/* ---------- data source health (on demand) ---------- */
+let sourcesPollTimer = null;
+async function refreshSources(force) {
+  try {
+    const data = await fetchJSON('/api/sources.json' + (force ? '?refresh=1' : ''));
+    renderSources(data);
+    if (sourcesPollTimer) { clearTimeout(sourcesPollTimer); sourcesPollTimer = null; }
+    if (data.running) sourcesPollTimer = setTimeout(() => refreshSources(false), 3000);
+  } catch {}
+}
+function renderSources(data) {
+  const note = el('sources-note');
+  note.textContent = (data.running ? 'checking... ' : '') + (data.updated_at ? 'last check ' + relTime(data.updated_at) : '');
+  const list = el('sources-list'); list.textContent = '';
+  const results = data.results || [];
+  if (!results.length) { list.innerHTML = '<div class="empty">no health check yet - press check now</div>'; return; }
+  results.forEach(r => {
+    const card = document.createElement('div'); card.className = 'card';
+    const title = document.createElement('div'); title.className = 'card-title';
+    const name = document.createElement('b'); name.textContent = r.name;
+    const status = document.createElement('span'); status.className = 'src-status src-' + r.status; status.textContent = r.status;
+    const kind = document.createElement('span'); kind.className = 'muted'; kind.textContent = r.kind + ' · ' + (r.latency_ms || 0) + 'ms';
+    title.append(name, status, kind); card.appendChild(title);
+    const detail = [r.detail, r.note].filter(Boolean).join(' - ');
+    if (detail) { const d = document.createElement('div'); d.className = 'src-note'; d.textContent = detail; card.appendChild(d); }
+    list.appendChild(card);
+  });
+}
+
+/* ---------- advisory HF band conditions ---------- */
+async function refreshBandCond() {
+  try {
+    const data = await fetchJSON('/api/bandconditions.json');
+    const box = el('band-conditions'); box.textContent = '';
+    if (data.error && !(data.bands || []).length) { box.textContent = 'band conditions unavailable: ' + data.error; return; }
+    const head = document.createElement('span');
+    head.textContent = 'HF band conditions (advisory, from NOAA K-index): Kp ' + Number(data.kp).toFixed(1) + ' ' + (data.geomag || '') + (data.stale ? ' - stale data' : '') + ' ';
+    box.appendChild(head);
+    (data.bands || []).forEach(b => {
+      const chip = document.createElement('span');
+      chip.className = 'bc-chip bc-' + b.label;
+      chip.textContent = b.band + ' ' + b.label;
+      chip.title = b.note;
+      box.appendChild(chip);
+    });
+  } catch {}
+}
+
 /* ---------- boot ---------- */
 // Route the initial hash only now: the map module's state is declared below
 // the router, so an early #map route would hit the temporal dead zone.
 if (location.hash && el('view-' + location.hash.slice(1))) showView(location.hash.slice(1)); else showView('overview');
-refreshStatus(); refreshSats(); refreshGallery(); refreshStations(); refreshScans(); refreshActivity(); refreshFeeds();
+refreshStatus(); refreshSats(); refreshGallery(); refreshStations(); refreshScans(); refreshActivity(); refreshFeeds(); refreshSources(false); refreshBandCond();
+el('sources-refresh').onclick = () => refreshSources(true);
 setInterval(refreshStatus, 5000);
 setInterval(refreshActivity, 4000);
 setInterval(refreshFeeds, 15000);
@@ -761,3 +810,4 @@ setInterval(refreshScanLog, 1500);
 setInterval(refreshSpectrum, 1000);
 setInterval(refreshGallery, 60000);
 setInterval(refreshStations, 300000);
+setInterval(refreshBandCond, 900000);
