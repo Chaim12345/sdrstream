@@ -2,11 +2,13 @@ package voice
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/chaim12345/sdrstream/go/internal/decode"
@@ -261,4 +263,43 @@ func atoiOr(value string) int {
 		return 0
 	}
 	return number
+}
+
+// TestTranscribeSerialisesLocalWhisper pins the fleet-scan safety rule: a
+// large-v3 model is ~3 GB resident, so two receivers must never run whisper
+// at the same time. The fake binary records its start and end; the log must
+// alternate rather than interleave.
+func TestTranscribeSerialisesLocalWhisper(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "runs.log")
+	script := filepath.Join(dir, "fake-whisper")
+	body := fmt.Sprintf("#!/bin/sh\necho start >> %s\nsleep 0.15\necho end >> %s\necho hello\n", logPath, logPath)
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	model := filepath.Join(dir, "ggml-large-v3.bin")
+	if err := os.WriteFile(model, []byte("model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	options := Options{Binary: script, Model: model}
+	samples := make([]float64, 16000)
+	var wait sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			if _, err := Transcribe(context.Background(), samples, 16000, options); err != nil {
+				t.Errorf("Transcribe: %v", err)
+			}
+		}()
+	}
+	wait.Wait()
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(strings.Fields(string(data)), " ")
+	if got != "start end start end" {
+		t.Fatalf("whisper runs interleaved: %q", got)
+	}
 }

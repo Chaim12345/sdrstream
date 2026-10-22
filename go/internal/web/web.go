@@ -165,6 +165,9 @@ type Server struct {
 	cond              bandcond.Conditions
 	condAt            time.Time
 	condErr           string
+	// rdioHook, when set, receives every verified live artifact that has
+	// audio, so the fleet scan can feed an Rdio Scanner archive.
+	rdioHook func(monitor.Activity)
 	// healthAll and fetchConditions are seams for the tests.
 	healthAll       func(ctx context.Context, opts sources.Options) []sources.Result
 	fetchConditions func(ctx context.Context) (bandcond.Conditions, error)
@@ -617,8 +620,20 @@ func (s *Server) AddLiveArtifact(activity monitor.Activity, pngData []byte) erro
 	}
 	s.mu.Lock()
 	s.liveGallery = append([]LiveGalleryItem{item}, s.liveGallery...)
+	hook := s.rdioHook
 	s.mu.Unlock()
+	if hook != nil && activity.AudioPath != "" {
+		hook(activity)
+	}
 	return nil
+}
+
+// SetRdioHook installs the sink for verified live artifacts that carry
+// audio. The hook runs after the gallery write, outside the server lock.
+func (s *Server) SetRdioHook(hook func(monitor.Activity)) {
+	s.mu.Lock()
+	s.rdioHook = hook
+	s.mu.Unlock()
 }
 
 func (s *Server) handleLiveAudio(w http.ResponseWriter, r *http.Request) {

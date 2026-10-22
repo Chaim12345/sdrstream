@@ -39,6 +39,7 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/military"
 	"github.com/chaim12345/sdrstream/go/internal/monitor"
 	"github.com/chaim12345/sdrstream/go/internal/openwebrx"
+	"github.com/chaim12345/sdrstream/go/internal/rdio"
 	"github.com/chaim12345/sdrstream/go/internal/relays"
 	"github.com/chaim12345/sdrstream/go/internal/satellite"
 	"github.com/chaim12345/sdrstream/go/internal/satellites"
@@ -808,6 +809,25 @@ func monitorNIMOptions() voice.NIMOptions {
 	return voice.DefaultNIMOptions()
 }
 
+// rdioCallFor maps a decoded activity onto an Rdio Scanner call: the
+// frequency is the talkgroup, the kind is the group and the decoder output
+// or transcript becomes the tag shown in the archive.
+func rdioCallFor(activity monitor.Activity, system string) rdio.Call {
+	tag := activity.Detail
+	if len(tag) > 160 {
+		tag = tag[:160]
+	}
+	return rdio.Call{
+		AudioPath:      activity.AudioPath,
+		Timestamp:      activity.Started,
+		FrequencyHz:    activity.FrequencyHz,
+		SystemLabel:    system,
+		TalkgroupLabel: fmt.Sprintf("%.4f MHz %s", activity.FrequencyHz/1e6, activity.Kind),
+		TalkgroupGroup: activity.Kind,
+		TalkgroupTag:   tag,
+	}
+}
+
 func monitorVoiceOptions(language string, threads, beam int, prompt string) voice.Options {
 	if prompt == "" {
 		prompt = "Radio traffic. Callsign, over, roger, copy, QSO, CQ, frequency, signal report, antenna, transponder, runway, tower, ground, approach, contact, squawk, wind, heading, cleared."
@@ -841,11 +861,18 @@ func cmdMonitor(args []string) error {
 	voiceBeam := fs.Int("voice-beam", 5, "beam-search width for whisper.cpp (1 = greedy)")
 	voicePrompt := fs.String("voice-prompt", "", "domain hint for whisper.cpp (radio phraseology, callsigns); empty = built-in radio prompt")
 	label := fs.String("label", "", "programme or station label carried on activities and gallery entries (e.g. the broadcast station heard)")
+	rdioURL := fs.String("rdio", "", "upload each decoded transmission to an Rdio Scanner server (e.g. http://127.0.0.1:3000)")
+	rdioKey := fs.String("rdio-key", "", "Rdio Scanner API key (a key with '*' systems accepts any talkgroup)")
+	rdioSystem := fs.String("rdio-system", "", "system label shown in Rdio Scanner (default: the receiver URL)")
 	out := fs.String("out", "", "directory to save the recorded transmissions")
 	minutes := fs.Float64("minutes", 0, "stop after this many minutes (0 = run until interrupted)")
 	fs.Parse(args)
 	if *server == "" {
 		return fmt.Errorf("--server is required")
+	}
+	// An Rdio upload needs the WAV on disk, so a target implies captures.
+	if *rdioURL != "" && *out == "" {
+		*out = filepath.Join("captures", "rdio")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -857,6 +884,13 @@ func cmdMonitor(args []string) error {
 		return err
 	}
 	defer source.Close()
+
+	rdioQueue := rdio.NewQueue(rdio.Options{
+		BaseURL:     *rdioURL,
+		APIKey:      *rdioKey,
+		SystemLabel: *rdioSystem,
+	}, func(format string, args ...interface{}) { fmt.Printf(format+"\n", args...) })
+	defer rdioQueue.Close()
 
 	instance := monitor.New(monitor.Options{
 		Source:          source,
@@ -889,6 +923,9 @@ func cmdMonitor(args []string) error {
 			if activity.Detail != "" {
 				fmt.Printf("    %s\n", activity.Detail)
 			}
+			if activity.AudioPath != "" && activity.Kind != "noise" && activity.Kind != "silence" {
+				rdioQueue.Enqueue(rdioCallFor(activity, *rdioSystem))
+			}
 		},
 	})
 	if *out != "" {
@@ -900,6 +937,10 @@ func cmdMonitor(args []string) error {
 		*server, *kind, *threshold, *listen, *voiceOn)
 	if !voice.Available(monitorVoiceOptions(*voiceLang, *voiceThreads, *voiceBeam, *voicePrompt)) && !voice.NIMAvailable(monitorNIMOptions()) {
 		fmt.Println("note: no speech backend found; voice traffic is reported but not transcribed")
+	} else if voice.NIMAvailable(monitorNIMOptions()) {
+		fmt.Println("speech backend: NVIDIA NIM (hosted), local whisper.cpp as fallback")
+	} else {
+		fmt.Println("speech backend: local whisper.cpp (set SDRSTREAM_NIM_API_KEY or NVIDIA_API_KEY to prefer hosted NIM)")
 	}
 	if *minutes > 0 {
 		go func() {
@@ -1451,6 +1492,9 @@ func cmdWeb(args []string) error {
 	monitorVoiceBeam := fs.Int("monitor-voice-beam", 5, "beam-search width for whisper.cpp")
 	monitorVoicePrompt := fs.String("monitor-voice-prompt", "", "domain hint for whisper.cpp")
 	monitorOut := fs.String("monitor-out", "", "directory to save the recorded transmissions")
+	rdioURL := fs.String("rdio", "", "upload verified live captures to an Rdio Scanner server (e.g. http://127.0.0.1:3000)")
+	rdioKey := fs.String("rdio-key", "", "Rdio Scanner API key")
+	rdioSystem := fs.String("rdio-system", "sdrstream", "system label shown in Rdio Scanner")
 	monitorMultimon := fs.String("monitor-multimon", "", "optional local multimon-ng executable (receive-only decode fallback)")
 	monitorDirewolf := fs.String("monitor-direwolf", "", "optional local Dire Wolf executable (receive-only APRS fallback)")
 	sstvImageHelp := fs.String("sstv-image-format-help", "write decoded SSTV image (Martin M1/M2, Scottie S1, Robot 36) as PNG", "help text for SSTV image decoder")
@@ -1483,6 +1527,18 @@ func cmdWeb(args []string) error {
 	}
 	server := web.New(*capturesDir, *galleryDir)
 	server.NoAuth = *noAuth
+	rdioQueue := rdio.NewQueue(rdio.Options{
+		BaseURL:     *rdioURL,
+		APIKey:      *rdioKey,
+		SystemLabel: *rdioSystem,
+	}, func(format string, args ...interface{}) { log.Printf("rdio: "+format, args...) })
+	defer rdioQueue.Close()
+	if *rdioURL != "" {
+		server.SetRdioHook(func(activity monitor.Activity) {
+			rdioQueue.Enqueue(rdioCallFor(activity, *rdioSystem))
+		})
+		log.Printf("rdio: uploading verified live captures to %s", *rdioURL)
+	}
 	if !*noFeeds {
 		feedsManager := feeds.New(0, nil)
 		server.SetFeeds(feedsManager)

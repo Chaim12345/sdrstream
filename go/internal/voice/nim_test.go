@@ -193,6 +193,18 @@ func TestTranscribeBestForcedBackend(t *testing.T) {
 	}
 }
 
+func TestDefaultNIMOptionsFallsBackToNVIDIAKey(t *testing.T) {
+	t.Setenv("SDRSTREAM_NIM_API_KEY", "")
+	t.Setenv("NVIDIA_API_KEY", "nvidia-key")
+	if got := DefaultNIMOptions().APIKey; got != "nvidia-key" {
+		t.Errorf("APIKey = %q, want NVIDIA_API_KEY fallback", got)
+	}
+	t.Setenv("SDRSTREAM_NIM_API_KEY", "project-key")
+	if got := DefaultNIMOptions().APIKey; got != "project-key" {
+		t.Errorf("APIKey = %q, want SDRSTREAM_NIM_API_KEY to win", got)
+	}
+}
+
 func TestDefaultNIMOptions(t *testing.T) {
 	t.Setenv("SDRSTREAM_NIM_API_KEY", "k")
 	t.Setenv("SDRSTREAM_NIM_ENDPOINT", "")

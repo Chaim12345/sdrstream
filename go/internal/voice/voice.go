@@ -199,11 +199,24 @@ func Available(options Options) bool {
 	return FindBinary(options) != "" && FindModel(options) != ""
 }
 
+// transcribeSlot serialises local whisper.cpp runs. A large-v3 model is
+// ~3 GB resident, and a fleet scan can hear voice on dozens of receivers at
+// once; one stream is the design's hard limit.
+var transcribeSlot = make(chan struct{}, 1)
+
 // Transcribe recognises speech in the samples.
 func Transcribe(ctx context.Context, samples []float64, rate int, options Options) (Transcript, error) {
 	transcript := Transcript{Seconds: float64(len(samples)) / float64(rate)}
 	if len(samples) < rate/10 {
 		return transcript, fmt.Errorf("voice: too short to transcribe")
+	}
+	// Wait for the single whisper slot before doing any work: resampling
+	// and writing a temp file per waiting caller would only add pressure.
+	select {
+	case transcribeSlot <- struct{}{}:
+		defer func() { <-transcribeSlot }()
+	case <-ctx.Done():
+		return transcript, ctx.Err()
 	}
 	binary := FindBinary(options)
 	model := FindModel(options)

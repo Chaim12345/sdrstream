@@ -79,7 +79,9 @@ type NIMOptions struct {
 
 // DefaultNIMOptions reads the backend configuration from the environment:
 //
-//	SDRSTREAM_NIM_API_KEY      NVIDIA API catalog key (required to enable)
+//	SDRSTREAM_NIM_API_KEY      NVIDIA API catalog key (preferred name)
+//	NVIDIA_API_KEY             the key name the NVIDIA CLI/docs use; used
+//	                           when SDRSTREAM_NIM_API_KEY is not set
 //	SDRSTREAM_NIM_ENDPOINT     default grpc.nvcf.nvidia.com:443
 //	SDRSTREAM_NIM_MODEL        whisper-large-v3 (default), parakeet or canary
 //	SDRSTREAM_NIM_FUNCTION_ID  explicit function id, overrides the model name
@@ -90,11 +92,23 @@ func DefaultNIMOptions() NIMOptions {
 		fn = id
 	}
 	return NIMOptions{
-		APIKey:       os.Getenv("SDRSTREAM_NIM_API_KEY"),
+		APIKey:       nimAPIKey(),
 		Endpoint:     envOr("SDRSTREAM_NIM_ENDPOINT", DefaultNIMEndpoint),
 		FunctionID:   envOr("SDRSTREAM_NIM_FUNCTION_ID", fn),
 		LanguageCode: envOr("SDRSTREAM_NIM_LANG", DefaultNIMLanguage),
 	}
+}
+
+// nimAPIKey accepts both the project's variable and NVIDIA's own
+// NVIDIA_API_KEY, so a key exported for the NVIDIA CLI enables the hosted
+// backend without a second export.
+func nimAPIKey() string {
+	for _, name := range []string{"SDRSTREAM_NIM_API_KEY", "NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"} {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // NIMModelFunctionID maps a model preset name to its catalog function id.

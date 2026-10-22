@@ -773,3 +773,30 @@ func TestTuneEndpoint(t *testing.T) {
 		t.Fatalf("cross-origin tune: status %d", xr.Code)
 	}
 }
+
+func TestAddLiveArtifactFeedsRdioOnlyWhenAudioExists(t *testing.T) {
+	dir := t.TempDir()
+	s := &Server{galleryDir: dir}
+	audio := filepath.Join(t.TempDir(), "capture.wav")
+	if err := os.WriteFile(audio, []byte("RIFF....WAVE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var hooked []monitor.Activity
+	s.SetRdioHook(func(activity monitor.Activity) { hooked = append(hooked, activity) })
+
+	withAudio := monitor.Activity{ID: 7, Started: time.Now().UTC(), FrequencyHz: 119800000, Source: "receiver", Mode: "speech", Kind: "voice", Detail: "tower this is november eight seven two zero cleared to land runway two seven wind two six zero at eight", AudioPath: audio}
+	if err := s.AddLiveArtifact(withAudio, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(hooked) != 1 || hooked[0].AudioPath != audio {
+		t.Fatalf("rdio hook = %+v, want one call with audio", hooked)
+	}
+
+	noAudio := monitor.Activity{ID: 8, Started: time.Now().UTC(), FrequencyHz: 14074000, Source: "receiver", Mode: "aprs", Kind: "data", Detail: "M0XXX>APZSAT-0:>test payload"}
+	if err := s.AddLiveArtifact(noAudio, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(hooked) != 1 {
+		t.Fatalf("rdio hook called without audio: %+v", hooked)
+	}
+}
