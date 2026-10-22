@@ -1173,12 +1173,33 @@ async function refreshFeeds() { try { feedsSnapshot = await fetchJSON('/api/feed
 function renderFeeds() {
  if (!feedsSnapshot) return;
  const sources = feedsSnapshot.sources || [], items = feedsSnapshot.items || [], box = el('feeds-sources'); box.textContent='';
+ renderPublicPanels(sources);
  const chip=(label,value,state,count)=>{const b=document.createElement('button');b.className='chip'+(feedsSourceFilter===value?' on':'');b.textContent=label+(count?' '+count:'');if(state)b.dataset.state=state;b.onclick=()=>{feedsSourceFilter=value;renderFeeds()};box.appendChild(b)};
  chip('all','', '',items.length); sources.forEach(s=>chip(s.name,s.name,s.state,s.items));
- const note=el('feeds-note'); note.textContent='updated '+relTime(feedsSnapshot.updated_at)+sources.filter(s=>s.state==='disabled'||s.state==='error').map(s=>' · '+s.name+': '+(s.detail||s.state)).join('');
+ const note=el('feeds-note'); note.textContent='updated '+relTime(feedsSnapshot.updated_at)+sources.filter(s=>s.state==='disabled'||s.state==='error').map(s=>' · '+s.name+': '+(s.last_error||s.detail||s.state)).join('');
  const list=el('feeds-list'); list.textContent=''; const shown=items.filter(i=>!feedsSourceFilter||i.source===feedsSourceFilter);
  if(!shown.length){list.innerHTML='<div class="empty">no live data yet - feeds are connecting</div>';return}
- shown.slice(0,120).forEach(it=>{const c=document.createElement('div');c.className='card-activity feed-'+(it.kind||'data');const r=document.createElement('div');r.className='row';const label=document.createElement('span');label.className='freq';label.textContent=it.label;const badge=document.createElement('span');badge.className='badge feed-src';badge.textContent=it.source;const t=document.createElement('span');t.className='muted';t.textContent=relTime(it.time);r.append(label,badge,t);if(it.ref){const a=document.createElement('a');a.href=it.ref;a.target='_blank';a.rel='noopener';a.textContent='source';r.append(a)}c.appendChild(r);if(it.detail){const d=document.createElement('div');d.className='detail';d.textContent=it.detail;c.appendChild(d)}if(it.has_pos){const m=document.createElement('div');m.className='meta';m.textContent=it.lat.toFixed(3)+', '+it.lon.toFixed(3);c.appendChild(m)}list.appendChild(c)});
+ shown.slice(0,120).forEach(it=>{const c=document.createElement('div');c.className='card-activity feed-'+(it.kind||'data');const r=document.createElement('div');r.className='row';const label=document.createElement('span');label.className='freq';label.textContent=it.label;const badge=document.createElement('span');badge.className='badge feed-src';badge.textContent=it.source;const t=document.createElement('span');t.className='muted';t.textContent=relTime(it.time);r.append(label,badge,t);if(it.ref){const a=document.createElement('a');a.href=safeURL(it.ref);a.target='_blank';a.rel='noopener noreferrer';a.textContent='source';r.append(a)}c.appendChild(r);if(it.detail){const d=document.createElement('div');d.className='detail';d.textContent=it.detail;c.appendChild(d)}if(it.has_pos){const m=document.createElement('div');m.className='meta';m.textContent=it.lat.toFixed(3)+', '+it.lon.toFixed(3);c.appendChild(m)}list.appendChild(c)});
+}
+
+function renderPublicPanels(sources) {
+ const container=el('public-feed-panels'); container.textContent='';
+ const names={'noaa-swpc':'Space weather','wspr.live':'WSPR spots','sondehub':'Radiosondes','digitraffic':'Baltic vessels','adsb.lol':'Nearby aircraft'};
+ const maxAge={'noaa-swpc':12*3600,'wspr.live':30*60,'sondehub':2*3600,'digitraffic':30*60,'adsb.lol':120};
+ Object.entries(names).forEach(([id,title])=>{
+  const source=sources.find(s=>s.name===id), card=document.createElement('article');card.className='panel public-feed-panel';card.dataset.source=id;
+  const head=document.createElement('div');head.className='panel-head';const h=document.createElement('h2');h.textContent=title;
+  const badge=document.createElement('span');badge.className='badge';
+  const samples=(source?.samples||[]).filter(i=>Date.now()-new Date(i.time).getTime()<=maxAge[id]*1000);
+  badge.textContent=!source?'not started':source.state==='live'&&!samples.length?'no recent observations':source.state;badge.dataset.state=source?.state||'disabled';head.append(h,badge);card.append(head);
+  const meta=document.createElement('p');meta.className='muted';meta.textContent=source ? (source.last_ok&&!source.last_ok.startsWith('0001')?'Fetched '+relTime(source.last_ok):'Waiting for first fetch')+(source.refresh_seconds?' · cache '+source.refresh_seconds+'s':' · streaming')+' · '+source.items+' cached observations' : 'Feed is disabled or not attached to this server';card.append(meta);
+  if(source?.detail){const d=document.createElement('p');d.className='muted';d.textContent=source.detail;card.append(d)}
+  if(source?.last_error){const err=document.createElement('p');err.className='feed-error';err.textContent=source.last_error+' · showing last good observations where available';card.append(err)}
+  samples.slice(0,3).forEach(it=>{const row=document.createElement('div');row.className='public-feed-sample';const name=document.createElement('b');name.textContent=it.label;const detail=document.createElement('div');detail.textContent=it.detail||'';const time=document.createElement('small');time.className='muted';time.textContent='Observed '+fmtDate(it.time)+' · '+relTime(it.time)+(it.has_pos?' · '+it.lat.toFixed(3)+', '+it.lon.toFixed(3):'');row.append(name,detail,time);card.append(row)});
+  if(!samples.length){const empty=document.createElement('p');empty.className='muted';empty.textContent='No recent observations in the cache. Empty results do not mean there is no activity.';card.append(empty)}
+  if(source?.detail_url){const credit=document.createElement('div');credit.className='public-feed-credit';credit.append(link(source.detail_url,source.attribution||id));card.append(credit)}
+  container.append(card);
+ });
 }
 
 /* ---------- data source health (on demand) ---------- */

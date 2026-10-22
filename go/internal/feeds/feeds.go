@@ -7,6 +7,7 @@ package feeds
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sort"
 	"sync"
@@ -53,13 +54,17 @@ type Poller interface {
 
 // SourceStatus reports one feed's health for the UI.
 type SourceStatus struct {
-	Name      string    `json:"name"`
-	Kind      string    `json:"kind"`
-	State     string    `json:"state"` // live, connecting, error, disabled
-	Detail    string    `json:"detail,omitempty"`
-	Items     int       `json:"items"`
-	LastOK    time.Time `json:"last_ok,omitempty"`
-	LastError string    `json:"last_error,omitempty"`
+	Name           string    `json:"name"`
+	Kind           string    `json:"kind"`
+	State          string    `json:"state"` // live, connecting, error, disabled
+	Detail         string    `json:"detail,omitempty"`
+	Items          int       `json:"items"`
+	LastOK         time.Time `json:"last_ok,omitempty"`
+	LastError      string    `json:"last_error,omitempty"`
+	RefreshSeconds int       `json:"refresh_seconds,omitempty"`
+	Samples        []Item    `json:"samples,omitempty"`
+	DetailURL      string    `json:"detail_url,omitempty"`
+	Attribution    string    `json:"attribution,omitempty"`
 }
 
 // Snapshot is the API payload for /api/feeds.json.
@@ -99,6 +104,11 @@ func (m *Manager) source(name, kind string, maxAge time.Duration) *sourceState {
 	st, ok := m.sources[name]
 	if !ok {
 		st = &sourceState{status: SourceStatus{Name: name, Kind: kind, State: "connecting"}, maxAge: maxAge}
+		if name == "sondehub" {
+			st.status.Attribution = "SondeHub contributors · CC BY-SA 2.0 · latest per sonde"
+			st.status.DetailURL = "https://sondehub.org/"
+			st.status.Detail = "One bootstrap fetch, then live MQTT/WebSocket updates"
+		}
 		m.sources[name] = st
 	}
 	return st
@@ -123,6 +133,7 @@ func (m *Manager) setState(name, state, errText string) {
 	}
 	if state == "live" {
 		st.status.LastOK = time.Now()
+		st.status.LastError = ""
 	}
 }
 
@@ -185,7 +196,17 @@ func (m *Manager) Snapshot(maxItems int) Snapshot {
 	defer m.mu.Unlock()
 	snap := Snapshot{UpdatedAt: time.Now()}
 	for _, st := range m.sources {
-		snap.Sources = append(snap.Sources, st.status)
+		status := st.status
+		for _, it := range m.items {
+			if it.Source == status.Name {
+				status.Samples = append(status.Samples, *it)
+			}
+		}
+		sort.Slice(status.Samples, func(i, j int) bool { return status.Samples[i].Time.After(status.Samples[j].Time) })
+		if len(status.Samples) > 4 {
+			status.Samples = status.Samples[:4]
+		}
+		snap.Sources = append(snap.Sources, status)
 	}
 	sort.Slice(snap.Sources, func(i, j int) bool { return snap.Sources[i].Name < snap.Sources[j].Name })
 	items := make([]Item, 0, len(m.items))
@@ -293,7 +314,28 @@ func (m *Manager) RunStream(ctx context.Context, s StreamSource, maxAge time.Dur
 // RunPoller supervises one polled source on its own interval.
 func (m *Manager) RunPoller(ctx context.Context, p Poller, maxAge time.Duration) {
 	m.mu.Lock()
-	m.source(p.Name(), p.Kind(), maxAge)
+	st := m.source(p.Name(), p.Kind(), maxAge)
+	st.status.RefreshSeconds = int(p.Interval() / time.Second)
+	switch p.Name() {
+	case "noaa-swpc":
+		st.status.Attribution = "NOAA SWPC · US government data"
+		st.status.DetailURL = "https://www.swpc.noaa.gov/"
+	case "wspr.live":
+		st.status.Attribution = "wspr.live / WSPR contributors · public query results"
+		st.status.DetailURL = "https://wspr.live/"
+	case "sondehub":
+		st.status.Attribution = "SondeHub contributors · CC BY-SA 2.0 · latest per sonde"
+		st.status.DetailURL = "https://sondehub.org/"
+	case "digitraffic":
+		st.status.Attribution = "Fintraffic / Digitraffic · CC BY 4.0 · Baltic coverage"
+		st.status.DetailURL = "https://www.digitraffic.fi/en/marine-traffic/"
+	case "adsb.lol":
+		st.status.Attribution = "adsb.lol contributors · ODbL"
+		st.status.DetailURL = "https://adsb.lol/"
+		if a, ok := p.(*ADSB); ok {
+			st.status.Detail = fmt.Sprintf("Centre %.4f, %.4f · %.0f nm · configure --feeds-lat / --feeds-lon", a.Lat, a.Lon, a.Radius)
+		}
+	}
 	m.mu.Unlock()
 	poll := func() {
 		items, err := p.Poll(ctx)
@@ -314,8 +356,16 @@ func (m *Manager) RunPoller(ctx context.Context, p Poller, maxAge time.Duration)
 				items[i].Kind = p.Kind()
 			}
 		}
+		// Successful polls replace this source cache. Failures keep the last good
+		// observations, visibly marked as error, until normal age pruning.
+		for id, it := range m.items {
+			if it.Source == p.Name() {
+				delete(m.items, id)
+			}
+		}
 		m.setState(p.Name(), "live", "")
 		m.mu2Add(items)
+		m.sources[p.Name()].status.Items = countFor(m.items, p.Name())
 	}
 	poll()
 	tick := time.NewTicker(p.Interval())
