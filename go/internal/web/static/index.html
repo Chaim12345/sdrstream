@@ -70,6 +70,7 @@
       <div class="meter" role="meter" aria-label="Signal level above the noise floor" aria-valuemin="0" aria-valuemax="60" id="signal-meter">
         <div class="meter-fill" id="meter-fill"></div>
         <div class="meter-threshold" id="meter-threshold" title="Detection threshold"></div>
+        <div class="meter-peakhold" id="meter-peakhold" title="Peak hold"></div>
       </div>
       <div class="meter-scale"><span>floor</span><span id="meter-threshold-label">+8 dB</span><span>+60 dB</span></div>
       <div class="meter-readout">
@@ -78,6 +79,10 @@
         <span class="muted">floor <b class="mono" id="signal-floor">--</b> dB</span>
         <span class="muted meter-sep">·</span>
         <span class="muted">peak <b class="mono" id="signal-peak">--</b> dB</span>
+        <span class="muted meter-sep">·</span>
+        <span class="muted">signal <b class="mono" id="signal-sunit">--</b> <span title="S-unit estimate from the receiver-calibrated level">est.</span></span>
+        <span class="muted meter-sep">·</span>
+        <span class="muted">tuned <b class="mono" id="tuned-freq">--</b></span>
       </div>
       <div class="onair-list" id="onair-list"><span class="muted">no signal over the threshold right now</span></div>
     </div>
@@ -111,10 +116,15 @@
       <div class="rx-grid" id="rx-grid"><div class="empty">connecting&hellip;</div></div>
     </div>
     <div class="panel">
-      <h2>Spectrum</h2>
+      <div class="panel-head">
+        <h2>Spectrum</h2>
+        <button class="linklike" id="bookmark-add" title="Bookmark the tuned frequency">+ bookmark</button>
+      </div>
       <canvas id="spectrum" height="120" role="img" aria-label="Live spectrum of the monitored receiver"></canvas>
       <canvas id="waterfall" height="160" role="img" aria-label="Scrolling waterfall of recent spectrum history"></canvas>
       <div class="axis"><span id="spec-lo">—</span><span id="spec-mid">—</span><span id="spec-hi">—</span></div>
+      <div class="bookmark-bar" id="bookmark-bar"></div>
+      <div class="muted tune-hint">click the spectrum or waterfall to listen at that frequency</div>
     </div>
     <div class="panel">
       <div class="panel-head">

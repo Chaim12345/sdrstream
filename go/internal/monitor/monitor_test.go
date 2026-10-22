@@ -496,3 +496,35 @@ func TestLiveSnapshotWithoutSpectrum(t *testing.T) {
 		t.Fatalf("no-spectrum source must report no peaks: %+v", info)
 	}
 }
+
+func TestRequestListenTunesAndQueues(t *testing.T) {
+	m := New(Options{Source: &fakeSource{}, Strategy: "spectrum", Listen: time.Second})
+	if !m.RequestListen(144.4e6, "") {
+		t.Fatal("first request should queue")
+	}
+	select {
+	case work := <-m.jobs:
+		if work.frequency != 144.4e6 {
+			t.Fatalf("job frequency = %v", work.frequency)
+		}
+	default:
+		t.Fatal("no job queued")
+	}
+	if got := m.Live().TunedHz; got != 144.4e6 {
+		t.Fatalf("tuned_hz = %v, want 144.4 MHz", got)
+	}
+	acts := m.Activities()
+	if len(acts) == 0 || acts[0].FrequencyHz != 144.4e6 {
+		t.Fatalf("tune should log an activity: %+v", acts)
+	}
+}
+
+func TestRequestListenWithoutRecordingStillTunes(t *testing.T) {
+	m := New(Options{Source: &fakeSource{}, Strategy: "sweep"})
+	if m.RequestListen(50e6, "") {
+		t.Fatal("no listen configured: nothing to queue")
+	}
+	if got := m.Live().TunedHz; got != 50e6 {
+		t.Fatalf("tuned_hz = %v, want 50 MHz", got)
+	}
+}

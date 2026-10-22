@@ -135,6 +135,7 @@ type Monitor struct {
 	centreHz   float64
 	spanHz     float64
 	spectrumOK bool
+	tunedHz    float64
 	bc         broadcastState
 }
 
@@ -223,6 +224,7 @@ type LiveInfo struct {
 	ThresholdDB  float64     `json:"threshold_db"`
 	Mode         string      `json:"mode,omitempty"`
 	StepHz       float64     `json:"step_hz,omitempty"`
+	TunedHz      float64     `json:"tuned_hz,omitempty"`
 	OnAir        []OnAirPeak `json:"on_air"`
 	UpdatedAt    time.Time   `json:"updated_at"`
 }
@@ -233,11 +235,12 @@ func (m *Monitor) Live() LiveInfo {
 	m.mu.Lock()
 	bins := append([]float64(nil), m.spectrum...)
 	centre, span, ok := m.centreHz, m.spanHz, m.spectrumOK
+	tuned := m.tunedHz
 	m.mu.Unlock()
 	info := LiveInfo{
 		Name: m.opts.Name, Label: m.opts.Label, Strategy: m.opts.Strategy,
 		SpectrumOK: ok, CentreHz: centre, SpanHz: span,
-		ThresholdDB: m.thresholdDB(), Mode: m.listenMode(), StepHz: m.dialStepHz(), UpdatedAt: time.Now(),
+		ThresholdDB: m.thresholdDB(), Mode: m.listenMode(), StepHz: m.dialStepHz(), TunedHz: tuned, UpdatedAt: time.Now(),
 		OnAir: []OnAirPeak{},
 	}
 	if !ok || len(bins) == 0 {
@@ -251,6 +254,42 @@ func (m *Monitor) Live() LiveInfo {
 		info.OnAir = append(info.OnAir, OnAirPeak{FrequencyHz: p.frequency, BandwidthHz: p.bandwidth, LevelDB: p.levelDB})
 	}
 	return info
+}
+
+// RequestListen parks the monitor on a frequency the user clicked in the
+// web waterfall and queues an immediate listen there, ahead of whatever
+// the detector would find on its own. The tuned frequency shows up in
+// Live snapshots as tuned_hz. queued is false when the worker is busy or
+// listening is disabled; the tuned marker still moves.
+func (m *Monitor) RequestListen(hz float64, mode string) (queued bool) {
+	if hz <= 0 {
+		return false
+	}
+	m.mu.Lock()
+	m.tunedHz = hz
+	m.nextID++
+	activity := Activity{
+		ID: m.nextID, Started: time.Now(), FrequencyHz: hz,
+		BandwidthHz: 12500, Kind: "unknown",
+		Source: m.opts.Name, Label: m.opts.Label,
+	}
+	m.activities = append(m.activities, activity)
+	if len(m.activities) > 200 {
+		m.activities = m.activities[len(m.activities)-200:]
+	}
+	m.mu.Unlock()
+	if m.opts.Listen <= 0 {
+		return false
+	}
+	if mode == "" {
+		mode = ChooseMode(m.opts.Mode, activity.BandwidthHz)
+	}
+	select {
+	case m.jobs <- job{frequency: hz, bandwidth: activity.BandwidthHz, modes: []string{mode}, activityID: activity.ID}:
+		return true
+	default:
+		return false
+	}
 }
 
 // Run watches the source until the context is cancelled.
