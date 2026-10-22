@@ -17,7 +17,30 @@ import (
 
 	"github.com/chaim12345/sdrstream/go/internal/decode"
 	"github.com/chaim12345/sdrstream/go/internal/kiwisdr"
+	"github.com/chaim12345/sdrstream/go/internal/websdr"
 )
+
+// recorder is one tuned live audio source.
+type recorder interface {
+	Tune(freqHz int64, mode string) error
+	Record(dur time.Duration) ([]int16, int, error)
+}
+
+type kiwiRec struct{ c *kiwisdr.Client }
+
+func (k kiwiRec) Tune(f int64, m string) error { return k.c.Tune(context.Background(), f, m) }
+func (k kiwiRec) Record(d time.Duration) ([]int16, int, error) {
+	return k.c.Record(context.Background(), d)
+}
+
+type webRec struct{ c *websdr.Client }
+
+func (w webRec) Tune(f int64, m string) error {
+	return w.c.Tune(context.Background(), float64(f)/1000, m, nil)
+}
+func (w webRec) Record(d time.Duration) ([]int16, int, error) {
+	return w.c.Record(context.Background(), d)
+}
 
 func writeWAV(path string, samples []int16, rate int) error {
 	f, err := os.Create(path)
@@ -44,7 +67,7 @@ func writeWAV(path string, samples []int16, rate int) error {
 // recordAligned waits until lead seconds before the next multiple of
 // slotSecs, then records for dur, returning samples with the exact UTC
 // time of the first sample.
-func recordAligned(ctx context.Context, c *kiwisdr.Client, slotSecs int64, lead time.Duration, dur time.Duration) ([]int16, int, time.Time, error) {
+func recordAligned(ctx context.Context, c recorder, slotSecs int64, lead time.Duration, dur time.Duration) ([]int16, int, time.Time, error) {
 	now := time.Now().UTC()
 	next := now.Truncate(time.Duration(slotSecs) * time.Second).Add(time.Duration(slotSecs) * time.Second)
 	wait := time.Until(next.Add(-lead))
@@ -57,12 +80,13 @@ func recordAligned(ctx context.Context, c *kiwisdr.Client, slotSecs int64, lead 
 		}
 	}
 	start := time.Now().UTC()
-	samples, rate, err := c.Record(ctx, dur)
+	samples, rate, err := c.Record(dur)
 	return samples, rate, start, err
 }
 
 func main() {
-	server := flag.String("server", "", "KiwiSDR host[:port] or URL")
+	server := flag.String("server", "", "receiver host[:port] or URL")
+	kind := flag.String("kind", "kiwisdr", "kiwisdr|websdr")
 	out := flag.String("out", "", "directory to save the capture WAVs (default: none)")
 	band := flag.String("band", "20m", "20m|40m preset for default frequencies")
 	ft8Freq := flag.Float64("ft8", 0, "FT8 dial kHz (default per band)")
@@ -107,15 +131,30 @@ func main() {
 	}
 
 	ctx := context.Background()
-	client, err := kiwisdr.New(*server, kiwisdr.DefaultOptions())
-	if err != nil {
-		log.Fatalf("new: %v", err)
+	var rec recorder
+	if *kind == "websdr" {
+		c, err := websdr.New(*server, websdr.DefaultOptions())
+		if err != nil {
+			log.Fatalf("new: %v", err)
+		}
+		if err := c.Connect(ctx); err != nil {
+			log.Fatalf("connect: %v", err)
+		}
+		defer c.Close()
+		rec = webRec{c}
+		fmt.Printf("connected to WebSDR %s\n", *server)
+	} else {
+		c, err := kiwisdr.New(*server, kiwisdr.DefaultOptions())
+		if err != nil {
+			log.Fatalf("new: %v", err)
+		}
+		if err := c.Connect(ctx); err != nil {
+			log.Fatalf("connect: %v", err)
+		}
+		defer c.Close()
+		rec = kiwiRec{c}
+		fmt.Printf("connected to KiwiSDR %s (%+v)\n", *server, c.InfoSnapshot())
 	}
-	if err := client.Connect(ctx); err != nil {
-		log.Fatalf("connect: %v", err)
-	}
-	defer client.Close()
-	fmt.Printf("connected to %s (%+v)\n", *server, client.InfoSnapshot())
 
 	if *out != "" {
 		if err := os.MkdirAll(*out, 0o755); err != nil {
@@ -125,10 +164,10 @@ func main() {
 
 	if !skipped["ft8"] {
 		fmt.Printf("\n== FT8: %.3f MHz USB, one full 15 s cycle ==\n", *ft8Freq/1000)
-		if err := client.Tune(ctx, int64(*ft8Freq*1000), "usb"); err != nil {
+		if err := rec.Tune(int64(*ft8Freq*1000), "usb"); err != nil {
 			log.Printf("tune: %v", err)
 		} else {
-			samples, rate, start, err := recordAligned(ctx, client, 15, 700*time.Millisecond, 16*time.Second)
+			samples, rate, start, err := recordAligned(ctx, rec, 15, 700*time.Millisecond, 16*time.Second)
 			if err != nil {
 				log.Printf("record: %v", err)
 			} else {
@@ -151,10 +190,10 @@ func main() {
 
 	if !skipped["wspr"] {
 		fmt.Printf("\n== WSPR: %.4f MHz USB, one full 120 s cycle ==\n", *wsprFreq/1000)
-		if err := client.Tune(ctx, int64(*wsprFreq*1000), "usb"); err != nil {
+		if err := rec.Tune(int64(*wsprFreq*1000), "usb"); err != nil {
 			log.Printf("tune: %v", err)
 		} else {
-			samples, rate, start, err := recordAligned(ctx, client, 120, time.Second, 122*time.Second)
+			samples, rate, start, err := recordAligned(ctx, rec, 120, time.Second, 122*time.Second)
 			if err != nil {
 				log.Printf("record: %v", err)
 			} else {
@@ -181,11 +220,11 @@ func main() {
 
 	if !skipped["psk"] {
 		fmt.Printf("\n== PSK31: %.3f MHz USB, 30 s listen ==\n", *pskFreq/1000)
-		if err := client.Tune(ctx, int64(*pskFreq*1000), "usb"); err != nil {
+		if err := rec.Tune(int64(*pskFreq*1000), "usb"); err != nil {
 			log.Printf("tune: %v", err)
 		} else {
 			start := time.Now().UTC()
-			samples, rate, err := client.Record(ctx, 30*time.Second)
+			samples, rate, err := rec.Record(30 * time.Second)
 			if err != nil {
 				log.Printf("record: %v", err)
 			} else {
@@ -207,11 +246,11 @@ func main() {
 
 	if !skipped["cw"] {
 		fmt.Printf("\n== CW: %.3f MHz USB, 30 s listen ==\n", *cwFreq/1000)
-		if err := client.Tune(ctx, int64(*cwFreq*1000), "usb"); err != nil {
+		if err := rec.Tune(int64(*cwFreq*1000), "usb"); err != nil {
 			log.Printf("tune: %v", err)
 		} else {
 			start := time.Now().UTC()
-			samples, rate, err := client.Record(ctx, 30*time.Second)
+			samples, rate, err := rec.Record(30 * time.Second)
 			if err != nil {
 				log.Printf("record: %v", err)
 			} else {
