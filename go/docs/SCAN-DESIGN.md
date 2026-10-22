@@ -151,7 +151,7 @@ hand and covered by the fake-Source tests, not -race.
 
 ## 7. Current status (2026-10-22)
 
-Slices (a)–(g) landed in PR #4. Two integration changes followed:
+Slices (a)–(g) landed in PR #4. The integration changes that followed:
 
 * **OpenWebRX stations now survey their own profile span.** `scanStation`
   dispatches OpenWebRX to `scanOpenWebRXSpectrum`, which runs one monitor in
@@ -176,11 +176,48 @@ Slices (a)–(g) landed in PR #4. Two integration changes followed:
   25 s listen and was live-verified with a real METAR report. A repeat visit
   registers only the targets it will tune, so a decoded row survives the next
   "queued" transition; the activity pill counts these gallery decodes too.
+* **Continuous roster instead of a frozen station list.** `scanRoster` keeps
+  operator-supplied stations and directory discoveries in separate halves.
+  `--scan-directory-refresh` (default 1 h, 0 disables) re-fetches
+  receiverbook/the Kiwi directory and swaps only the dynamic half, so a
+  hand-picked receiver survives a refresh. A failed or empty refresh keeps the
+  previous list — losing the directory must not stop a fleet that is already
+  scanning. Entries are deduped by `host:port`, and `+N/-N` is logged so
+  roster churn is visible.
+* **Rotation across visits, so later targets are not starved.** A Kiwi session
+  stops at `--scan-target-limit`/`--scan-station-session`; the scanner now
+  records the last HF target it actually processed and the next visit starts
+  after it (`nextKiwiTargets`/`noteKiwiProgress`). OpenWebRX visits do the same
+  with profiles: `ProfileNames()`/`ActiveProfile()` are learned on connect and
+  `nextOpenWebRXProfile` advances one profile per visit, falling back to the
+  default profile (and relearning) when a server drops or renames one.
+* **Record-all archive.** `--scan-record-all` writes a WAV plus a `key=value`
+  sidecar for every detected activity, including unverified decodes, carriers
+  and detector noise, so rejected evidence is inspectable too. The monitor
+  writes OpenWebRX clips before the noise/silence/unknown filter
+  (`monitor.Options.OnCapture`); Kiwi/WebSDR/HF clips are written by the
+  scanner. Sidecars carry frequency, mode, receiver, kind, target, gate,
+  started, duration and verified, which `scanCaptures` reads back into the
+  Gallery. Filenames include the station and a Unix-nanosecond stamp because
+  monitor activity IDs reset per station. `--captures-max-gb` and
+  `--captures-retain` run a retention loop; both default to unlimited.
+
+* **Rotation cursors survive a restart.** `scan-rotation.json` under
+  `SDRSTREAM_STATE_DIR` (default `~/sdrstream-state`, override with
+  `--scan-state`, empty disables) stores the last processed HF target and each
+  OpenWebRX receiver's profile list plus next index. Load happens once at
+  startup; `noteKiwiProgress`/`noteOpenWebRXProfiles`/the reset paths write it
+  atomically (temp file + rename, `0600`) once per visit. A missing, corrupt
+  or newer-version file is ignored, so a bad state file can only restart
+  coverage from the top — it can never stop a scan.
 
 Remaining:
 
 * WebSDR and KiwiSDR have no spectrum in this client, so they still use fixed
   targets; a `decode.BandScanner` sweep over the advertised band is next.
-* The fleet scanner connects to OpenWebRX without choosing a profile, so the
-  span is the server default. A per-station profile hint would make the
-  survey deliberate rather than incidental.
+* Rotation is per receiver and per target list, not a global coverage map: a
+  receiver that never answers keeps its cursor at the top, and there is no
+  per-station profile hint for an operator who wants to pin the span.
+* Record-all keeps everything by default. A long fleet run needs an operator
+  to set `--captures-max-gb`/`--captures-retain`; there is no automatic
+  budget yet, and the Gallery index is rebuilt from disk at startup.

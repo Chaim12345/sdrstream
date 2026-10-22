@@ -21,11 +21,12 @@ type Result struct {
 // Text gates known, anchored HF service text and rejects non-printable output.
 func Text(kind, text, anchor string) Result {
 	text = strings.TrimSpace(text)
-	if len(text) < 12 {
-		return Result{false, "too short"}
-	}
-	printable, letters := 0, 0
+	// Rune counts everywhere: len() is bytes, and accented text used to
+	// be rejected by the printable/byte ratio (each accented char is 2+
+	// UTF-8 bytes but counts once as a rune).
+	runes, printable, letters := 0, 0, 0
 	for _, r := range text {
+		runes++
 		if unicode.IsPrint(r) || r == '\n' || r == '\r' || r == '\t' {
 			printable++
 		}
@@ -33,10 +34,16 @@ func Text(kind, text, anchor string) Result {
 			letters++
 		}
 	}
-	if float64(printable)/float64(len(text)) < 0.9 || float64(letters)/float64(max(1, printable)) < 0.25 {
+	if runes < 12 {
+		return Result{false, "too short"}
+	}
+	if float64(printable)/float64(max(1, runes)) < 0.9 || float64(letters)/float64(max(1, printable)) < 0.25 {
 		return Result{false, "low text quality"}
 	}
-	if anchor != "" && strings.Contains(strings.ToUpper(text), strings.ToUpper(anchor)) {
+	// Anchors match on whitespace-collapsed text: HF decoders regularly
+	// narrate spacing ("VOZ  DE  GIJON"), and an exact substring test
+	// rejected real traffic that was plainly there.
+	if anchor != "" && strings.Contains(collapseSpaces(strings.ToUpper(text)), collapseSpaces(strings.ToUpper(anchor))) {
 		return Result{true, "anchor " + anchor}
 	}
 	upper := strings.ToUpper(text)
@@ -194,6 +201,12 @@ func validAX25(text string) bool {
 		}
 	}
 	return true
+}
+
+// collapseSpaces folds runs of whitespace into single spaces, so anchor
+// matching survives decoder spacing quirks.
+func collapseSpaces(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func readableText(text string, minimum int, ratio float64) bool {

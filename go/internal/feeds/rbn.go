@@ -115,5 +115,6 @@ func ParseRBNSpot(line string, when time.Time) (Item, bool) {
 		Label:  spotted,
 		Detail: fmt.Sprintf("%s kHz %s via %s", freq, rest, skimmer),
 		Time:   when,
+		Ref:    "https://www.reversebeacon.net/", // provider home; RBN has no per-spot page
 	}, true
 }

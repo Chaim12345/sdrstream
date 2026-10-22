@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+// readIdleTimeout bounds how long an APRS-IS connection may stay silent
+// before it is treated as wedged. javAPRSSrvr sends keepalive comment
+// lines every ~20 s, so 3 minutes is generous.
+const readIdleTimeout = 3 * time.Minute
+
 // APRSIS connects to an APRS-IS server with a read-only login (passcode -1)
 // and a range filter, so only traffic near the configured point arrives.
 // No key or account is needed for read-only access.
@@ -57,7 +62,11 @@ func (a *APRSIS) RunReady(ctx context.Context, emit func(Item), ready func()) er
 		return err
 	}
 	defer conn.Close()
-	go func() { <-ctx.Done(); conn.Close() }()
+	// Per-attempt context: the closer goroutine must end with this
+	// connection, not leak until the supervisor's ctx ends.
+	attemptCtx, stopAttempt := context.WithCancel(ctx)
+	defer stopAttempt()
+	go func() { <-attemptCtx.Done(); conn.Close() }()
 
 	login := fmt.Sprintf("user NOCALL pass -1 vers sdrstream 1.0 filter r/%.4f/%.4f/%.0f\r\n", a.Lat, a.Lon, a.Radius)
 	if _, err := conn.Write([]byte(login)); err != nil {
@@ -66,6 +75,7 @@ func (a *APRSIS) RunReady(ctx context.Context, emit func(Item), ready func()) er
 	// APRS-IS sends a server greeting after login; consuming it also proves the
 	// subscription is accepted before reporting the source live.
 	reader := bufio.NewReader(conn)
+	_ = conn.SetReadDeadline(a.now().Add(readIdleTimeout))
 	line, err := reader.ReadString('\n')
 	if err != nil {
 		return err
@@ -76,7 +86,13 @@ func (a *APRSIS) RunReady(ctx context.Context, emit func(Item), ready func()) er
 	ready()
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64<<10), 256<<10)
-	for scanner.Scan() {
+	for {
+		// Refresh the read deadline per line: a server that goes silent
+		// mid-stream must not park the feed forever.
+		_ = conn.SetReadDeadline(a.now().Add(readIdleTimeout))
+		if !scanner.Scan() {
+			break
+		}
 		line := strings.TrimRight(scanner.Text(), "\r")
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue

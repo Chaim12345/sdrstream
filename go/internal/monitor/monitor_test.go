@@ -579,6 +579,56 @@ func TestSaveAudioFiltersWhatIsArchived(t *testing.T) {
 	}
 }
 
+// TestRecordAllArchivesNoiseAndReportsIt pins the record-everything rule:
+// when SaveAudio accepts every kind, a clip that classification rejects as
+// noise is still written and announced through OnCapture. It must not be
+// published as a decoded transmission.
+func TestRecordAllArchivesNoiseAndReportsIt(t *testing.T) {
+	const rate = 8000
+	samples := make([]float64, rate*2)
+	state := uint32(1)
+	for i := range samples {
+		state = state*1664525 + 1013904223
+		samples[i] = (float64(state)/float64(^uint32(0)) - 0.5) * 0.2
+	}
+	dir := t.TempDir()
+	instance := New(Options{
+		Source:    &wavSource{samples: samples, rate: rate},
+		Listen:    2 * time.Second,
+		Name:      "test",
+		OutDir:    dir,
+		SaveAudio: func(string) bool { return true },
+	})
+	var captured []Activity
+	instance.opts.OnCapture = func(activity Activity, path string) {
+		captured = append(captured, activity)
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("OnCapture path %q: %v", path, err)
+		}
+	}
+	published := false
+	instance.opts.OnActivity = func(Activity) { published = true }
+	instance.mu.Lock()
+	instance.nextID = 1
+	instance.activities = []Activity{{ID: 1}}
+	instance.mu.Unlock()
+	instance.handleJob(context.Background(), job{
+		frequency: 145_500_000, levelDB: 20, modes: []string{"usb"}, activityID: 1,
+	})
+	if len(captured) != 1 {
+		t.Fatalf("OnCapture calls = %d, want the noise clip archived", len(captured))
+	}
+	if captured[0].Kind != "noise" {
+		t.Errorf("captured kind = %q, want noise", captured[0].Kind)
+	}
+	if captured[0].AudioPath == "" {
+		t.Error("captured clip has no audio path")
+	}
+	if published {
+		t.Error("a noise clip was published as a decoded transmission")
+	}
+}
+
 // TestPlausibleNarrowbandTextRejectsVoiceGibberish pins the fix for a live
 // aviation failure: the RTTY decoder turned a controller's AM call into
 // pages of letters, and the monitor reported it as data. A real text mode
@@ -653,5 +703,21 @@ func TestChooseModeUsesTheBand(t *testing.T) {
 	}
 	if got := ChooseModeAt("lsb", 2400, 7_100_000); got != "lsb" {
 		t.Errorf("explicit mode overridden: %q", got)
+	}
+}
+
+func TestDecodeDataFindsSAME(t *testing.T) {
+	const header = "ZCZC-WXR-SVR-039173+0045-2951830-KCLE/NWS-"
+	const rate = 16000
+	var s []float64
+	s = append(s, make([]float64, rate)...)
+	for i := 0; i < 3; i++ {
+		s = append(s, decode.SAMEModulate(header, rate)...)
+		s = append(s, make([]float64, rate)...)
+	}
+	m := New(Options{})
+	mode, detail, ok := m.decodeData(context.Background(), s, rate, 0)
+	if !ok || mode != "same" || !strings.Contains(detail, "Severe Thunderstorm Warning") || !strings.Contains(detail, header) {
+		t.Fatalf("mode=%q ok=%v detail=%q", mode, ok, detail)
 	}
 }

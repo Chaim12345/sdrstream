@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -26,6 +27,11 @@ type Item struct {
 	Lon    float64   `json:"lon,omitempty"`
 	HasPos bool      `json:"has_pos,omitempty"`
 	Ref    string    `json:"ref,omitempty"` // upstream link for the item
+	// FetchedAt is when this process received the item (Time is the
+	// provider's own timestamp). DecodedBy is DecodedByProvider unless a
+	// feed sets DecodedByUs for something sdrstream decoded itself.
+	FetchedAt time.Time `json:"fetched_at,omitempty"`
+	DecodedBy string    `json:"decoded_by,omitempty"`
 }
 
 // StreamSource is a long-lived feed connection (TCP, WebSocket, MQTT).
@@ -65,6 +71,9 @@ type SourceStatus struct {
 	Samples        []Item    `json:"samples,omitempty"`
 	DetailURL      string    `json:"detail_url,omitempty"`
 	Attribution    string    `json:"attribution,omitempty"`
+	License        string    `json:"license,omitempty"`
+	TermsNotes     string    `json:"terms_notes,omitempty"`
+	MaxAgeSeconds  int       `json:"max_age_seconds,omitempty"`
 }
 
 // Snapshot is the API payload for /api/feeds.json.
@@ -86,6 +95,9 @@ type Manager struct {
 	items   map[string]*Item
 	sources map[string]*sourceState
 	cap     int
+	seen    map[string]time.Time
+	metrics map[string]*srcMetrics
+	ledger  *Ledger
 	logf    func(string, ...any)
 }
 
@@ -109,7 +121,18 @@ func (m *Manager) source(name, kind string, maxAge time.Duration) *sourceState {
 			st.status.DetailURL = "https://sondehub.org/"
 			st.status.Detail = "One bootstrap fetch, then live MQTT/WebSocket updates"
 		}
+		if t, ok := TermsFor(name); ok {
+			st.status.License = t.License
+			st.status.TermsNotes = t.Notes
+			if st.status.DetailURL == "" {
+				st.status.DetailURL = t.HomeURL
+			}
+		}
 		m.sources[name] = st
+	}
+	if maxAge > 0 {
+		st.maxAge = maxAge
+		st.status.MaxAgeSeconds = int(maxAge / time.Second)
 	}
 	return st
 }
@@ -263,11 +286,12 @@ func (m *Manager) RunStream(ctx context.Context, s StreamSource, maxAge time.Dur
 	m.mu.Lock()
 	m.source(s.Name(), s.Kind(), maxAge)
 	m.mu.Unlock()
-	backoff := 5 * time.Second
+	backoff := streamBackoffBase
 	for {
 		if ctx.Err() != nil {
 			return
 		}
+		attemptStart := time.Now()
 		m.mu.Lock()
 		m.setState(s.Name(), "connecting", "")
 		m.mu.Unlock()
@@ -296,19 +320,42 @@ func (m *Manager) RunStream(ctx context.Context, s StreamSource, maxAge time.Dur
 		if ctx.Err() != nil {
 			return
 		}
-		m.logf("%s: %v; reconnecting in %s", s.Name(), err, backoff)
+		// A run that stayed up for a minute or more was healthy: the
+		// failure is a fresh drop, so restart the backoff instead of
+		// punishing the feed with the stale maximum.
+		if time.Since(attemptStart) >= healthyRunThreshold {
+			backoff = streamBackoffBase
+		}
+		// Jitter (0.75x-1.25x) keeps several feeds from reconnecting in
+		// lockstep after a shared outage.
+		delay := feedBackoffWithJitter(backoff)
+		m.logf("%s: %v; reconnecting in %s", s.Name(), err, delay)
 		m.mu.Lock()
 		m.setState(s.Name(), "error", errString(err))
 		m.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff):
+		case <-time.After(delay):
 		}
 		if backoff < 5*time.Minute {
 			backoff *= 2
 		}
 	}
+}
+
+// streamBackoffBase is the first reconnect delay; it doubles to 5m. A var
+// so tests can shorten it.
+var streamBackoffBase = 5 * time.Second
+
+// healthyRunThreshold is how long a streaming connection must stay up for
+// its eventual drop to count as a fresh failure (backoff resets) rather
+// than a continuation of connect instability. A var so tests can shorten it.
+var healthyRunThreshold = time.Minute
+
+// feedBackoffWithJitter spreads reconnects: base * U[0.75, 1.25).
+func feedBackoffWithJitter(base time.Duration) time.Duration {
+	return base*3/4 + time.Duration(rand.Float64()*float64(base)/2)
 }
 
 // RunPoller supervises one polled source on its own interval.
@@ -391,6 +438,18 @@ func (m *Manager) addLocked(items []Item) {
 		}
 		if it.Time.IsZero() {
 			it.Time = time.Now()
+		}
+		now := time.Now()
+		if it.FetchedAt.IsZero() {
+			it.FetchedAt = now
+		}
+		if it.DecodedBy == "" {
+			it.DecodedBy = DecodedByProvider
+		}
+		if m.noteSeenLocked(it, now) && m.ledger != nil {
+			m.ledger.Append(LedgerEntry{Source: it.Source, Kind: it.Kind, ID: it.ID, Label: it.Label,
+				Detail: it.Detail, ProviderT: it.Time, FetchedAt: it.FetchedAt, DecodedBy: it.DecodedBy,
+				Ref: it.Ref, Lat: it.Lat, Lon: it.Lon})
 		}
 		if old, ok := m.items[it.ID]; ok {
 			*old = it

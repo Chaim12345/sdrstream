@@ -31,6 +31,52 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/feeds"
 )
 
+// cprPairWindow is the greatest separation between an even and an odd CPR
+// frame that still allows a global decode: the aircraft must not have
+// crossed a latitude zone between the two frames.
+const cprPairWindow = 10 * time.Second
+
+// cprPair holds the newest even and odd CPR frames seen for one aircraft.
+type cprPair struct {
+	even, odd         *decode.ModeSMessage
+	evenWhen, oddWhen time.Time
+}
+
+// cprPairTracker pairs CPR frames per aircraft. Pairing only the first two
+// frames seen, regardless of address, mixes positions from different
+// aircraft and produces nonsense coordinates.
+type cprPairTracker struct {
+	byICAO map[string]*cprPair
+}
+
+func newCPRPairTracker() *cprPairTracker {
+	return &cprPairTracker{byICAO: make(map[string]*cprPair)}
+}
+
+// add records one CPR frame under its ICAO24 address. When both parities
+// are on hand it returns the pair; fresh reports whether the two frames
+// are within cprPairWindow of each other.
+func (t *cprPairTracker) add(m *decode.ModeSMessage, when time.Time) (pair *cprPair, fresh bool) {
+	p := t.byICAO[m.ICAO24]
+	if p == nil {
+		p = &cprPair{}
+		t.byICAO[m.ICAO24] = p
+	}
+	if m.CPROdd {
+		p.odd, p.oddWhen = m, when
+	} else {
+		p.even, p.evenWhen = m, when
+	}
+	if p.even == nil || p.odd == nil {
+		return nil, false
+	}
+	dt := p.evenWhen.Sub(p.oddWhen)
+	if dt < 0 {
+		dt = -dt
+	}
+	return p, dt <= cprPairWindow
+}
+
 type avmarineEvidence struct {
 	Kind       string `json:"kind"` // ais, acars, modes
 	Source     string `json:"source"`
@@ -112,9 +158,7 @@ func cmdAVMarine(args []string) error {
 	}
 
 	if *modesFrames != "" {
-		var pair [2]*decode.ModeSMessage
-		var pairWhen [2]time.Time
-		pairN := 0
+		pairs := newCPRPairTracker()
 		for _, f := range strings.Split(*modesFrames, ",") {
 			m, err := decode.DecodeModeS(strings.TrimSpace(f))
 			if err != nil {
@@ -123,28 +167,30 @@ func cmdAVMarine(args []string) error {
 			}
 			fmt.Printf("MODES %s\n", m.Describe())
 			record(avmarineEvidence{Kind: "modes", Source: "published-capture", Raw: m.Raw, Decoded: m})
-			if m.HasCPR && pairN < 2 {
-				pair[pairN] = m
-				pairWhen[pairN] = time.Now()
-				pairN++
+			if !m.HasCPR {
+				continue
 			}
-		}
-		if pairN == 2 {
-			var even, odd *decode.ModeSMessage
-			var ew, ow time.Time
-			if pair[0].CPROdd {
-				odd, even, ow, ew = pair[0], pair[1], pairWhen[0], pairWhen[1]
-			} else {
-				even, odd, ew, ow = pair[0], pair[1], pairWhen[0], pairWhen[1]
+			when := m.When
+			if when.IsZero() {
+				when = time.Now()
 			}
-			lat, lon, err := decode.CPRPosition(even, odd, ew, ow)
+			pair, fresh := pairs.add(m, when)
+			if pair == nil {
+				continue // still waiting for the other CPR parity
+			}
+			if !fresh {
+				fmt.Printf("MODES CPR: icao=%s even/odd pair more than %s apart, not decoding\n",
+					m.ICAO24, cprPairWindow)
+				continue
+			}
+			lat, lon, err := decode.CPRPosition(pair.even, pair.odd, pair.evenWhen, pair.oddWhen)
 			if err != nil {
 				fmt.Printf("MODES CPR: %v\n", err)
 			} else {
-				fmt.Printf("MODES CPR position: %.6f, %.6f (icao=%s)\n", lat, lon, even.ICAO24)
+				fmt.Printf("MODES CPR position: %.6f, %.6f (icao=%s)\n", lat, lon, pair.even.ICAO24)
 				record(avmarineEvidence{Kind: "modes", Source: "published-capture",
-					Raw:     even.Raw + " + " + odd.Raw,
-					Decoded: map[string]any{"lat": lat, "lon": lon, "icao24": even.ICAO24},
+					Raw:     pair.even.Raw + " + " + pair.odd.Raw,
+					Decoded: map[string]any{"lat": lat, "lon": lon, "icao24": pair.even.ICAO24},
 					Note:    "CPR global decode of the even/odd pair"})
 			}
 		}

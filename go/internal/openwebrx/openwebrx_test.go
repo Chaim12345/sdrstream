@@ -56,6 +56,14 @@ func startMockServer(t *testing.T) (*httptest.Server, <-chan map[string]interfac
 	return server, received
 }
 
+// testOptions allows loopback mock servers, which the SSRF guard refuses
+// by default.
+func testOptions() Options {
+	o := DefaultOptions()
+	o.AllowPrivate = true
+	return o
+}
+
 // next waits for the next client message, failing the test if none arrives.
 func next(t *testing.T, received <-chan map[string]interface{}) map[string]interface{} {
 	t.Helper()
@@ -76,7 +84,7 @@ func next(t *testing.T, received <-chan map[string]interface{}) map[string]inter
 // receiver just goes quiet.
 func TestTuneMessageSequence(t *testing.T) {
 	server, received := startMockServer(t)
-	client, err := New(server.URL, DefaultOptions())
+	client, err := New(server.URL, testOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +190,7 @@ func TestFindSpectrumPeaks(t *testing.T) {
 // must be started again afterwards or the server sends no audio.
 func TestSelectProfileSendsRawKeyAndRestartsDemod(t *testing.T) {
 	server, received := startMockServer(t)
-	client, err := New(server.URL, DefaultOptions())
+	client, err := New(server.URL, testOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,5 +217,120 @@ func TestSelectProfileSendsRawKeyAndRestartsDemod(t *testing.T) {
 	restart := next(t, received)
 	if restart["type"] != "dspcontrol" || restart["action"] != "start" {
 		t.Fatalf("message after selectprofile = %v, want dspcontrol action=start", restart)
+	}
+}
+
+// When the connection dies, Events() must close instead of freezing the
+// consumer on silent dead air (review H2): the monitor gates its spectrum
+// on the channel, and the scanner consumer treats a closed events channel
+// as terminal.
+func TestEventsCloseOnConnectionLoss(t *testing.T) {
+	server, _ := startMockServer(t)
+	client, err := New(server.URL, Options{OutputRate: 12000, HDOutputRate: 12000, AllowPrivate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	// Kill the connection the way a network drop does: hard local close.
+	client.mu.Lock()
+	if client.conn != nil {
+		_ = client.conn.UnderlyingConn().Close()
+	}
+	client.mu.Unlock()
+	deadline := time.After(20 * time.Second)
+	for {
+		select {
+		case _, ok := <-client.Events():
+			if !ok {
+				return
+			}
+		case <-deadline:
+			t.Fatal("events channel never closed after the socket died")
+		}
+	}
+}
+
+// A dead reader must reach the recorder as an error, not as a clean,
+// silent recording.
+func TestRecordReturnsReaderError(t *testing.T) {
+	// A server that completes the handshake, then drops the connection
+	// without sending any audio.
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.WriteMessage(websocket.TextMessage, []byte("CLIENT DE SERVER client=test type=receiver"))
+		for {
+			if _, data, err := conn.ReadMessage(); err != nil {
+				return
+			} else {
+				var message map[string]interface{}
+				if json.Unmarshal(data, &message) != nil {
+					continue
+				}
+				if message["type"] == "connectionproperties" {
+					conn.WriteMessage(websocket.TextMessage,
+						[]byte(`{"type":"config","value":{"center_freq":145000000}}`))
+					conn.WriteMessage(websocket.TextMessage,
+						[]byte(`{"type":"profiles","value":[{"id":"sdr|p","name":"test"}]}`))
+					// Handshake completes on the client's next message
+					// (dspcontrol start); then the stream dies.
+					if _, _, err := conn.ReadMessage(); err == nil {
+						_ = conn.WriteMessage(websocket.CloseMessage,
+							websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "boom"))
+					}
+					return
+				}
+			}
+		}
+	}))
+	defer server.Close()
+	client, err := New(server.URL, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := client.Connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+	_, _, err = client.RecordSamples(context.Background(), 5*time.Second)
+	if err == nil {
+		t.Fatal("a dead stream must return the reader error, not clean silence")
+	}
+}
+
+// After a retune, buffered audio from the old frequency must not leak into
+// the next recording.
+func TestDrainAudio(t *testing.T) {
+	client, err := New("http://openwebrx.invalid/", testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.audioEvents <- Event{Type: "audio", Value: AudioChunk{Samples: []int16{1, 2}}}
+	client.audioEvents <- Event{Type: "audio", Value: AudioChunk{Samples: []int16{3}}}
+	client.DrainAudio()
+	select {
+	case leftover := <-client.audioEvents:
+		t.Fatalf("audio survived the drain: %v", leftover.Type)
+	default:
+	}
+}
+
+// The guarded default refuses loopback before any network traffic.
+func TestDialRefusesPrivateHost(t *testing.T) {
+	client, err := New("http://127.0.0.1:8073/", DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Connect(context.Background()); err == nil {
+		t.Fatal("loopback target must be refused")
 	}
 }

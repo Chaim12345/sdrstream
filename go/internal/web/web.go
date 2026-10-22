@@ -25,6 +25,7 @@ import (
 
 	"github.com/chaim12345/sdrstream/go/internal/bandcond"
 	"github.com/chaim12345/sdrstream/go/internal/catalogue"
+	"github.com/chaim12345/sdrstream/go/internal/common"
 	"github.com/chaim12345/sdrstream/go/internal/directory"
 	"github.com/chaim12345/sdrstream/go/internal/feeds"
 	"github.com/chaim12345/sdrstream/go/internal/gallery"
@@ -45,11 +46,31 @@ type Capture struct {
 	FrequencyHz float64   `json:"frequency_hz,omitempty"`
 	Mode        string    `json:"mode,omitempty"`
 	Decode      string    `json:"decode,omitempty"`
+	Kind        string    `json:"kind,omitempty"`   // voice, data, cw, carrier, noise
+	Target      string    `json:"target,omitempty"` // named service the clip was aimed at
+	Verified    bool      `json:"verified"`         // live quality gate verdict
+	Gate        string    `json:"gate,omitempty"`   // gate reason when unverified
 	Start       time.Time `json:"start"`
 	Samples     int       `json:"samples"`
 	Rate        int       `json:"rate"`
 	Path        string    `json:"path"`
 	URL         string    `json:"url,omitempty"`
+}
+
+// CaptureMetadata is the provenance written beside a capture. The scanner
+// writes it for every archived clip, including unverified and non-decodable
+// activity, so "record everything" still produces a searchable archive.
+type CaptureMetadata struct {
+	FrequencyHz float64
+	Mode        string
+	Receiver    string
+	Detail      string
+	Kind        string
+	Target      string
+	Gate        string
+	Started     time.Time
+	DurationSec float64
+	Verified    bool
 }
 
 // Status is the live snapshot the UI polls.
@@ -98,6 +119,12 @@ type LiveGalleryItem struct {
 	AudioURL      string    `json:"audio_url,omitempty"`
 	Size          int64     `json:"size,omitempty"`
 	Text          string    `json:"text,omitempty"`
+}
+
+// obsCacheEntry is one cached SatNOGS observations lookup.
+type obsCacheEntry struct {
+	observations []satnogs.Observation
+	fetchedAt    time.Time
 }
 
 type ScanStatus struct {
@@ -168,14 +195,28 @@ type Server struct {
 	// rdioHook, when set, receives every verified live artifact that has
 	// audio, so the fleet scan can feed an Rdio Scanner archive.
 	rdioHook func(monitor.Activity)
+	// capturesCache memoises the captures-directory listing: the UI polls
+	// status.json constantly and wavInfo opens every file each time.
+	capturesCache   []Capture
+	capturesCacheAt time.Time
+	// obsCache memoises SatNOGS observation lookups per NORAD id so the
+	// map popups do not hit the network API (or disk cache) on every open.
+	obsCache map[int]obsCacheEntry
+	// lastScanPersist and scanStateTimer debounce scan-state writes: scan
+	// updates arrive in bursts and each one used to rewrite the file.
+	lastScanPersist time.Time
+	scanStateTimer  *time.Timer
 	// healthAll and fetchConditions are seams for the tests.
 	healthAll       func(ctx context.Context, opts sources.Options) []sources.Result
 	fetchConditions func(ctx context.Context) (bandcond.Conditions, error)
 	// fetchStations is directory.FetchStations in production and a seam
 	// for the tests, which cannot wait on the public directory.
 	fetchStations func(context.Context) ([]directory.Station, error)
-	NoAuth        bool
-	auth          authState
+	// fetchObservations is satnogs.Observations in production and a seam
+	// for the tests, which cannot wait on the network API.
+	fetchObservations func(noradID int) ([]satnogs.Observation, error)
+	NoAuth            bool
+	auth              authState
 }
 
 // New builds a server with the bundled page. When capturesDir is non-empty
@@ -188,6 +229,9 @@ func New(capturesDir, galleryDir string) *Server {
 		galleryDir = filepath.Join(satnogs.CacheDir, "gallery")
 	}
 	s := &Server{capturesDir: capturesDir, galleryDir: galleryDir, scanIndex: make(map[string]int)}
+	if capturesDir != "" {
+		go s.retentionLoop()
+	}
 	s.loadScanState()
 	s.loadGallery()
 	go s.galleryLoop()
@@ -326,12 +370,32 @@ func (s *Server) passesLoop() {
 	}
 }
 
-// AddCaptureMetadata persists scanner metadata alongside the WAV filename.
-func (s *Server) AddCaptureMetadata(name, mode, receiver, detail string, frequencyHz float64) {
-	if s.capturesDir == "" || filepath.Base(name) != name {
-		return
+// AddCaptureMetadata persists compatible, sanitized provenance atomically.
+func (s *Server) AddCaptureMetadata(name, mode, receiver, detail string, frequencyHz float64, verified ...bool) {
+	v := len(verified) > 0 && verified[0]
+	_ = s.AddCaptureMetadataFull(name, CaptureMetadata{FrequencyHz: frequencyHz, Mode: mode, Receiver: receiver, Detail: detail, Verified: v})
+}
+func (s *Server) AddCaptureMetadataFull(name string, meta CaptureMetadata) error {
+	return WriteCaptureMetadata(s.capturesDir, name, meta)
+}
+func WriteCaptureMetadata(dir, name string, meta CaptureMetadata) error {
+	if dir == "" || filepath.Base(name) != name {
+		return fmt.Errorf("web: capture name %q must be a bare filename", name)
 	}
-	_ = os.WriteFile(filepath.Join(s.capturesDir, strings.TrimSuffix(name, ".wav")+".txt"), []byte(fmt.Sprintf("frequency_hz=%.0f\nmode=%s\nreceiver=%s\ndecode=%s\n", frequencyHz, mode, receiver, strings.ReplaceAll(detail, "\n", " "))), 0644)
+	if meta.Started.IsZero() {
+		meta.Started = time.Now().UTC()
+	}
+	clean := func(v string) string {
+		return strings.Map(func(r rune) rune {
+			if r == '\r' || r == '\n' {
+				return -1
+			}
+			return r
+		}, v)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "frequency_hz=%.0f\nmode=%s\nreceiver=%s\ndecode=%s\nkind=%s\ntarget=%s\ngate=%s\nstarted=%s\nduration_sec=%.3f\nverified=%t\n", meta.FrequencyHz, clean(meta.Mode), clean(meta.Receiver), clean(meta.Detail), clean(meta.Kind), clean(meta.Target), clean(meta.Gate), meta.Started.UTC().Format(time.RFC3339), meta.DurationSec, meta.Verified)
+	return common.WriteFileAtomic(filepath.Join(dir, strings.TrimSuffix(name, ".wav")+".txt"), []byte(b.String()), 0o644)
 }
 
 // AddCapture records a completed capture for the UI.
@@ -341,14 +405,46 @@ func (s *Server) AddCapture(capture Capture) {
 	s.mu.Unlock()
 }
 
-// scanCaptures lists every WAV in the captures directory as a Capture.
-// The satellite name is the leading part of the filename ("CAS-9_...wav"),
-// the sample rate comes from the WAV header, and the size gives the sample
-// count (16-bit mono).
+// capturesCacheTTL is how long a directory listing is reused. The UI polls
+// every second; reading every WAV header on each poll kept a core busy.
+const capturesCacheTTL = 2 * time.Second
+
+// maxListedCaptures caps one directory listing.
+const maxListedCaptures = 5000
+
+// statusCaptureLimit bounds the capture table embedded in every status
+// poll; the full list is available, paginated, from /api/captures.json.
+const statusCaptureLimit = 200
+
+// scanCaptures lists the WAV captures, memoised briefly: recordings appear
+// at most capturesCacheTTL late, which a one-second UI poll never notices.
 func (s *Server) scanCaptures() []Capture {
 	if s.capturesDir == "" {
 		return nil
 	}
+	s.mu.Lock()
+	if s.capturesCache != nil && time.Since(s.capturesCacheAt) < capturesCacheTTL {
+		out := append([]Capture(nil), s.capturesCache...)
+		s.mu.Unlock()
+		return out
+	}
+	s.mu.Unlock()
+	out := s.listCaptures()
+	s.mu.Lock()
+	s.capturesCache = out
+	s.capturesCacheAt = time.Now()
+	s.mu.Unlock()
+	return out
+}
+
+// listCaptures reads every WAV in the captures directory as a Capture.
+// The satellite name is the leading part of the filename ("CAS-9_...wav"),
+// the sample rate comes from the WAV header, and the size gives the sample
+// count (16-bit mono). In-flight atomic writes ("<name>.wav.tmp") are
+// skipped, and the listing is capped so an overflowing directory cannot
+// turn one poll into unbounded work; retention (see retention.go) keeps
+// real directories far below the cap.
+func (s *Server) listCaptures() []Capture {
 	entries, err := os.ReadDir(s.capturesDir)
 	if err != nil {
 		return nil
@@ -356,8 +452,11 @@ func (s *Server) scanCaptures() []Capture {
 	var out []Capture
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(name), ".wav") {
+		if entry.IsDir() || strings.HasSuffix(name, ".tmp") || !strings.HasSuffix(strings.ToLower(name), ".wav") {
 			continue
+		}
+		if len(out) >= maxListedCaptures {
+			break
 		}
 		path := filepath.Join(s.capturesDir, name)
 		info, err := entry.Info()
@@ -374,7 +473,9 @@ func (s *Server) scanCaptures() []Capture {
 		}
 		parts := strings.Split(strings.TrimSuffix(name, ".wav"), "_")
 		var freq float64
-		mode, receiver, detail := "", "sdrstream", ""
+		mode, receiver, detail, kind, target, gate := "", "sdrstream", "", "", "", ""
+		verified := false
+		started := info.ModTime().UTC()
 		for _, part := range parts {
 			if strings.HasSuffix(part, "kHz") {
 				v, _ := strconv.ParseFloat(strings.TrimSuffix(part, "kHz"), 64)
@@ -389,17 +490,29 @@ func (s *Server) scanCaptures() []Capture {
 		}
 		if sidecar, err := os.ReadFile(strings.TrimSuffix(path, ".wav") + ".txt"); err == nil {
 			for _, line := range strings.Split(string(sidecar), "\n") {
-				if strings.HasPrefix(line, "frequency_hz=") {
+				switch {
+				case strings.HasPrefix(line, "frequency_hz="):
 					freq, _ = strconv.ParseFloat(strings.TrimPrefix(line, "frequency_hz="), 64)
-				}
-				if strings.HasPrefix(line, "mode=") {
+				case strings.HasPrefix(line, "mode="):
 					mode = strings.TrimPrefix(line, "mode=")
-				}
-				if strings.HasPrefix(line, "receiver=") {
+				case strings.HasPrefix(line, "receiver="):
 					receiver = strings.TrimPrefix(line, "receiver=")
-				}
-				if strings.HasPrefix(line, "decode=") {
+				case strings.HasPrefix(line, "decode="):
 					detail = strings.TrimPrefix(line, "decode=")
+				case strings.HasPrefix(line, "kind="):
+					kind = strings.TrimPrefix(line, "kind=")
+				case strings.HasPrefix(line, "target="):
+					target = strings.TrimPrefix(line, "target=")
+				case strings.HasPrefix(line, "gate="):
+					gate = strings.TrimPrefix(line, "gate=")
+				case line == "verified=true":
+					verified = true
+				case line == "verified=false":
+					verified = false
+				case strings.HasPrefix(line, "started="):
+					if parsed, err := time.Parse(time.RFC3339, strings.TrimPrefix(line, "started=")); err == nil {
+						started = parsed.UTC()
+					}
 				}
 			}
 		}
@@ -407,7 +520,8 @@ func (s *Server) scanCaptures() []Capture {
 			Satellite:   satellite,
 			Receiver:    receiver,
 			FrequencyHz: freq, Mode: mode, Decode: detail,
-			Start:   info.ModTime().UTC(),
+			Kind: kind, Target: target, Verified: verified, Gate: gate,
+			Start:   started,
 			Samples: int(dataBytes / 2),
 			Rate:    rate,
 			Path:    name,
@@ -467,13 +581,48 @@ func securityHeaders(next http.Handler) http.Handler {
 		header.Set("X-Content-Type-Options", "nosniff")
 		header.Set("X-Frame-Options", "DENY")
 		header.Set("Referrer-Policy", "no-referrer")
-		header.Set("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'")
+		// script-src has no 'unsafe-inline': every script the page runs is
+		// a bundled file under /static (pinned by TestCSPDropsUnsafeInlineScripts).
+		// style-src keeps 'unsafe-inline' for the login page's inline style.
+		header.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// limitRequestBody caps POST/PUT forms. Every control the UI offers is a
+// few hundred bytes; an unbounded body parser is a free memory-amplifier
+// for anyone with a bored HTTP client.
+func limitRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch) {
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		}
 		next.ServeHTTP(w, r)
 	})
 }
 
 //go:embed static
 var staticFS embed.FS
+
+// legalFS holds copies of the repository LICENSE, NOTICE and
+// NOTICE-third-party.md (go:embed cannot reach outside this package).
+// TestLegalFilesMatchRepoRoot keeps them identical to the root files.
+//
+//go:embed legal
+var legalFS embed.FS
+
+// handleLegal serves an embedded legal text as plain text.
+func handleLegal(name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		data, err := legalFS.ReadFile("legal/" + name)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write(data)
+	}
+}
 
 // Handler returns the HTTP routes.
 func (s *Server) Handler() http.Handler {
@@ -482,6 +631,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/logout", s.handleLogout)
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/LICENSE", handleLegal("LICENSE"))
+	mux.HandleFunc("/NOTICE", handleLegal("NOTICE"))
+	mux.HandleFunc("/NOTICE-third-party.md", handleLegal("NOTICE-third-party.md"))
 	mux.HandleFunc("/api/status.json", s.handleStatus)
 	mux.HandleFunc("/api/captures.json", s.handleCaptures)
 	mux.HandleFunc("/api/satellites.json", s.handleSatellites)
@@ -490,6 +642,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/test-fixtures.json", s.handleTestFixtures)
 	mux.HandleFunc("/api/scans.json", s.handleScans)
 	mux.HandleFunc("/api/feeds.json", s.handleFeeds)
+	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/api/ledger.json", s.handleLedger)
+	mux.HandleFunc("/api/ledger.csv", s.handleLedgerCSV)
+	mux.HandleFunc("/api/metrics.json", s.handleMetrics)
 	mux.HandleFunc("/api/sources.json", s.handleSources)
 	mux.HandleFunc("/api/bandconditions.json", s.handleBandConditions)
 	mux.HandleFunc("/api/scanlog.json", s.handleScanLog)
@@ -506,7 +662,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/audio/", s.handleAudio)
 	mux.HandleFunc("/audio/live/", s.handleLiveAudio)
 	mux.HandleFunc("/gallery/", s.handleGalleryFile)
-	return securityHeaders(s.wrapAuth(mux))
+	return limitRequestBody(securityHeaders(s.wrapAuth(mux)))
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -525,19 +681,54 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	passes := append([]PassInfo(nil), s.passes...)
 	s.mu.Unlock()
 	sort.Slice(captures, func(i, j int) bool { return captures[i].Start.Before(captures[j].Start) })
+	if len(captures) > statusCaptureLimit {
+		captures = captures[len(captures)-statusCaptureLimit:]
+	}
 	writeJSON(w, Status{
 		UpdatedAt: time.Now(), Captures: captures,
 		Passes: passes, Receivers: len(catalogue.Table),
 	})
 }
 
+// handleCaptures serves the capture table one page at a time: ?limit=
+// (default 200, at most 1000) and ?offset= select the window and the
+// X-Total-Captures header reports the full count, so a client can page
+// without the server ever serialising the whole history at once.
 func (s *Server) handleCaptures(w http.ResponseWriter, r *http.Request) {
 	captures := s.scanCaptures()
 	s.mu.Lock()
 	captures = append(captures, s.captures...)
 	s.mu.Unlock()
 	sort.Slice(captures, func(i, j int) bool { return captures[i].Start.Before(captures[j].Start) })
-	writeJSON(w, captures)
+	total := len(captures)
+	limit := 200
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	offset := 0
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			offset = n
+		}
+	}
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	page := captures[offset:end]
+	if page == nil {
+		page = []Capture{}
+	}
+	w.Header().Set("X-Total-Captures", strconv.Itoa(total))
+	writeJSON(w, page)
 }
 
 // handleAudio serves WAV files from the captures directory so the browser
@@ -601,7 +792,7 @@ func (s *Server) AddLiveArtifact(activity monitor.Activity, pngData []byte) erro
 	if err := os.MkdirAll(s.galleryDir, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(s.galleryDir, name), data, 0o644); err != nil {
+	if err := common.WriteFileAtomic(filepath.Join(s.galleryDir, name), data, 0o644); err != nil {
 		return err
 	}
 	station := activity.Label
@@ -613,18 +804,32 @@ func (s *Server) AddLiveArtifact(activity monitor.Activity, pngData []byte) erro
 		audioName := name + ".wav"
 		src, err := os.ReadFile(activity.AudioPath)
 		if err == nil && len(src) > 0 {
-			if err := os.WriteFile(filepath.Join(s.galleryDir, audioName), src, 0o644); err == nil {
+			if err := common.WriteFileAtomic(filepath.Join(s.galleryDir, audioName), src, 0o644); err == nil {
 				item.AudioURL = "/audio/live/" + url.PathEscape(audioName)
 			}
 		}
 	}
 	s.mu.Lock()
 	s.liveGallery = append([]LiveGalleryItem{item}, s.liveGallery...)
+	var pruned []LiveGalleryItem
+	if len(s.liveGallery) > liveGalleryCap {
+		pruned = append([]LiveGalleryItem(nil), s.liveGallery[liveGalleryCap:]...)
+		s.liveGallery = s.liveGallery[:liveGalleryCap]
+	}
 	hook := s.rdioHook
 	s.mu.Unlock()
+	for _, old := range pruned {
+		if filepath.Base(old.Name) == old.Name {
+			_ = os.Remove(filepath.Join(s.galleryDir, old.Name))
+			if old.AudioURL != "" {
+				_ = os.Remove(filepath.Join(s.galleryDir, old.Name+".wav"))
+			}
+		}
+	}
 	if hook != nil && activity.AudioPath != "" {
 		hook(activity)
 	}
+
 	return nil
 }
 
@@ -636,16 +841,22 @@ func (s *Server) SetRdioHook(hook func(monitor.Activity)) {
 	s.mu.Unlock()
 }
 
+// liveGalleryCap bounds how many verified live artefacts the gallery keeps.
+const liveGalleryCap = 200
+
 func (s *Server) handleLiveAudio(w http.ResponseWriter, r *http.Request) {
 	name, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/audio/live/"))
 	if err != nil || name == "" || strings.ContainsAny(name, "/\\") {
 		http.NotFound(w, r)
 		return
 	}
+	// Exact-name match: a suffix match would let ".../clip.wav" serve the
+	// audio of a different item whose name merely ends in "clip.wav".
+	want := "/audio/live/" + url.PathEscape(name)
 	s.mu.Lock()
 	found := false
 	for _, item := range s.liveGallery {
-		if item.AudioURL != "" && strings.HasSuffix(item.AudioURL, url.PathEscape(name)) {
+		if item.AudioURL == want {
 			found = true
 			break
 		}
@@ -716,11 +927,35 @@ func (s *Server) loadScanState() {
 		s.UpsertScanStatus(item)
 	}
 }
+
+// scanStatePersistInterval debounces scan-state writes: scan updates arrive
+// in bursts of dozens per second, and each one used to rewrite the file.
+const scanStatePersistInterval = 2 * time.Second
+
+// persistScanStateLocked schedules the scan state to be written. The first
+// change after a quiet interval writes immediately; further changes within
+// the interval collapse into one trailing write. s.mu must be held.
 func (s *Server) persistScanStateLocked() {
+	if s.scanStateTimer != nil {
+		// A trailing write is already scheduled and will see this change.
+		return
+	}
+	since := time.Since(s.lastScanPersist)
+	if since >= scanStatePersistInterval {
+		s.writeScanStateLocked()
+		return
+	}
+	s.scanStateTimer = time.AfterFunc(scanStatePersistInterval-since, s.flushScanState)
+}
+
+// writeScanStateLocked serialises and writes the scan state now. s.mu must
+// be held.
+func (s *Server) writeScanStateLocked() {
 	b, err := json.Marshal(s.scans)
 	if err != nil {
 		return
 	}
+	s.lastScanPersist = time.Now()
 	writeStateFile(scanStateFile(), b)
 }
 
@@ -732,8 +967,19 @@ func (s *Server) ScanStatuses() []ScanStatus {
 	return append([]ScanStatus(nil), s.scans...)
 }
 
-// SetScanStatuses replaces the board with the scanner's current snapshot and
-// appends changed rows to the connection log.
+// flushScanState writes any pending scan state immediately: on shutdown, so
+// the debounced tail is not lost, and from tests.
+func (s *Server) flushScanState() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.scanStateTimer != nil {
+		s.scanStateTimer.Stop()
+		s.scanStateTimer = nil
+	}
+	s.writeScanStateLocked()
+}
+
+// SetMonitor attaches a live monitor to the server.
 func (s *Server) SetScanStatuses(scans []ScanStatus) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -810,49 +1056,58 @@ func (s *Server) handleScanLog(w http.ResponseWriter, r *http.Request) {
 	if raw := r.URL.Query().Get("since"); raw != "" {
 		since, _ = strconv.ParseUint(raw, 10, 64)
 	}
+	// Copy under the lock, build the payload after releasing it: sorting
+	// and marshalling hundreds of rows blocked every scan update.
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	logCopy := append([]ScanStatus(nil), s.scanLog...)
+	logSeq := s.scanLogSeq
+	s.mu.Unlock()
 	start := uint64(0)
-	if uint64(len(s.scanLog)) > s.scanLogSeq {
-		start = 0
-	} else {
-		start = s.scanLogSeq - uint64(len(s.scanLog))
+	if uint64(len(logCopy)) <= logSeq {
+		start = logSeq - uint64(len(logCopy))
 	}
 	items := make([]map[string]any, 0)
-	for i, item := range s.scanLog {
+	for i, item := range logCopy {
 		seq := start + uint64(i) + 1
 		if seq > since {
 			items = append(items, map[string]any{"id": seq, "station": item.Station, "station_type": item.StationType, "frequency_hz": item.FrequencyHz, "mode": item.Mode, "state": item.State, "reason": item.Result, "updated_at": item.UpdatedAt})
 		}
 	}
 	sort.SliceStable(items, func(i, j int) bool { return fmt.Sprint(items[i]["updated_at"]) < fmt.Sprint(items[j]["updated_at"]) })
-	writeJSON(w, map[string]any{"items": items, "next_since": s.scanLogSeq})
+	writeJSON(w, map[string]any{"items": items, "next_since": logSeq})
 }
 
 func (s *Server) handleScans(w http.ResponseWriter, r *http.Request) {
+	// Copy under the lock, build the payload after releasing it: the
+	// per-station band-condition pass blocked every scan update.
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	metrics := s.scanMetrics
+	scans := append([]ScanStatus(nil), s.scans...)
+	cond := s.cond
+	condAt := s.condAt
+	s.mu.Unlock()
 	if metrics.TargetConcurrency == 0 {
 		metrics.TargetConcurrency = metrics.RampStep
 	}
-	metrics.Stations = make([]ScanStatus, 0, len(s.scans))
+	metrics.Stations = make([]ScanStatus, 0, len(scans))
 	metrics.Dropped = make([]DroppedStation, 0)
-	for _, item := range s.scans {
+	for _, item := range scans {
 		if item.State == "blocked" || strings.Contains(strings.ToLower(item.State), "error") || strings.Contains(strings.ToLower(item.State), "timeout") || strings.Contains(strings.ToLower(item.State), "refused") || strings.Contains(strings.ToLower(item.State), "failed") {
 			metrics.Dropped = append(metrics.Dropped, DroppedStation{Station: item.Station, Reason: item.Result, Until: item.BlockedUntil})
 			continue
 		}
 		metrics.Stations = append(metrics.Stations, item)
 	}
-	if len(s.cond.Bands) > 0 && time.Since(s.condAt) < 3*time.Hour {
+	if len(cond.Bands) > 0 && time.Since(condAt) < 3*time.Hour {
 		for i := range metrics.Stations {
-			if label, ok := s.cond.LabelForHz(metrics.Stations[i].FrequencyHz); ok {
+			if label, ok := cond.LabelForHz(metrics.Stations[i].FrequencyHz); ok {
 				band, _ := bandcond.BandForHz(metrics.Stations[i].FrequencyHz)
 				metrics.Stations[i].BandCondition = band + " " + label
 			}
 		}
 	}
+	// Deep-copied and annotated; the write happens without the lock so a
+	// slow reader cannot stall the scanner's status updates.
 	writeJSON(w, metrics)
 }
 
@@ -1130,6 +1385,13 @@ func (s *Server) handleTune(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "frequency_hz must be a positive number", http.StatusBadRequest)
 		return
 	}
+	// The mode goes straight to the receiver, so only the known listening
+	// modes are accepted; empty keeps the monitor's default.
+	mode := r.FormValue("mode")
+	if mode != "" && !monitorModes[mode] {
+		http.Error(w, "unknown mode", http.StatusBadRequest)
+		return
+	}
 	s.mu.Lock()
 	instance := s.monitor
 	s.mu.Unlock()
@@ -1137,7 +1399,7 @@ func (s *Server) handleTune(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no monitor is running", http.StatusNotFound)
 		return
 	}
-	queued := instance.RequestListen(hz, r.FormValue("mode"))
+	queued := instance.RequestListen(hz, mode)
 	writeJSON(w, map[string]any{"tuned_hz": hz, "queued": queued})
 }
 
@@ -1246,6 +1508,13 @@ func (s *Server) handleSatellites(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
+// observationsCacheTTL is how long one satellite's observation list is
+// reused; new SatNOGS observations land on timescales of minutes.
+const observationsCacheTTL = 5 * time.Minute
+
+// maxCachedObservationSets bounds the per-satellite observation cache.
+const maxCachedObservationSets = 64
+
 func (s *Server) handleObservations(w http.ResponseWriter, r *http.Request) {
 	norad := r.URL.Query().Get("norad")
 	if norad == "" {
@@ -1254,11 +1523,41 @@ func (s *Server) handleObservations(w http.ResponseWriter, r *http.Request) {
 	}
 	var id int
 	fmt.Sscanf(norad, "%d", &id)
-	observations, err := satnogs.Observations(id, 15, 30*time.Second)
+	s.mu.Lock()
+	if s.obsCache == nil {
+		s.obsCache = make(map[int]obsCacheEntry)
+	}
+	entry, cached := s.obsCache[id]
+	fetch := s.fetchObservations
+	s.mu.Unlock()
+	if cached && time.Since(entry.fetchedAt) < observationsCacheTTL {
+		writeJSON(w, entry.observations)
+		return
+	}
+	if fetch == nil {
+		fetch = func(noradID int) ([]satnogs.Observation, error) {
+			return satnogs.Observations(noradID, 15, 30*time.Second)
+		}
+	}
+	observations, err := fetch(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	s.mu.Lock()
+	// Evict the stalest entry when full so the map cannot grow per NORAD id
+	// the UI ever asks about.
+	if len(s.obsCache) >= maxCachedObservationSets {
+		oldestID, oldestAt := 0, time.Now()
+		for cacheID, cacheEntry := range s.obsCache {
+			if cacheEntry.fetchedAt.Before(oldestAt) {
+				oldestID, oldestAt = cacheID, cacheEntry.fetchedAt
+			}
+		}
+		delete(s.obsCache, oldestID)
+	}
+	s.obsCache[id] = obsCacheEntry{observations: observations, fetchedAt: time.Now()}
+	s.mu.Unlock()
 	writeJSON(w, observations)
 }
 
@@ -1276,6 +1575,23 @@ func (s *Server) Serve(addr string) error {
 	return s.ServeContext(context.Background(), addr)
 }
 
+// newHTTPServer builds the HTTP server with explicit timeouts. Without
+// them a slow client can pin a connection (and its goroutine) forever:
+// ReadHeaderTimeout bounds the header wait, ReadTimeout the whole request
+// (generous enough for a login over a slow link), WriteTimeout must cover
+// streaming a large WAV over a thin receiver link, and IdleTimeout reaps
+// keep-alive connections gone quiet.
+func (s *Server) newHTTPServer(addr string) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      10 * time.Minute,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
 // ServeContext serves until ctx is cancelled, then gracefully drains requests.
 func (s *Server) ServeContext(ctx context.Context, addr string) error {
 	if os.Getenv("SDRSTREAM_UI_PASSWORD") == "" && !s.NoAuth {
@@ -1291,7 +1607,13 @@ func (s *Server) ServeContext(ctx context.Context, addr string) error {
 		log.Printf("web: WARNING: no SDRSTREAM_UI_PASSWORD - serving an open UI on loopback only; set a password before exposing this beyond the local machine")
 	}
 	log.Printf("web UI on http://%s", addr)
-	server := &http.Server{Addr: addr, Handler: s.Handler()}
+	// Brokered defaults: slowloris-proof header read, bounded idle connections.
+	// No global ReadTimeout beyond the header stage is set here; the JSON
+	// and file handlers are all quick, but a hung scanner-writer connection
+	// would otherwise be killed mid-response.
+
+	defer s.flushScanState()
+	server := s.newHTTPServer(addr)
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.ListenAndServe() }()
 	select {

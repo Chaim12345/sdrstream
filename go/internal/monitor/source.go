@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chaim12345/sdrstream/go/internal/icecast"
 	"github.com/chaim12345/sdrstream/go/internal/kiwisdr"
 	"github.com/chaim12345/sdrstream/go/internal/openwebrx"
 	"github.com/chaim12345/sdrstream/go/internal/websdr"
@@ -16,34 +17,52 @@ import (
 // the server sends its own FFT, so the monitor can see every transmission
 // in the profile's span, not just the one the server is tuned to.
 type openWebRXSource struct {
-	client *openwebrx.Client
-	name   string
+	client  *openwebrx.Client
+	name    string
+	profile string // display name selected at connect, empty for the default
 
 	mu       sync.Mutex
 	bins     []float64
 	centre   float64
 	span     float64
 	haveSpec bool
+	// Freshness/gatekeeping: lastFFT is the newest spectrum frame's
+	// arrival; dead flips once the client's events channel closes. A
+	// frozen FFT from a dropped connection must not keep "scanning dead
+	// air" forever (review H2).
+	lastFFT time.Time
+	dead    bool
 }
 
 // OpenWebRXSource connects to an OpenWebRX server and starts collecting
 // its spectrum frames. The optional profile selects a wide profile so that
 // more of the band is visible.
 func OpenWebRXSource(ctx context.Context, server, profile string) (Source, error) {
-	client, err := openwebrx.New(server, openwebrx.DefaultOptions())
+	return dialOpenWebRX(ctx, server, profile, false)
+}
+
+func dialOpenWebRX(ctx context.Context, server, profile string, allowPrivate bool) (Source, error) {
+	options := openwebrx.DefaultOptions()
+	options.AllowPrivate = allowPrivate
+	client, err := openwebrx.New(server, options)
 	if err != nil {
 		return nil, err
 	}
 	if _, err := client.Connect(ctx); err != nil {
 		return nil, err
 	}
-	source := &openWebRXSource{client: client, name: server}
+	source := &openWebRXSource{client: client, name: server, profile: profile}
 	if profile != "" {
+		// A failed profile resolve/select would otherwise leak the live
+		// websocket: every rotated-profile visit against a server that
+		// dropped its profiles dripped one FD and one read-loop goroutine.
 		key, err := resolveProfile(client, profile)
 		if err != nil {
+			client.Close()
 			return nil, err
 		}
 		if err := client.SelectProfile(ctx, key); err != nil {
+			client.Close()
 			return nil, fmt.Errorf("monitor: select profile %q: %w", profile, err)
 		}
 		// Give the server a moment to switch profile and settle.
@@ -52,6 +71,24 @@ func OpenWebRXSource(ctx context.Context, server, profile string) (Source, error
 	go source.pump(ctx)
 	return source, nil
 }
+
+// ProfileNames lists the tunable profiles the receiver advertised. The
+// fleet scanner rotates through them between visits so a station with
+// several bands is not surveyed on only its default profile forever.
+func (s *openWebRXSource) ProfileNames() []string {
+	profiles := s.client.ProfileList()
+	names := make([]string, 0, len(profiles))
+	for _, profile := range profiles {
+		if name := strings.TrimSpace(profile.Name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// ActiveProfile is the display name selected for this connection, or empty
+// when the server's default profile is in use.
+func (s *openWebRXSource) ActiveProfile() string { return s.profile }
 
 // resolveProfile turns a profile name into the key the server expects.
 // The server identifies a profile as "sdr_id|profile_id", so a name has to
@@ -85,6 +122,12 @@ func (s *openWebRXSource) pump(ctx context.Context) {
 			return
 		case event, ok := <-s.client.Events():
 			if !ok {
+				// The receiver connection is over (socket error, server
+				// restart). Keep serving the last known spectrum for a
+				// short grace period; Spectrum() now gates by freshness.
+				s.mu.Lock()
+				s.dead = true
+				s.mu.Unlock()
 				return
 			}
 			switch event.Type {
@@ -98,6 +141,7 @@ func (s *openWebRXSource) pump(ctx context.Context) {
 				if bins, ok := event.Value.([]float64); ok && len(bins) > 0 {
 					s.mu.Lock()
 					s.bins = bins
+					s.lastFFT = time.Now()
 					s.mu.Unlock()
 				}
 			case "config":
@@ -125,6 +169,16 @@ func (s *openWebRXSource) Spectrum() ([]float64, float64, float64, bool) {
 	if len(s.bins) == 0 || s.span <= 0 {
 		return nil, s.centre, s.span, false
 	}
+	// Freshness gate: OpenWebRX pushes frames continuously while alive, so
+	// a frame older than a minute (connection down, readLoop expired)
+	// means the picture is frozen — scanning it would report hundreds of
+	// false "steady carrier" activities from one dead snapshot.
+	if s.dead && time.Since(s.lastFFT) > 10*time.Second {
+		return nil, s.centre, s.span, false
+	}
+	if time.Since(s.lastFFT) > time.Minute {
+		return nil, s.centre, s.span, false
+	}
 	return s.bins, s.centre, s.span, true
 }
 
@@ -136,6 +190,8 @@ func (s *openWebRXSource) Listen(ctx context.Context, hz float64, mode string, d
 	}
 	// Give the server a moment to retune and settle before recording.
 	time.Sleep(400 * time.Millisecond)
+	// Drop audio buffered at the old frequency during the settle window.
+	s.client.DrainAudio()
 	samples, rate, err := s.client.RecordSamples(ctx, dur)
 	if err != nil {
 		return nil, 0, err
@@ -163,7 +219,11 @@ type webSDRSource struct {
 
 // WebSDRSource connects to a WebSDR server.
 func WebSDRSource(ctx context.Context, server string) (Source, error) {
-	client, err := websdr.New(server, websdr.Options{Reconnect: true})
+	return dialWebSDR(ctx, server, false)
+}
+
+func dialWebSDR(ctx context.Context, server string, allowPrivate bool) (Source, error) {
+	client, err := websdr.New(server, websdr.Options{Reconnect: true, AllowPrivate: allowPrivate})
 	if err != nil {
 		return nil, err
 	}
@@ -182,6 +242,8 @@ func (s *webSDRSource) Listen(ctx context.Context, hz float64, mode string, dur 
 		return nil, 0, err
 	}
 	time.Sleep(400 * time.Millisecond)
+	// Drop audio buffered at the old frequency during the settle window.
+	s.client.DrainAudio()
 	samples, rate, err := s.client.Record(ctx, dur)
 	if err != nil {
 		return nil, 0, err
@@ -208,7 +270,13 @@ type kiwiSource struct {
 
 // KiwiSource connects to a KiwiSDR server.
 func KiwiSource(ctx context.Context, server string) (Source, error) {
-	client, err := kiwisdr.New(server, kiwisdr.DefaultOptions())
+	return dialKiwi(ctx, server, false)
+}
+
+func dialKiwi(ctx context.Context, server string, allowPrivate bool) (Source, error) {
+	options := kiwisdr.DefaultOptions()
+	options.AllowPrivate = allowPrivate
+	client, err := kiwisdr.New(server, options)
 	if err != nil {
 		return nil, err
 	}
@@ -244,15 +312,29 @@ func (s *kiwiSource) Close() error {
 	return nil
 }
 
-// SourceFor builds the receiver source for a protocol name.
+// SourceFor builds the receiver source for a protocol name. The receiver
+// address is guarded against loopback/private targets; use SourceForLocal
+// when the user explicitly names a local receiver.
 func SourceFor(ctx context.Context, kind, server, profile string) (Source, error) {
+	return sourceFor(ctx, kind, server, profile, false)
+}
+
+// SourceForLocal is SourceFor without the SSRF guard, for receivers the
+// user named explicitly (a lab SDR on the LAN, a loopback instance).
+func SourceForLocal(ctx context.Context, kind, server, profile string) (Source, error) {
+	return sourceFor(ctx, kind, server, profile, true)
+}
+
+func sourceFor(ctx context.Context, kind, server, profile string, allowPrivate bool) (Source, error) {
 	switch kind {
 	case "openwebrx", "":
-		return OpenWebRXSource(ctx, server, profile)
+		return dialOpenWebRX(ctx, server, profile, allowPrivate)
 	case "websdr":
-		return WebSDRSource(ctx, server)
+		return dialWebSDR(ctx, server, allowPrivate)
+	case "icecast", "shoutcast", "nwr":
+		return icecast.NewSource(server), nil
 	case "kiwi", "kiwisdr":
-		return KiwiSource(ctx, server)
+		return dialKiwi(ctx, server, allowPrivate)
 	}
 	return nil, fmt.Errorf("monitor: unknown receiver kind %q", kind)
 }

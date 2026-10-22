@@ -95,6 +95,7 @@ func ParsePSKSpot(payload []byte, now time.Time) (Item, bool) {
 		Label:  strings.ToUpper(s.SenderCall),
 		Detail: strings.Join(parts, " · "),
 		Time:   when,
+		Ref:    "https://pskreporter.info/pskmap.html", // provider map; no per-spot page
 	}
 	if lat, lon, ok := maidenheadToLatLon(s.SenderLoc); ok {
 		it.Lat, it.Lon, it.HasPos = lat, lon, true

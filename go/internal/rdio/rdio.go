@@ -193,6 +193,7 @@ type Queue struct {
 	once    sync.Once
 
 	mu       sync.Mutex
+	closed   bool
 	uploaded int
 	failed   int
 	lastErr  error
@@ -218,18 +219,24 @@ func NewQueue(options Options, logf func(format string, args ...interface{})) *Q
 
 // Enqueue schedules a call. It never blocks: if the backlog is full the
 // call is dropped and counted, because losing an archive copy is better
-// than blocking the receiver.
+// than blocking the receiver. Both the send and the drop take q.mu, which
+// is also what makes Close race-free: a plain select-default does NOT
+// protect against a send on a closed channel, so Enqueue-after-Close used
+// to panic exactly when the process was shutting down.
 func (q *Queue) Enqueue(call Call) {
 	if !q.options.Enabled() {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
 		return
 	}
 	select {
 	case q.calls <- call:
 	default:
-		q.mu.Lock()
 		q.failed++
 		q.lastErr = fmt.Errorf("rdio: upload queue full, dropped %s", filepath.Base(call.AudioPath))
-		q.mu.Unlock()
 		q.logf("%v", q.lastErr)
 	}
 }
@@ -237,8 +244,15 @@ func (q *Queue) Enqueue(call Call) {
 // Close drains the queue and waits for outstanding uploads.
 func (q *Queue) Close() {
 	q.once.Do(func() {
+		q.mu.Lock()
+		q.closed = true
 		if q.options.Enabled() {
 			close(q.calls)
+		}
+		// Released before wg.Wait: the upload worker takes q.mu for its
+		// stats, so holding the lock here would deadlock the drain.
+		q.mu.Unlock()
+		if q.options.Enabled() {
 			q.wg.Wait()
 		}
 	})

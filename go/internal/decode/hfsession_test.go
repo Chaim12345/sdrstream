@@ -72,9 +72,9 @@ func TestRunHFSessionCapsAndSingleConnection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	results, remaining, err := RunHFSession(ctx, server, targets, SessionOptions{
-		Listen:     300 * time.Millisecond,
-		MaxTargets: 3,
-	})
+		Listen:       300 * time.Millisecond,
+		MaxTargets:   3,
+		AllowPrivate: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,10 +108,10 @@ func TestRunHFSessionSessionLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	results, remaining, err := RunHFSession(ctx, server, targets, SessionOptions{
-		Listen:     500 * time.Millisecond,
-		MaxTargets: 20,
-		MaxSession: 1200 * time.Millisecond,
-	})
+		Listen:       500 * time.Millisecond,
+		MaxTargets:   20,
+		MaxSession:   1200 * time.Millisecond,
+		AllowPrivate: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestRunHFSessionSkipsInactive(t *testing.T) {
 		Listen:       300 * time.Millisecond,
 		MaxTargets:   20,
 		SkipInactive: true,
-	})
+		AllowPrivate: true})
 	if err != nil {
 		t.Fatal(err)
 	}

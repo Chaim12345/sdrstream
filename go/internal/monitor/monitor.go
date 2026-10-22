@@ -12,6 +12,7 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -49,6 +50,7 @@ type Activity struct {
 	Detail             string     `json:"detail,omitempty"` // decoded payload or transcript
 	VerificationAnchor string     `json:"-"`                // expected callsign/phrase for the live quality gate
 	Label              string     `json:"label,omitempty"`
+	Target             string     `json:"target,omitempty"` // named service a scheduled target was aimed at
 	Source             string     `json:"source"`
 	DurationSec        float64    `json:"duration_sec"`
 	AudioPath          string     `json:"audio_path,omitempty"`
@@ -96,6 +98,11 @@ type Options struct {
 	// disk. Nil saves every kind. Fleet scans use it to keep voice (and
 	// image-bearing SSTV) audio without archiving every data burst.
 	SaveAudio func(kind string) bool
+	// OnCapture is called after a WAV is written to OutDir. It runs for
+	// every archived clip, including noise, carrier and clips that later
+	// fail verification, so the fleet scanner can write provenance and
+	// keep a complete record.
+	OnCapture func(activity Activity, path string)
 	// Channels, when set with the broadcast strategy, is the rotation of
 	// fixed voice channels to visit (see DefaultVoiceChannels).
 	Channels []Channel
@@ -910,15 +917,30 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 			DurationSec: float64(len(samples)) / float64(rate),
 			Confidence:  asr.Confidence, Language: asr.Language, ASRModel: asr.Model, ASRFallback: asr.Fallback, VerificationAnchor: activity.VerificationAnchor,
 		}
-		if kind == "noise" || kind == "silence" || kind == "unknown" {
-			continue
-		}
 		if m.opts.OutDir != "" && (m.opts.SaveAudio == nil || m.opts.SaveAudio(kind)) {
-			path := filepath.Join(m.opts.OutDir, fmt.Sprintf("activity-%03d-%d-%s.wav",
-				activity.ID, int(work.frequency), modeName))
+			// Archive before the noise/unknown filter. The detector already
+			// decided this was a real peak; in record-all mode the clip is
+			// kept even when classification cannot name it.
+			prefix := captureToken(m.opts.Name)
+			if prefix == "" {
+				prefix = "activity"
+			}
+			path := filepath.Join(m.opts.OutDir, fmt.Sprintf("%s-activity-%03d-%d-%s-%d.wav",
+				prefix, activity.ID, int(work.frequency), captureToken(modeName), time.Now().UnixNano()))
 			if err := voice.WriteWAV(path, samples, rate); err == nil {
 				candidate.AudioPath = path
+				if m.opts.OnCapture != nil {
+					m.opts.OnCapture(candidate, path)
+				}
+			} else {
+				// WriteWAV already removed any partial file; the failure
+				// must not stay silent, or records-all archives quietly
+				// lose clips at the most interesting moment (disk full).
+				log.Printf("monitor: record activity %d: %v", activity.ID, err)
 			}
+		}
+		if kind == "noise" || kind == "silence" || kind == "unknown" {
+			continue
 		}
 		// A verdict with content beats one without; otherwise the first
 		// classification stands, so the activity never stays "unknown".
@@ -948,6 +970,20 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 			m.opts.OnImage(best, bestImage)
 		}
 	}
+}
+
+// captureToken makes a receiver or mode name safe for a filename. Receiver
+// names are often URLs, and two monitors on the same frequency must not
+// overwrite each other's archive entries.
+func captureToken(value string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
+			return r
+		default:
+			return '_'
+		}
+	}, strings.TrimSpace(value))
 }
 
 // publish hands an activity to the callback.
@@ -1063,6 +1099,15 @@ func (m *Monitor) ClassifyForScan(ctx context.Context, samples []float64, rate i
 // gated.
 func (m *Monitor) decodeData(ctx context.Context, samples []float64, rate int, bandwidthHz float64) (mode, detail string, ok bool) {
 	narrowChannel := bandwidthHz <= 0 || bandwidthHz <= 4000
+	// SAME (NOAA Weather Radio / EAS) headers are validated field by field,
+	// so this is safe to try on any audio and cannot invent traffic.
+	if alerts := decode.SAMEScan(samples, rate); len(alerts) > 0 {
+		lines := make([]string, 0, len(alerts))
+		for _, a := range alerts {
+			lines = append(lines, a.String()+" | "+a.Raw)
+		}
+		return "same", strings.Join(lines, " | "), true
+	}
 	// APRS and Morse need a file, so the samples go to a temporary WAV.
 	path, err := writeTempWAV(samples, rate)
 	if err == nil {
@@ -1160,10 +1205,12 @@ func (m *Monitor) decodeData(ctx context.Context, samples []float64, rate int, b
 				return "psk31", text, true
 			}
 		}
-		if text := decode.RTTYDecode(samples, rate, 0, 0, 0); text != "" {
-			if plausibleNarrowbandText(text) {
-				return "rtty", text, true
+		// Both polarities are needed for real services; keep the review text gate.
+		if text, inverted := decode.RTTYDecodeAuto(samples, rate, 0, 0, 0); text != "" && plausibleNarrowbandText(text) {
+			if inverted {
+				return "rtty", text + " [inverted mark/space]", true
 			}
+			return "rtty", text, true
 		}
 		// SSTV is intentionally disabled in live classification until the
 		// independent per-line sync decoder passes real-frame review.

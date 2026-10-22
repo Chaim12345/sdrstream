@@ -130,15 +130,25 @@ func (a *Airframes) RunSniff(ctx context.Context, onMsg func(AirframesMessage)) 
 		return fmt.Errorf("airframes ws dial: %w", err)
 	}
 	defer c.Close()
+	c.SetReadLimit(1 << 20)
+	// Per-attempt context: the closer goroutine must end with this
+	// connection, not leak until the supervisor's ctx ends.
+	attemptCtx, stopAttempt := context.WithCancel(ctx)
+	defer stopAttempt()
 	go func() {
-		<-ctx.Done()
+		<-attemptCtx.Done()
 		c.Close()
 	}()
 	// Engine.IO open packet ("0{...}") arrives first; answer with the
 	// socket.io connect packet "40", then join the global firehose.
 	connected := false
 	joined := false
+	write := func(data []byte) error {
+		_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		return c.WriteMessage(websocket.TextMessage, data)
+	}
 	for {
+		_ = c.SetReadDeadline(time.Now().Add(90 * time.Second))
 		_, data, err := c.ReadMessage()
 		if err != nil {
 			return err
@@ -146,24 +156,24 @@ func (a *Airframes) RunSniff(ctx context.Context, onMsg func(AirframesMessage)) 
 		s := string(data)
 		switch {
 		case strings.HasPrefix(s, "0{"):
-			if err := c.WriteMessage(websocket.TextMessage, []byte("40")); err != nil {
+			if err := write([]byte("40")); err != nil {
 				return err
 			}
 		case strings.HasPrefix(s, "40"):
 			connected = true
 			if !joined {
-				if err := c.WriteMessage(websocket.TextMessage, []byte(`42["messages:sniff"]`)); err != nil {
+				if err := write([]byte(`42["messages:sniff"]`)); err != nil {
 					return err
 				}
 				joined = true
 			}
 		case s == "2": // engine.io ping
-			if err := c.WriteMessage(websocket.TextMessage, []byte("3")); err != nil {
+			if err := write([]byte("3")); err != nil {
 				return err
 			}
 		case strings.HasPrefix(s, "42"):
 			if connected && !joined {
-				if err := c.WriteMessage(websocket.TextMessage, []byte(`42["messages:sniff"]`)); err != nil {
+				if err := write([]byte(`42["messages:sniff"]`)); err != nil {
 					return err
 				}
 				joined = true

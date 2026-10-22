@@ -26,13 +26,24 @@ func ReadWAV(path string) ([]float64, int, error) {
 	if int(binary.LittleEndian.Uint16(data[34:36])) != 16 {
 		return nil, 0, fmt.Errorf("%s: only 16-bit PCM is supported", path)
 	}
+	if rate <= 0 {
+		return nil, 0, fmt.Errorf("%s: bad sample rate %d", path, rate)
+	}
 	offset := 12
 	for offset+8 <= len(data) {
 		id := string(data[offset : offset+4])
 		size := int(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
 		body := offset + 8
 		if id == "data" {
-			count := size / 2
+			// Decode only the bytes actually present; the WAV may have been torn on disk.
+			end := body + size
+			if size < 0 || end < body || end > len(data) {
+				end = len(data)
+			}
+			if end < body {
+				end = body
+			}
+			count := (end - body) / 2
 			if channels < 1 {
 				channels = 1
 			}

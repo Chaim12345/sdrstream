@@ -208,8 +208,23 @@ func wsprSyncDemod(id, qd []float64, np int, f1 *float64, ifmin, ifmax int, fste
 		f2sum += bestSym[i] * bestSym[i] / 162
 	}
 	fac := math.Sqrt(f2sum - fsum*fsum)
+	if math.IsNaN(fac) || fac <= 0 {
+		// Constant (or empty) symbol powers give a zero or negative
+		// variance; dividing by it would spread NaN through the soft
+		// symbols. Fall back to unscaled symbols instead.
+		fac = 1
+	}
 	for i := 0; i < 162; i++ {
 		v := symfac * bestSym[i] / fac
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			// fac==0 (a flat symbol-magnitude window: pure silence or a
+			// total of noise) divides by zero and NaN then fails both
+			// clamp comparisons, poisoning the Fano input with a bogus
+			// symbol that decodes to garbage. Treat a degenerate window
+			// as neutral (v=0) so the decoder sees an unknown value.
+			symbols[i] = 128
+			continue
+		}
 		if v > 127 {
 			v = 127
 		}

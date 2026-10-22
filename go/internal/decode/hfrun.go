@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -67,6 +68,9 @@ type SessionOptions struct {
 	SkipInactive    bool          // skip targets whose schedule says off-air
 	RecordFullAudio bool          // keep AudioWAV on every result, not only failures
 	WSPath          string        // preflight-selected Kiwi WebSocket path style
+	// AllowPrivate permits dialing loopback/private hosts (local receivers,
+	// tests). Leave false for directory-sourced stations.
+	AllowPrivate bool
 }
 
 func (o *SessionOptions) defaults() {
@@ -105,6 +109,7 @@ func RunHFSession(ctx context.Context, server string, targets []HFTarget, opts S
 	}
 	kiwiOptions := kiwisdr.DefaultOptions()
 	kiwiOptions.WSPath = opts.WSPath
+	kiwiOptions.AllowPrivate = opts.AllowPrivate
 	client, err := kiwisdr.New(server, kiwiOptions)
 	if err != nil {
 		return nil, targets, err
@@ -157,10 +162,13 @@ func decodeHF(target HFTarget, server string, samples16 []int16, rate int) HFRes
 		result.Text = text
 		result.Gate = verify.Text("rtty", text, target.Expect)
 	case "cw":
+		// MorseDecode reads from a file; the temp WAV must not survive the
+		// decode or a fleet of CW targets leaks one file per clip.
 		if tmp, err := writeTempWAV16(samples16, rate); err == nil {
 			if morse, derr := MorseDecode(tmp); derr == nil {
 				result.Text = morse.Text
 			}
+			_ = os.Remove(tmp)
 		}
 		result.Gate = verify.CW(result.Text, target.Expect)
 	case "navtex":

@@ -1,0 +1,43 @@
+sdrstream
+Copyright (C) 2026 Chaim12345 and sdrstream contributors
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+sdrstream is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. See LICENSE. It is distributed WITHOUT ANY WARRANTY.
+
+Third-party components are listed in NOTICE-third-party.md. Highlights:
+
+Leaflet 1.9.4 (go/internal/web/static/vendor/leaflet/)
+  Copyright (c) 2010-2023 Vladimir Agafonkin, (c) 2010-2011 CloudMade.
+  BSD 2-Clause. The full license text is kept beside the files in
+  go/internal/web/static/vendor/leaflet/LICENSE.
+
+Test recordings
+  Sources and terms for committed recordings are in tests/data/NOTICE.
+
+=== OPEN ISSUE: PA3FWM WebSDR companding table (permission required) ===
+
+sdrstream/_websdr_table.py and go/internal/vocoder/table.go (generated from
+it) reproduce a 256-entry sample table taken from the WebSDR HTML5 client
+(websdr-sound.js), copyright 2013-2025 PA3FWM (https://www.websdr.org/).
+
+Upstream terms found:
+  - The client file header reads "Copyright 2013-2020 ... all rights
+    reserved" and allows the code to be made available unmodified, via the
+    original WebSDR server software, to original WebSDR clients. Other use,
+    including distribution in part, is not covered by that grant.
+    (header as quoted in https://goughlui.com/2022/12/05/ ; re-check the live
+    file)
+  - The WebSDR server documentation states that further distribution and
+    reusing parts of the code in other software is not allowed without the
+    author's explicit prior permission.
+    (dist11/doc/install.txt, e.g. https://github.com/FarnhamSDR/websdr)
+
+TODO: explicit permission from PA3FWM is required to keep this table in the
+source tree. None has been obtained, and none is asserted here. Until then
+the table must be treated as not redistributable under AGPL-3.0-or-later.
+Options for the maintainer: ask PA3FWM for written permission, or replace the
+table with one derived independently. Earlier comments in the code that said
+the author "permits redistribution" were wrong and have been corrected.
