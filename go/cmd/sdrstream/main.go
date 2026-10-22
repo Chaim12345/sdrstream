@@ -176,12 +176,12 @@ func parseWhen(value string) (time.Time, error) {
 
 func satByName(name string) (satellites.Sat, error) {
 	want := strings.ToUpper(strings.TrimSpace(name))
-	for _, sat := range satellites.Table {
+	for _, sat := range satellites.All() {
 		if strings.ToUpper(sat.Name) == want {
 			return sat, nil
 		}
 	}
-	for _, sat := range satellites.Table {
+	for _, sat := range satellites.All() {
 		if strings.Contains(strings.ToUpper(sat.Name), want) {
 			return sat, nil
 		}
@@ -466,9 +466,9 @@ func derefString(p *string) interface{} {
 
 func cmdSatellites(args []string) error {
 	if len(args) == 0 {
-		for _, band := range []string{"2m", "70cm", "23cm"} {
+		for _, band := range []string{"2m", "70cm", "23cm", "apt"} {
 			var inBand []satellites.Sat
-			for _, sat := range satellites.Table {
+			for _, sat := range satellites.All() {
 				if band == bandOf(sat) {
 					inBand = append(inBand, sat)
 				}
@@ -515,6 +515,9 @@ func cmdSatellites(args []string) error {
 }
 
 func bandOf(sat satellites.Sat) string {
+	if sat.DownlinkHz >= 136_000_000 && sat.DownlinkHz < 138_000_000 {
+		return "apt"
+	}
 	switch {
 	case sat.DownlinkHz >= 144_000_000 && sat.DownlinkHz < 148_000_000:
 		return "2m"

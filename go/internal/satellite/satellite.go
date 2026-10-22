@@ -66,7 +66,7 @@ func (p ChasePlan) Summary() string {
 // General-Perturbations records and falling back to TLE text. GP records
 // are the modern element format: since the NORAD catalog passed 99,999 in
 // July 2026, new satellites are published only there, never as TLE text.
-func loadTracker(name, group, tleText string, offline bool) (*tracking.Tracker, error) {
+func loadTracker(name string, noradID int, group, tleText string, offline bool) (*tracking.Tracker, error) {
 	if tleText != "" {
 		return tracking.FromTLEText(tleText, name)
 	}
@@ -80,10 +80,23 @@ func loadTracker(name, group, tleText string, offline bool) (*tracking.Tracker, 
 		}
 	}
 	text, err := tle.Load(group, 24, offline, 60*time.Second)
+	if err == nil {
+		if tracker, lookupErr := tracking.FromTLEText(text, name); lookupErr == nil {
+			return tracker, nil
+		}
+	}
+	// The group no longer carries this object (CelesTrak drops birds from
+	// their mission group when they are decommissioned, while still tracking
+	// them): fall back to the per-object catalogue-number lookup.
+	if noradID > 0 {
+		if single, catErr := tle.LoadCatnr(noradID, 24, offline, 60*time.Second); catErr == nil && single != "" {
+			return tracking.FromTLEText(single, name)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
-	return tracking.FromTLEText(text, name)
+	return nil, fmt.Errorf("no TLE found for %q in group %q or by catalogue number %d", name, group, noradID)
 }
 
 // PlanPass works out when and where to record sat. With receiver nil and no
@@ -118,7 +131,7 @@ func PlanPass(sat satellites.Sat, receiver *catalogue.Receiver,
 	}
 
 	text := tleText
-	tracker, err := loadTracker(sat.Name, sat.Group, text, offline)
+	tracker, err := loadTracker(sat.Name, sat.NoradID, sat.Group, text, offline)
 	if err != nil {
 		return ChasePlan{}, err
 	}
@@ -280,7 +293,7 @@ func Chase(ctx context.Context, plan ChasePlan, outPath string,
 		say = func(string) {}
 	}
 	text := plan.TLEText
-	tracker, err := loadTracker(plan.Satellite.Name, plan.Satellite.Group, text, offline)
+	tracker, err := loadTracker(plan.Satellite.Name, plan.Satellite.NoradID, plan.Satellite.Group, text, offline)
 	if err != nil {
 		return 0, err
 	}

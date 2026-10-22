@@ -323,17 +323,45 @@ func (s *Server) loadGallery() {
 	s.mu.Unlock()
 }
 
-// loadPasses predicts passes for the next 12 hours over a few good receivers
-// and swaps the table atomically, so a refresh never shows a half-built list.
+// passWindowHours is how far ahead the pass table looks.
+const passWindowHours = 24
+
+// passMinElevation is the default minimum peak elevation for the table, in
+// degrees; /api/passes.json accepts a min_elevation override.
+const passMinElevation = 10.0
+
+// TLEAttribution credits the element-set source, per CelesTrak's terms
+// (data free to use with attribution).
+const TLEAttribution = "Orbit data: CelesTrak (celestrak.org), used with attribution"
+
+// loadPasses predicts passes for the next 24 hours over good receivers and
+// swaps the table atomically, so a refresh never shows a half-built list.
+// Element sets load per CelesTrak group (amateur, weather), each through the
+// disk cache, so one unreachable group only costs its own satellites.
 func (s *Server) loadPasses() {
-	text, err := tle.Load("amateur", 24, false, 60*time.Second)
-	if err != nil {
-		log.Printf("web: tle load: %v", err)
+	texts := map[string]string{}
+	for _, group := range []string{"amateur", "weather"} {
+		text, err := tle.Load(group, 24, false, 60*time.Second)
+		if err != nil {
+			log.Printf("web: tle load %s: %v", group, err)
+			continue
+		}
+		texts[group] = text
+	}
+	if len(texts) == 0 {
 		return
 	}
 	var passes []PassInfo
-	for _, sat := range satellites.Table {
+	for _, sat := range satellites.All() {
 		if sat.Status != "active" {
+			continue
+		}
+		group := sat.Group
+		if group == "" {
+			group = "amateur"
+		}
+		text, ok := texts[group]
+		if !ok {
 			continue
 		}
 		receivers := catalogue.ForFrequency(float64(sat.DownlinkHz))
@@ -341,12 +369,19 @@ func (s *Server) loadPasses() {
 			continue
 		}
 		tracker, err := tracking.FromTLEText(text, sat.Name)
+		if err != nil && sat.NoradID > 0 {
+			// Decommissioned birds drop out of their CelesTrak group but
+			// are still tracked by catalogue number.
+			if single, catErr := tle.LoadCatnr(sat.NoradID, 24, false, 60*time.Second); catErr == nil && single != "" {
+				tracker, err = tracking.FromTLEText(single, sat.Name)
+			}
+		}
 		if err != nil {
 			continue
 		}
 		for _, receiver := range receivers[:2] {
 			passesForReceiver, err := tracker.FindPasses(receiver.Latitude, receiver.Longitude,
-				time.Now(), 12, 10)
+				time.Now(), passWindowHours, passMinElevation)
 			if err != nil {
 				continue
 			}
@@ -643,6 +678,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/status.json", s.handleStatus)
 	mux.HandleFunc("/api/captures.json", s.handleCaptures)
 	mux.HandleFunc("/api/satellites.json", s.handleSatellites)
+	mux.HandleFunc("/api/passes.json", s.handlePasses)
 	mux.HandleFunc("/api/observations.json", s.handleObservations)
 	mux.HandleFunc("/api/gallery.json", s.handleGallery)
 	mux.HandleFunc("/api/test-fixtures.json", s.handleTestFixtures)
@@ -1498,16 +1534,49 @@ func (s *Server) handleStations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, stations)
 }
 
+// handlePasses serves the predicted-pass table with an optional
+// min_elevation filter (degrees) and the CelesTrak attribution.
+func (s *Server) handlePasses(w http.ResponseWriter, r *http.Request) {
+	minElevation := 0.0
+	if raw := r.URL.Query().Get("min_elevation"); raw != "" {
+		if value, err := strconv.ParseFloat(raw, 64); err == nil {
+			minElevation = value
+		}
+	}
+	s.mu.Lock()
+	passes := append([]PassInfo(nil), s.passes...)
+	s.mu.Unlock()
+	out := passes[:0]
+	for _, pass := range passes {
+		if pass.MaxElevation >= minElevation {
+			out = append(out, pass)
+		}
+	}
+	writeJSON(w, map[string]interface{}{
+		"window_hours": passWindowHours, "attribution": TLEAttribution,
+		"passes": out,
+	})
+}
+
 func (s *Server) handleSatellites(w http.ResponseWriter, r *http.Request) {
 	var out []SatelliteInfo
-	for _, sat := range satellites.Table {
+	for _, sat := range satellites.All() {
 		relay := ""
 		if relays.IsRelay(sat) && sat.Status == "active" {
 			relay = string(relays.KindOf(sat))
 		}
+		band := "2m"
+		switch {
+		case sat.Group == "weather":
+			band = "137mhz"
+		case sat.DownlinkHz >= 420_000_000 && sat.DownlinkHz < 450_000_000:
+			band = "70cm"
+		case sat.DownlinkHz >= 1240_000_000:
+			band = "23cm"
+		}
 		out = append(out, SatelliteInfo{
 			Name: sat.Name, NoradID: sat.NoradID, DownlinkHz: sat.DownlinkHz,
-			Mode: sat.Mode, Relay: relay, Status: sat.Status,
+			Mode: sat.Mode, Relay: relay, Status: sat.Status, Band: band,
 			Receivers: len(catalogue.ForFrequency(float64(sat.DownlinkHz))),
 		})
 	}

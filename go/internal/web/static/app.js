@@ -109,7 +109,7 @@ function renderStatCards(status) {
   const cards = [
     { label: 'monitor', value: monitorState === 'monitoring' ? 'LIVE' : monitorState, cls: monitorState === 'monitoring' ? 'good' : '' },
     { label: 'receivers', value: status.receivers ?? '–', cls: 'accent' },
-    { label: 'passes 12h', value: (status.passes || []).length, cls: '' },
+    { label: 'passes 24h', value: (status.passes || []).length, cls: '' },
     { label: 'captures', value: (status.captures || []).length, cls: '' },
   ];
   const box = el('stat-cards');

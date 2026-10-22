@@ -107,6 +107,10 @@ func nonEmptyLines(text string) []string {
 func (tr *Tracker) lookAngleAt(t time.Time, lat, lon, altKm float64) (LookAngle, error) {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
+	// The sgp4 library reads a time's civil fields as if they were UTC and
+	// ignores the zone offset, so any non-UTC tag silently shifts the
+	// propagation. Normalise at the boundary.
+	t = t.UTC()
 	eci, err := tr.tle.FindPositionAtTime(t)
 	if err != nil {
 		return LookAngle{}, err
@@ -167,7 +171,7 @@ func observerPositionECI(lat, lon, altKm float64, t time.Time) (float64, float64
 	xe := (N + altKm) * math.Cos(latRad) * math.Cos(lonRad)
 	ye := (N + altKm) * math.Cos(latRad) * math.Sin(lonRad)
 	ze := (N*(1-e2) + altKm) * sinLat
-	gmst := (&sgp4.Eci{DateTime: t}).GreenwichSiderealTime()
+	gmst := (&sgp4.Eci{DateTime: t.UTC()}).GreenwichSiderealTime()
 	cosG, sinG := math.Cos(gmst), math.Sin(gmst)
 	return xe*cosG - ye*sinG, xe*sinG + ye*cosG, ze
 }
@@ -190,6 +194,9 @@ func (tr *Tracker) LookAngle(t time.Time, lat, lon, altKm float64) (LookAngle, e
 func (tr *Tracker) FindPasses(lat, lon float64, start time.Time, hours, minElevation float64) ([]Pass, error) {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
+	// Same zone-offset hazard as lookAngleAt: the library reads civil fields
+	// as UTC, and tags the returned pass times with the start's location.
+	start = start.UTC()
 	passes, err := tr.tle.GeneratePasses(lat, lon, 0, start, start.Add(time.Duration(hours*float64(time.Hour))), 30)
 	if err != nil {
 		return nil, err
@@ -200,9 +207,9 @@ func (tr *Tracker) FindPasses(lat, lon float64, start time.Time, hours, minEleva
 			continue
 		}
 		out = append(out, Pass{
-			Rise:        p.AOS,
-			Peak:        LookAngle{Time: p.MaxElevationTime, Elevation: p.MaxElevation, Azimuth: p.MaxElevationAz},
-			Set:         p.LOS,
+			Rise:        p.AOS.UTC(),
+			Peak:        LookAngle{Time: p.MaxElevationTime.UTC(), Elevation: p.MaxElevation, Azimuth: p.MaxElevationAz},
+			Set:         p.LOS.UTC(),
 			DurationSec: p.Duration.Seconds(),
 		})
 	}
