@@ -1600,3 +1600,13 @@ setInterval(refreshLive, 1000);
 setInterval(refreshGallery, 60000);
 setInterval(refreshStations, 300000);
 setInterval(refreshBandCond, 900000);
+
+// Installable-app support: register the service worker that caches the
+// static shell. Live data (/api, /audio) always bypasses it.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((err) => {
+      console.warn('service worker registration failed:', err);
+    });
+  });
+}

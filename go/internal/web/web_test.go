@@ -904,3 +904,85 @@ func TestLoginAttemptsMapCapped(t *testing.T) {
 		t.Fatalf("lockout map grew to %d entries with a cap of 100", size)
 	}
 }
+
+// TestPWARoutes pins the installable-app surface: the manifest and service
+// worker are served at root scope with usable content types, the manifest
+// parses and names icon URLs that actually exist in the embedded static FS,
+// and the page links the manifest.
+func TestPWARoutes(t *testing.T) {
+	srv := (&Server{}).Handler()
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("GET", "/manifest.webmanifest", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("manifest status = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/manifest+json" {
+		t.Fatalf("manifest content type = %q", ct)
+	}
+	var manifest struct {
+		Name       string `json:"name"`
+		StartURL   string `json:"start_url"`
+		Display    string `json:"display"`
+		ThemeColor string `json:"theme_color"`
+		Icons      []struct {
+			Src   string `json:"src"`
+			Sizes string `json:"sizes"`
+		} `json:"icons"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &manifest); err != nil {
+		t.Fatalf("manifest does not parse: %v", err)
+	}
+	if manifest.Name == "" || manifest.StartURL != "/" || manifest.Display != "standalone" {
+		t.Fatalf("manifest missing installable fields: %+v", manifest)
+	}
+	if len(manifest.Icons) < 2 {
+		t.Fatalf("manifest has %d icons, need at least 192 and 512", len(manifest.Icons))
+	}
+	has192, has512 := false, false
+	for _, icon := range manifest.Icons {
+		if !strings.HasPrefix(icon.Src, "/static/") {
+			t.Fatalf("icon %q is not under /static/", icon.Src)
+		}
+		if _, err := staticFS.ReadFile(strings.TrimPrefix(icon.Src, "/")); err != nil {
+			t.Fatalf("manifest icon %q not in embedded FS: %v", icon.Src, err)
+		}
+		has192 = has192 || strings.Contains(icon.Sizes, "192x192")
+		has512 = has512 || strings.Contains(icon.Sizes, "512x512")
+	}
+	if !has192 || !has512 {
+		t.Fatalf("manifest lacks 192x192 and 512x512 icons")
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("GET", "/sw.js", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sw.js status = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+		t.Fatalf("sw.js content type = %q", ct)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("sw.js must be no-cache so updates propagate, got %q", cc)
+	}
+	if !strings.Contains(rec.Body.String(), "addEventListener('fetch'") {
+		t.Fatal("sw.js does not look like a service worker")
+	}
+
+	if !strings.Contains(indexPage, `rel="manifest" href="/manifest.webmanifest"`) {
+		t.Fatal("index.html does not link the web app manifest")
+	}
+	if !strings.Contains(indexPage, "apple-touch-icon") {
+		t.Fatal("index.html lost the apple-touch-icon link")
+	}
+
+	// The CSP must allow the manifest and the service worker from self.
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	csp := rec.Header().Get("Content-Security-Policy")
+	for _, directive := range []string{"manifest-src 'self'", "worker-src 'self'"} {
+		if !strings.Contains(csp, directive) {
+			t.Fatalf("CSP missing %q: %s", directive, csp)
+		}
+	}
+}

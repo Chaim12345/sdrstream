@@ -20,3 +20,4 @@ build/
 dist/
 tools/vendor/decoders/*
 !tools/vendor/decoders/README.md
+dist/

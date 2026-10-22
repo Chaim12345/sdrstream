@@ -584,7 +584,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		// script-src has no 'unsafe-inline': every script the page runs is
 		// a bundled file under /static (pinned by TestCSPDropsUnsafeInlineScripts).
 		// style-src keeps 'unsafe-inline' for the login page's inline style.
-		header.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'")
+		header.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -624,6 +624,24 @@ func handleLegal(name string) http.HandlerFunc {
 	}
 }
 
+// handlePWAFile serves one embedded static file at a root-level path with an
+// explicit content type. The service worker is served no-cache so browsers
+// pick up updates on the next load (its byte comparison drives updates).
+func handlePWAFile(name, contentType string, noCache bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		data, err := staticFS.ReadFile("static/" + name)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		if noCache {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		_, _ = w.Write(data)
+	}
+}
+
 // Handler returns the HTTP routes.
 func (s *Server) Handler() http.Handler {
 	s.auth.init()
@@ -658,6 +676,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/stations.json", s.handleStations)
 	mux.HandleFunc("/api/map.json", s.handleMap)
 	mux.HandleFunc("/api/tiles/", s.handleTile)
+	mux.HandleFunc("/manifest.webmanifest", handlePWAFile("manifest.webmanifest", "application/manifest+json", false))
+	mux.HandleFunc("/sw.js", handlePWAFile("sw.js", "text/javascript; charset=utf-8", true))
 	mux.Handle("/static/", http.FileServerFS(staticFS))
 	mux.HandleFunc("/audio/", s.handleAudio)
 	mux.HandleFunc("/audio/live/", s.handleLiveAudio)

@@ -1,0 +1,24 @@
+services:
+  sdrstream:
+    build: .
+    image: sdrstream:local
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Required: set a real password before exposing the port beyond
+      # localhost. Put it in a .env file (mode 600) next to this file:
+      #   SDRSTREAM_UI_PASSWORD=...
+      SDRSTREAM_UI_PASSWORD: ${SDRSTREAM_UI_PASSWORD:?set SDRSTREAM_UI_PASSWORD in .env first}
+      # Optional: aisstream.io key for the ship layer.
+      SDRSTREAM_AIS_KEY: ${SDRSTREAM_AIS_KEY:-}
+      # Optional: NVIDIA NIM hosted ASR key for voice transcription.
+      SDRSTREAM_NIM_API_KEY: ${SDRSTREAM_NIM_API_KEY:-}
+    volumes:
+      - sdrstream-data:/data
+    # Optional reference decoders (jt9/wsprd), installed rootlessly on the
+    # host with scripts/refdec.sh:
+    #   - ${HOME}/toolchain/refdec:/opt/refdec:ro
+    # environment: SDRSTREAM_REFDEC_DIR=/opt/refdec
+volumes:
+  sdrstream-data:

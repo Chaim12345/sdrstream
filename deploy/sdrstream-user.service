@@ -1,0 +1,18 @@
+[Unit]
+Description=sdrstream all-station monitor (user service)
+Documentation=https://github.com/Chaim12345/sdrstream
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/sdrstream/sdrstream.env
+ExecStart=%h/.local/bin/sdrstream web \
+  --host 127.0.0.1 --port 8000 \
+  --scan-open-directory --scan-kiwi-directory --scan-record-all
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
