@@ -17,13 +17,13 @@ for w in "$CACHE"/*.wav; do
   b="$(basename "$w" .wav)"
   case "$b" in
     191111_*|websdr_test*)
-      "$FT8LIB_DIR/decode_ft8" "$w" | sed -n 's/.*~ *//p' | sed 's/  .*//; s/ *$//' | grep -v '^Error' | sort -u > "$OUT/ok_ft8_$b.txt"  # second decoder: accepted extras
+      "$FT8LIB_DIR/decode_ft8" "$w" | sed -n 's/.*~ *//p' | sed 's/  .*//; s/ *$//' | { grep -v 'while unpacking' || true; } | sort -u > "$OUT/ok_ft8_$b.txt"  # second decoder: accepted extras
       if [ -f "$CACHE/$b.txt" ]; then
         sed -n 's/.*~ *//p' "$CACHE/$b.txt" | sed 's/  .*//; s/ *$//' | sort -u > "$OUT/ft8_$b.txt"
       fi;;
     1[0-9][0-9][0-9][0-9][0-9]_*|2[0-9][0-9][0-9][0-9][0-9]_*)
       case "$b" in 150426_0918) continue;; esac
-      "$FT8LIB_DIR/decode_ft8" "$w" | sed -n 's/.*~ *//p' | sed 's/  .*//; s/ *$//' | grep -v '^Error' | sort -u > "$OUT/ft8_$b.txt";;
+      "$FT8LIB_DIR/decode_ft8" "$w" | sed -n 's/.*~ *//p' | sed 's/  .*//; s/ *$//' | { grep -v 'while unpacking' || true; } | sort -u > "$OUT/ft8_$b.txt";;
   esac
 done
 
@@ -51,6 +51,8 @@ for l in sys.stdin:
     if len(p)>=7 and p[0]=="FLEX" and p[5]=="ALN" and p[4].strip().isdigit(): print("%d|%s"%(int(p[4]),"|".join(p[6:])))
 ' | sort -u > "$OUT/flex_p2000.txt"
 
+[ -f "$CACHE/acarsdec_expected.txt" ] || curl -sSL -A "sdrstream-decoder-regress/1.0" -o "$CACHE/acarsdec_expected.txt" \
+  https://raw.githubusercontent.com/jasonherald/sdr-acars/main/tests/fixtures/acarsdec_test_wav_expected.txt
 # ACARS: acarsdec reference output (sdr-acars fixture) -> reg|label|mode|blockid
 python3 - "$CACHE/acarsdec_expected.txt" > "$OUT/acars_acarsdec_test.txt" <<'PY'
 import re,sys
