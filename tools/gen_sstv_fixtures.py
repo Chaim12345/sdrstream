@@ -11,6 +11,8 @@ Fixtures written to go/internal/decode/testdata/ (8000 Hz, 16-bit mono):
   sstv_martin_m2.wav            Martin M2, clean
   sstv_martin_m2_impaired.wav   Martin M2, +300 ppm clock offset, ~15 dB SNR
   sstv_scottie_s1.wav           Scottie S1, ~20 dB SNR
+  sstv_scottie_s2.wav           Scottie S2, ~20 dB SNR
+  sstv_scottie_dx.wav           Scottie DX, ~20 dB SNR
   sstv_robot36.wav              Robot 36, ~20 dB SNR
   sstv_robot36_impaired.wav     Robot 36, -250 ppm clock offset, ~15 dB SNR
   pattern_320x256.png / pattern_320x240.png  the encoded source images
@@ -27,13 +29,19 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from pysstv.color import MartinM1, MartinM2, ScottieS1, Robot36
+from pysstv.color import MartinM1, MartinM2, ScottieS1, ScottieS2, ScottieDX, Robot36
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 TESTDATA = os.path.join(ROOT, "go", "internal", "decode", "testdata")
 RATE_IMAGE = 8000
 RATE_REF = 22050
+
+
+class ScottieS2Wide(ScottieS2):
+    """Scottie S2 is 320x256 like S1; pysstv ships WIDTH=160 (RF-identical)."""
+
+    WIDTH = 320
 
 
 class MartinM2Wide(MartinM2):
@@ -138,6 +146,14 @@ def main():
     s1 = encode(ScottieS1, img256, RATE_IMAGE)
     write_wav(os.path.join(TESTDATA, "sstv_scottie_s1.wav"),
               add_noise(s1, 20.0, seed=41), RATE_IMAGE)
+
+    s2 = encode(ScottieS2Wide, img256, RATE_IMAGE)
+    write_wav(os.path.join(TESTDATA, "sstv_scottie_s2.wav"),
+              add_noise(s2, 20.0, seed=43), RATE_IMAGE)
+
+    sdx = encode(ScottieDX, img256, RATE_IMAGE)
+    write_wav(os.path.join(TESTDATA, "sstv_scottie_dx.wav"),
+              add_noise(sdx, 20.0, seed=45), RATE_IMAGE)
 
     r36 = encode(Robot36, img240, RATE_IMAGE)
     write_wav(os.path.join(TESTDATA, "sstv_robot36.wav"),
