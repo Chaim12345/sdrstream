@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
 	"net/url"
 	"strconv"
@@ -122,8 +123,16 @@ func New(server string, opts Options) (*Client, error) {
 func (c *Client) Connect(ctx context.Context) error {
 	uri := fmt.Sprintf("ws://%s/%d/SND", c.base, time.Now().Unix())
 	dialer := websocket.Dialer{HandshakeTimeout: c.opts.OpenTimeout}
-	ws, _, err := dialer.DialContext(ctx, uri, nil)
+	ws, response, err := dialer.DialContext(ctx, uri, nil)
 	if err != nil {
+		if response != nil {
+			snippet := ""
+			if response.Body != nil {
+				body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
+				snippet = strings.TrimSpace(string(body))
+			}
+			return fmt.Errorf("kiwisdr: %s: websocket HTTP %s server=%q body=%q: %w", c.base, response.Status, response.Header.Get("Server"), snippet, err)
+		}
 		return fmt.Errorf("kiwisdr: %s: %w", c.base, err)
 	}
 	c.ws = ws

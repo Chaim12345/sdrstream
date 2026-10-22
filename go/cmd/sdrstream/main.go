@@ -1992,8 +1992,24 @@ func readLoadAverage() float64 {
 	return value
 }
 
+// kiwiPreflight gates Kiwi scan targets: /status check, 15 min cache, per-host
+// backoff and a daily attempt budget.
+var kiwiPreflight = kiwisdr.NewPreflighter()
+
 func scanStation(ctx context.Context, server *web.Server, stationType, host string, targetLimit int, multimonPath, direwolfPath string, active *atomic.Int64, updateMetrics func()) scanOutcome {
 	if strings.EqualFold(stationType, "KiwiSDR") || looksLikeKiwi(host) {
+		if st := kiwiPreflight.Check(ctx, host); !st.Free() {
+			state := "refused/skipped"
+			reason := "preflight " + st.Verdict + ": " + st.Err
+			if st.Verdict == kiwisdr.VerdictBusy {
+				reason = fmt.Sprintf("preflight busy: users %d/%d", st.Users, st.UsersMax)
+			}
+			if d := kiwiPreflight.EgressDiagnostic(); d != "" {
+				reason += " | " + d
+			}
+			addScan(server, web.ScanStatus{StationType: stationType, Station: host, State: state, Result: reason, UpdatedAt: time.Now()})
+			return scanOutcome{refused: st.Verdict != kiwisdr.VerdictTimeout, timedOut: st.Verdict == kiwisdr.VerdictTimeout}
+		}
 		return scanKiwiStation(ctx, server, host, targetLimit, active, updateMetrics)
 	}
 	active.Add(1)
