@@ -549,3 +549,36 @@ kbd {
 
 .legal-footer { margin: 20px 14px 80px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; text-align: center; }
 .legal-footer a { color: var(--accent); }
+
+/* Receiver health & capture success panel (overview dashboard). */
+.health-cards { margin-bottom: 12px; }
+.hbar-block { margin: 10px 0; }
+.hbar-title { font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 4px; }
+.hbar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--panel); border: 1px solid var(--line); }
+.hbar-seg { height: 100%; }
+.hbar-seg.good { background: var(--good); }
+.hbar-seg.bad { background: var(--bad); }
+.hbar-seg.warn { background: var(--warn); }
+.hbar-seg.accent { background: var(--accent); }
+.hbar-seg.dim { background: var(--muted); }
+.hbar-empty { width: 100%; height: 100%; background: repeating-linear-gradient(45deg, transparent, transparent 6px, var(--line) 6px, var(--line) 7px); }
+.hbar-legend { font: 11px var(--mono); color: var(--muted); margin-top: 4px; }
+.hbar-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.hbar-dot.good { background: var(--good); }
+.hbar-dot.bad { background: var(--bad); }
+.hbar-dot.warn { background: var(--warn); }
+.hbar-dot.accent { background: var(--accent); }
+.hbar-dot.dim { background: var(--muted); }
+.health-ledger { font-size: 12px; margin-top: 8px; }
+
+/* Capture proof: badges and the per-item proof block. */
+.badge-row { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.badge.verified { color: var(--good); border-color: var(--good); }
+.badge.unverified { color: var(--bad); border-color: var(--bad); }
+.badge.scheduled { color: var(--accent); border-color: var(--accent-dim); }
+.badge.blind { color: var(--muted); }
+.proof-toggle { margin-top: 6px; }
+.capture-proof { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
+.proof-row { display: flex; gap: 8px; font: 11px var(--mono); margin: 2px 0; }
+.proof-label { color: var(--muted); min-width: 110px; flex: none; }
+.proof-value { overflow-wrap: anywhere; word-break: break-word; }

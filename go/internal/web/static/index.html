@@ -115,6 +115,34 @@
       </div>
       <div class="rx-grid" id="rx-grid"><div class="empty">connecting&hellip;</div></div>
     </div>
+    <div class="panel" id="panel-health">
+      <div class="panel-head">
+        <h2>Receiver health &amp; capture success</h2>
+        <span class="muted" id="health-updated"></span>
+      </div>
+      <div class="stat-cards health-cards">
+        <div class="stat"><div class="stat-value" id="health-uptime">&ndash;</div><div class="stat-label">uptime</div></div>
+        <div class="stat"><div class="stat-value" id="health-stations">&ndash;</div><div class="stat-label">stations seen</div></div>
+        <div class="stat"><div class="stat-value" id="health-captures">&ndash;</div><div class="stat-label">captures</div></div>
+        <div class="stat"><div class="stat-value" id="health-success">&ndash;</div><div class="stat-label">verified captures</div></div>
+      </div>
+      <div class="hbar-block">
+        <div class="hbar-title">Scan outcomes <span class="muted" id="health-scan-note"></span></div>
+        <div class="hbar" id="health-scan-bar"></div>
+        <div class="hbar-legend" id="health-scan-legend"></div>
+      </div>
+      <div class="hbar-block">
+        <div class="hbar-title">Capture success <span class="muted">(verified = passed the live quality gate)</span></div>
+        <div class="hbar" id="health-success-bar"></div>
+        <div class="hbar-legend" id="health-success-legend"></div>
+      </div>
+      <div class="hbar-block">
+        <div class="hbar-title">Captures: scheduled target vs blind scan</div>
+        <div class="hbar" id="health-origin-bar"></div>
+        <div class="hbar-legend" id="health-origin-legend"></div>
+      </div>
+      <div class="muted health-ledger" id="health-ledger"></div>
+    </div>
     <div class="panel">
       <div class="panel-head">
         <h2>Spectrum</h2>
