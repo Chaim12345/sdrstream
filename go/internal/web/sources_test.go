@@ -140,4 +140,3 @@ func TestScanTargetsAnnotatedWithBandCondition(t *testing.T) {
 		t.Errorf("annotated=%d plain=%d, want 1/1", annotated, plain)
 	}
 }
-
