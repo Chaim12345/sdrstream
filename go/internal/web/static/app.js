@@ -5,7 +5,7 @@
 const el = id => document.getElementById(id);
 const fetchJSON = async (url, options = {}) => {
   const response = await fetch(url, { credentials: 'same-origin', ...options });
-  if (response.status === 401) { toast('Login expired. Sign in again.'); setTimeout(()=>{location.href='/login'},250); throw new Error('login required'); }
+  if (response.status === 401) { toast('Login expired. Sign in again.', undefined, true); setTimeout(()=>{location.href='/login'},250); throw new Error('login required'); }
   if (!response.ok) throw new Error(url + ' → HTTP ' + response.status);
   try { return await response.json(); } catch { throw new Error(url + ' → not JSON'); }
 };
@@ -37,8 +37,38 @@ const countdownTo = iso => {
   return (d ? d + 'd ' : '') + pad(h) + ':' + pad(m) + ':' + pad(sec);
 };
 
+/* ---------- settings (localStorage only) ---------- */
+const DEFAULT_SETTINGS = {
+  theme: 'dark',          // dark | light | auto
+  compact: false,         // denser cards
+  spectrumRate: 1000,     // ms, 0 disables the spectrum poller
+  activityRate: 4000,     // ms
+  toasts: true,           // toast on new activity
+  pageSize: 50,           // decodes per page in the activity history
+};
+let settings = (() => {
+  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('sdrstream-settings') || '{}') }; }
+  catch { return { ...DEFAULT_SETTINGS }; }
+})();
+function saveSettings() {
+  try { localStorage.setItem('sdrstream-settings', JSON.stringify(settings)); } catch { /* private mode */ }
+}
+function applyTheme() {
+  const theme = settings.theme === 'auto'
+    ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+    : settings.theme;
+  document.documentElement.dataset.theme = theme;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = theme === 'light' ? '#eef2f8' : '#070a12';
+  document.body.classList.toggle('compact', !!settings.compact);
+}
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+  if (settings.theme === 'auto') applyTheme();
+});
+
 /* ---------- toasts ---------- */
-function toast(text, tone) {
+function toast(text, tone, force) {
+  if (!force && !settings.toasts) return;
   const box = el('toasts');
   while (box.children.length >= 3) box.firstChild.remove();
   const t = document.createElement('div');
@@ -494,12 +524,66 @@ function activityCard(a, fresh) {
   }
   return card;
 }
+let activitySearch = '';
+let activityMode = '';
+let activityWindowSec = 0;
+let activityLimit = 0; // 0 = fall back to settings.pageSize
+function activityHaystack(a) {
+  return ((a.detail || '') + ' ' + (a.mode || '') + ' ' + (a.kind || '') + ' ' +
+    mhz(a.frequency_hz) + ' ' + (a.source || '')).toLowerCase();
+}
+function filteredActivity() {
+  const needle = activitySearch.trim().toLowerCase();
+  const cutoff = activityWindowSec ? Date.now() - activityWindowSec * 1000 : 0;
+  return activityItems.filter(a => {
+    if (activityKind && a.kind !== activityKind) return false;
+    if (activityMode && (a.mode || '') !== activityMode) return false;
+    if (cutoff && new Date(a.started).getTime() < cutoff) return false;
+    if (needle && !activityHaystack(a).includes(needle)) return false;
+    return true;
+  });
+}
+function renderModeOptions() {
+  const select = el('activity-mode');
+  const modes = [...new Set(activityItems.map(a => a.mode).filter(Boolean))].sort();
+  const key = modes.join('|');
+  if (select.dataset.key === key) return;
+  select.dataset.key = key;
+  const keep = activityMode;
+  select.textContent = '';
+  const all = document.createElement('option');
+  all.value = ''; all.textContent = 'all decoders';
+  select.appendChild(all);
+  modes.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m; opt.textContent = m;
+    select.appendChild(opt);
+  });
+  select.value = modes.includes(keep) ? keep : '';
+  activityMode = select.value;
+}
 function renderActivity() {
-  const full = activityItems.filter(a => !activityKind || a.kind === activityKind);
+  renderModeOptions();
+  const full = filteredActivity();
+  const limit = activityLimit || +settings.pageSize || DEFAULT_SETTINGS.pageSize;
   const feed = el('feed');
   feed.textContent = '';
-  if (!full.length) { feed.innerHTML = '<div class="empty">No verified activity yet. Start the Scan view to check public receivers.</div>'; }
-  full.slice(0, 80).forEach(a => feed.appendChild(activityCard(a, false)));
+  if (!full.length) {
+    feed.innerHTML = activityItems.length
+      ? '<div class="empty">no decode matches the current filters</div>'
+      : '<div class="empty">No verified activity yet. Start the Scan view to check public receivers.</div>';
+  }
+  full.slice(0, limit).forEach(a => feed.appendChild(activityCard(a, false)));
+  const more = el('activity-more');
+  more.hidden = full.length <= limit;
+  if (!more.hidden) more.textContent = 'show ' + Math.min(limit, full.length - limit) + ' more of ' + full.length;
+  const active = [];
+  if (activityKind) active.push('kind ' + activityKind);
+  if (activityMode) active.push('decoder ' + activityMode);
+  if (activityWindowSec) active.push('time window');
+  if (activitySearch.trim()) active.push('search');
+  el('activity-summary').textContent =
+    full.length + ' of ' + activityItems.length + ' decodes' + (active.length ? ' · filtered by ' + active.join(', ') : '');
   const over = el('feed-overview');
   over.textContent = '';
   if (!activityItems.length) { over.innerHTML = '<div class="empty">no traffic seen yet</div>'; }
@@ -509,8 +593,61 @@ function renderActivity() {
 document.querySelectorAll('[data-kind]').forEach(button => button.addEventListener('click', () => {
   document.querySelectorAll('[data-kind]').forEach(b => b.classList.toggle('on', b === button));
   activityKind = button.dataset.kind;
+  activityLimit = 0;
   renderActivity();
 }));
+el('activity-search').addEventListener('input', () => {
+  activitySearch = el('activity-search').value;
+  activityLimit = 0;
+  renderActivity();
+});
+el('activity-mode').addEventListener('change', () => {
+  activityMode = el('activity-mode').value;
+  activityLimit = 0;
+  renderActivity();
+});
+el('activity-window').addEventListener('change', () => {
+  activityWindowSec = +el('activity-window').value || 0;
+  activityLimit = 0;
+  renderActivity();
+});
+el('activity-more').addEventListener('click', () => {
+  activityLimit = (activityLimit || +settings.pageSize || DEFAULT_SETTINGS.pageSize) * 2;
+  renderActivity();
+});
+
+/* ---------- export ---------- */
+function downloadFile(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+function exportName(ext) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  return 'sdrstream-decodes-' + stamp + '.' + ext;
+}
+el('activity-export-json').addEventListener('click', () => {
+  const rows = filteredActivity();
+  downloadFile(exportName('json'), JSON.stringify(rows, null, 2), 'application/json');
+  toast('exported ' + rows.length + ' decodes as JSON', undefined, true);
+});
+const csvCell = v => {
+  const s = v === null || v === undefined ? '' : String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+};
+el('activity-export-csv').addEventListener('click', () => {
+  const rows = filteredActivity();
+  const header = ['started', 'ended', 'frequency_hz', 'bandwidth_hz', 'level_db', 'kind', 'mode', 'source', 'duration_sec', 'detail'];
+  const lines = [header.join(',')];
+  rows.forEach(a => lines.push([
+    a.started, a.ended || '', a.frequency_hz, a.bandwidth_hz || '', a.level_db,
+    a.kind || '', a.mode || '', a.source || '', a.duration_sec || '', a.detail || '',
+  ].map(csvCell).join(',')));
+  downloadFile(exportName('csv'), lines.join('\n'), 'text/csv');
+  toast('exported ' + rows.length + ' decodes as CSV', undefined, true);
+});
 
 
 /* ---------- live pulse: signal meter, on-air pill, receivers, decodes ---------- */
@@ -982,18 +1119,52 @@ async function refreshBandCond() {
   } catch {}
 }
 
+/* ---------- settings view ---------- */
+let spectrumTimer = null;
+let activityTimer = null;
+function applyTimers() {
+  if (spectrumTimer) { clearInterval(spectrumTimer); spectrumTimer = null; }
+  if (+settings.spectrumRate > 0) spectrumTimer = setInterval(refreshSpectrum, +settings.spectrumRate);
+  if (activityTimer) clearInterval(activityTimer);
+  activityTimer = setInterval(refreshActivity, +settings.activityRate > 0 ? +settings.activityRate : 4000);
+}
+function syncSettingsView() {
+  el('set-theme').value = settings.theme;
+  el('set-compact').checked = !!settings.compact;
+  el('set-spectrum-rate').value = String(settings.spectrumRate);
+  el('set-activity-rate').value = String(settings.activityRate);
+  el('set-toasts').checked = settings.toasts !== false;
+  el('set-page-size').value = String(settings.pageSize);
+}
+function initSettingsView() {
+  syncSettingsView();
+  el('set-theme').addEventListener('change', () => { settings.theme = el('set-theme').value; saveSettings(); applyTheme(); });
+  el('set-compact').addEventListener('change', () => { settings.compact = el('set-compact').checked; saveSettings(); applyTheme(); });
+  el('set-spectrum-rate').addEventListener('change', () => { settings.spectrumRate = +el('set-spectrum-rate').value; saveSettings(); applyTimers(); });
+  el('set-activity-rate').addEventListener('change', () => { settings.activityRate = +el('set-activity-rate').value; saveSettings(); applyTimers(); });
+  el('set-toasts').addEventListener('change', () => { settings.toasts = el('set-toasts').checked; saveSettings(); });
+  el('set-page-size').addEventListener('change', () => { settings.pageSize = +el('set-page-size').value; activityLimit = 0; saveSettings(); renderActivity(); });
+  el('set-reset').addEventListener('click', () => {
+    settings = { ...DEFAULT_SETTINGS };
+    saveSettings(); syncSettingsView(); applyTheme(); applyTimers();
+    activityLimit = 0; renderActivity();
+    toast('settings reset', undefined, true);
+  });
+}
+
 /* ---------- boot ---------- */
 // Route the initial hash only now: the map module's state is declared below
 // the router, so an early #map route would hit the temporal dead zone.
+applyTheme();
+initSettingsView();
 if (location.hash && el('view-' + location.hash.slice(1))) showView(location.hash.slice(1)); else showView('overview');
 refreshStatus(); refreshSats(); refreshGallery(); refreshStations(); refreshScans(); refreshActivity(); refreshFeeds(); refreshSources(false); refreshBandCond(); refreshLive();
 el('sources-refresh').onclick = () => refreshSources(true);
 setInterval(refreshStatus, 5000);
-setInterval(refreshActivity, 4000);
+applyTimers();
 setInterval(refreshFeeds, 15000);
 setInterval(refreshScans, 2000);
 setInterval(refreshScanLog, 1500);
-setInterval(refreshSpectrum, 1000);
 setInterval(refreshLive, 1000);
 setInterval(refreshGallery, 60000);
 setInterval(refreshStations, 300000);
