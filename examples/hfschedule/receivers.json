@@ -1,0 +1,9 @@
+[
+  {
+    "URL": "http://websdr.ewi.utwente.nl:8901",
+    "Type": "websdr",
+    "MinKHz": 0,
+    "MaxKHz": 29160,
+    "Priority": 0
+  }
+]
