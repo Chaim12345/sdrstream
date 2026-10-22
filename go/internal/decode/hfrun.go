@@ -183,6 +183,16 @@ func decodeHF(target HFTarget, server string, samples16 []int16, rate int) HFRes
 		}
 		result.Text = strings.Join(lines, "\n")
 		result.Gate = verify.FTX(len(lines), proto == "FT8", result.Text)
+	case "wspr":
+		start := float64(result.Started.UnixNano())/1e9 - float64(len(samples))/float64(rate)
+		var lines []string
+		for _, w := range WSPRWindows(samples, rate, start) {
+			for _, m := range w.Messages {
+				lines = append(lines, fmt.Sprintf("%s WSPR %+.0f %+.1f %.1f Hz %s", time.Unix(w.Start, 0).UTC().Format("1504"), m.SNR, m.DT, m.FreqHz, m.Text))
+			}
+		}
+		result.Text = strings.Join(lines, "\n")
+		result.Gate = verify.WSPR(len(lines), result.Text)
 	default:
 		result.Gate = verify.Result{Live: false, Reason: "no backend for kind " + target.Kind}
 	}

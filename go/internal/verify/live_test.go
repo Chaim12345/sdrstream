@@ -142,3 +142,12 @@ func TestFTXGate(t *testing.T) {
 		t.Fatal("no callsign")
 	}
 }
+
+func TestWSPRGate(t *testing.T) {
+	if r := WSPR(1, "0532 WSPR -25 F4BAD JN25 20"); r.Live {
+		t.Fatal("single spot must not publish")
+	}
+	if r := WSPR(2, "F4BAD JN25 20\nE79Q JN83 23"); !r.Live {
+		t.Fatal(r.Reason)
+	}
+}
