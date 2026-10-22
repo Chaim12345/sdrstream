@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"math/bits"
 	"os"
 	"strings"
 )
@@ -58,121 +59,181 @@ func acarsCRCUpdate(crc uint16, c byte) uint16 {
 	return crc
 }
 
-// acarsMSK is a coherent MSK demodulator for 12.5 kHz audio: the input is
-// mixed with a 1800 Hz PLL oscillator, a half-wave cosine matched filter
-// (oversampled 12x) is applied once per bit, and the I and Q rails
-// alternate bit by bit. The structure follows the acarsdec design by
-// Thierry Leconte as reimplemented in sdr-acars (jasonherald, LGPL-2.0).
-type acarsMSK struct {
-	phi, clk, df float64
-	s            uint32
-	inb          [acarsFLEN]complex128
-	idx          int
-	h            [acarsFLEN*acarsOver + 1]float64
-}
+// acarsRate is the audio rate the demodulator works at. Other input rates
+// are resampled to it.
+const acarsRate = 12500
 
 const (
-	acarsRate    = 12500
-	acarsFLEN    = acarsRate/1200 + 1
-	acarsOver    = 12
-	acarsPLLGain = 38e-4
-	acarsPLLCoef = 0.52
+	acarsBaud   = 2400.0
+	acarsCenter = 1800.0 // midpoint of the 1200 and 2400 Hz tones
+	acarsLPTaps = 33
+
+	// Demodulator tuning, found on the recordings in the test suite.
+	acarsLPCut       = 1200.0 // baseband low-pass cutoff, Hz
+	acarsEdgeThresh  = 0.08   // |rad/sample| a tone estimate must reach to count
+	acarsTimingOff   = 0.45   // bit phase at which the frequency estimate crosses zero
+	acarsTimingGain  = 0.1
+	acarsCostasAlpha = 0.1
+	acarsCostasBeta  = 0.005
+
+	acarsMaxBlk  = 270 // longest block body we accept, in characters
+	acarsSyn     = 0x16
+	acarsSOH     = 0x01
+	acarsETX     = 0x03
+	acarsETB     = 0x17
+	acarsMinBody = 13 // mode, 7 address, ack, 2 label, block id, suffix
 )
 
-func newACARSMSK() *acarsMSK {
-	m := &acarsMSK{}
-	c := (len(m.h) - 1) / 2
-	for i := range m.h {
-		n := float64(i - c)
-		v := math.Cos(2 * math.Pi * 600 / acarsRate / acarsOver * n)
-		if v < 0 {
-			v = 0
-		}
-		m.h[i] = v
-	}
-	return m
+// acarsDemod is a coherent MSK demodulator. The audio is mixed down by the
+// midpoint of the two tones (1800 Hz) to a complex baseband and low passed.
+// With tones at +-600 Hz around that midpoint, the baseband phase moves by
+// +-90 degrees over every bit, so at bit boundaries it sits on a multiple of
+// 90 degrees. Rotating boundary sample n by (-j)^n turns the alternating
+// in-phase/quadrature rails into one real BPSK stream, which a small Costas
+// loop locks and slices. Bit timing comes from a loop that follows the
+// instantaneous-frequency zero crossings (tone changes happen on bit edges).
+type acarsDemod struct {
+	taps         []float64
+	ringI, ringQ []float64
+	pos          int
+	osc          float64
+	prevI, prevQ float64
+	havePrev     bool
+
+	spb  float64 // samples per bit
+	ph   float64 // bit phase in [0,1); bit edges at 0
+	last float64 // previous smoothed frequency estimate
+	high bool    // tone side of the last clear frequency estimate
+	cnt  int     // boundary counter, drives the (-j)^n rotation
+
+	psi, omega float64 // Costas phase and frequency
 }
 
-// bit feeds one demodulated bit decision to the frame parser; it returns
-// whether the parser asks for a polarity flip.
-func (m *acarsMSK) run(x []float64, put func(v float64) bool) {
-	for _, in := range x {
-		sp := 1800.0/acarsRate*2*math.Pi + m.df
-		m.phi += sp
-		if m.phi >= 2*math.Pi {
-			m.phi -= 2 * math.Pi
+func newACARSDemod() *acarsDemod {
+	d := &acarsDemod{spb: float64(acarsRate) / acarsBaud}
+	d.taps = make([]float64, acarsLPTaps)
+	mid := float64(acarsLPTaps-1) / 2
+	fc := acarsLPCut / float64(acarsRate)
+	var sum float64
+	for i := range d.taps {
+		t := float64(i) - mid
+		s := 2 * fc
+		if t != 0 {
+			s = math.Sin(2*math.Pi*fc*t) / (math.Pi * t)
 		}
-		m.inb[m.idx] = complex(in*math.Cos(m.phi), -in*math.Sin(m.phi))
-		m.idx = (m.idx + 1) % acarsFLEN
-		m.clk += sp
-		thr := 3*math.Pi/2 - sp/2
-		if m.clk < thr {
+		w := 0.54 - 0.46*math.Cos(2*math.Pi*float64(i)/float64(acarsLPTaps-1))
+		d.taps[i] = s * w
+		sum += d.taps[i]
+	}
+	for i := range d.taps {
+		d.taps[i] /= sum
+	}
+	d.ringI = make([]float64, acarsLPTaps)
+	d.ringQ = make([]float64, acarsLPTaps)
+	return d
+}
+
+// run consumes audio and calls out(bit) once per bit period.
+func (d *acarsDemod) run(x []float64, out func(bit bool)) {
+	w := 2 * math.Pi * acarsCenter / float64(acarsRate)
+	for _, v := range x {
+		d.osc += w
+		if d.osc > 2*math.Pi {
+			d.osc -= 2 * math.Pi
+		}
+		d.ringI[d.pos] = v * math.Cos(d.osc)
+		d.ringQ[d.pos] = -v * math.Sin(d.osc)
+		var si, sq float64
+		k := d.pos
+		for _, t := range d.taps {
+			si += t * d.ringI[k]
+			sq += t * d.ringQ[k]
+			if k == 0 {
+				k = acarsLPTaps
+			}
+			k--
+		}
+		d.pos++
+		if d.pos == acarsLPTaps {
+			d.pos = 0
+		}
+		if !d.havePrev {
+			d.prevI, d.prevQ, d.havePrev = si, sq, true
 			continue
 		}
-		m.clk -= 3 * math.Pi / 2
-		o := int(acarsOver * (m.clk/sp + 0.5))
-		if o > acarsOver {
-			o = acarsOver
-		}
-		if o < 0 {
-			o = 0
-		}
-		var v complex128
-		for j := 0; j < acarsFLEN; j++ {
-			v += m.inb[(j+m.idx)%acarsFLEN] * complex(m.h[o], 0)
-			o += acarsOver
-		}
-		lvl := math.Hypot(real(v), imag(v))
-		v /= complex(lvl+1e-8, 0)
-		var vo, dphi float64
-		if m.s&1 != 0 {
-			vo = imag(v)
-			if vo >= 0 {
-				dphi = -real(v)
-			} else {
-				dphi = real(v)
-			}
-		} else {
-			vo = real(v)
-			if vo >= 0 {
-				dphi = imag(v)
-			} else {
-				dphi = -imag(v)
-			}
-		}
-		if m.s&2 != 0 {
-			vo = -vo
-		}
-		if put(vo) {
-			m.s ^= 2
-		}
-		m.s++
-		m.df = acarsPLLCoef*m.df + (1-acarsPLLCoef)*acarsPLLGain*dphi
+		// Phase step between consecutive samples: arg(z[n] * conj(z[n-1])).
+		re := si*d.prevI + sq*d.prevQ
+		im := sq*d.prevI - si*d.prevQ
+		d.prevI, d.prevQ = si, sq
+		d.step(si, sq, math.Atan2(im, re), out)
 	}
 }
 
-// acarsFramer turns the bit stream into blocks.
+func (d *acarsDemod) step(si, sq, f float64, out func(bool)) {
+	// A tone change is a crossing of the frequency estimate through zero
+	// between two clearly signed values; small wobbles around zero are
+	// ignored.
+	s := 0.5*f + 0.5*d.last
+	d.last = s
+	if s > acarsEdgeThresh || s < -acarsEdgeThresh {
+		if (s > 0) != d.high {
+			d.high = s > 0
+			e := d.ph - acarsTimingOff
+			if e > 0.5 {
+				e -= 1
+			} else if e < -0.5 {
+				e += 1
+			}
+			d.ph -= acarsTimingGain * e
+		}
+	}
+	d.ph += 1 / d.spb
+	if d.ph < 1 {
+		return
+	}
+	d.ph -= 1
+	// Bit boundary sample: rotate by (-j)^n, then by the Costas phase.
+	zi, zq := si, sq
+	switch d.cnt & 3 {
+	case 1: // times -j
+		zi, zq = sq, -si
+	case 2:
+		zi, zq = -si, -sq
+	case 3: // times +j
+		zi, zq = -sq, si
+	}
+	d.cnt++
+	c, sn := math.Cos(d.psi), math.Sin(d.psi)
+	vi := zi*c + zq*sn
+	vq := zq*c - zi*sn
+	if m := vi*vi + vq*vq; m > 1e-18 {
+		e := vi * vq / m
+		d.omega += acarsCostasBeta * e
+		d.psi += acarsCostasAlpha*e + d.omega
+	}
+	out(vi > 0)
+}
+
+// acarsFramer finds the SYN SYN preamble in a bit stream, assembles
+// characters (LSB first, 7 data bits plus odd parity) and validates the
+// block. The coherent stream can come out inverted, and with the rail
+// alternation resolved either way, so four preamble variants are hunted.
 type acarsFramer struct {
-	state    int // 0 syn1, 1 syn2, 2 soh, 3 text, 4 crc1, 5 crc2
-	out      byte
-	nbits    int
-	buf      []byte
-	crcB     [2]byte
-	flip     bool
-	perr     int
-	emit     func(buf []byte)
-	bitsSeen int
+	emit   func([]byte)
+	shiftA uint16 // raw bits, newest in the top bit
+	shiftB uint16 // bits XORed with the bit-index parity
+	idx    int
+	hunt   bool
+	alt    bool
+	inv    bool
+	nbit   int
+	cur    byte
+	buf    []byte
+	sawSOH bool
 }
 
 func newACARSFramer(emit func([]byte)) *acarsFramer {
-	return &acarsFramer{nbits: 8, emit: emit}
-}
-
-func (f *acarsFramer) idle() {
-	f.state = 0
-	f.nbits = 1
-	f.buf = f.buf[:0]
-	f.perr = 0
+	return &acarsFramer{emit: emit, hunt: true}
 }
 
 func oddParity(b byte) bool { return bitsOnes(b)&1 == 1 }
@@ -185,85 +246,101 @@ func bitsOnes(b byte) int {
 	return n
 }
 
-func (f *acarsFramer) put(v float64) bool {
-	f.out >>= 1
-	if v > 0 {
-		f.out |= 0x80
+func (f *acarsFramer) put(bit bool) {
+	b := uint16(0)
+	if bit {
+		b = 1
 	}
-	f.nbits--
-	if f.nbits > 0 {
-		return false
+	par := uint16(f.idx & 1)
+	f.idx++
+	if f.hunt {
+		f.shiftA = f.shiftA>>1 | b<<15
+		f.shiftB = f.shiftB>>1 | (b^par)<<15
+		const syn = acarsSyn | acarsSyn<<8
+		// Allow one wrong bit in the preamble; the parity, suffix and
+		// CRC checks reject anything that is not a real block.
+		switch {
+		case bits.OnesCount16(f.shiftA^syn) <= 1:
+			f.start(false, false)
+		case bits.OnesCount16(f.shiftA^^uint16(syn)) <= 1:
+			f.start(false, true)
+		case bits.OnesCount16(f.shiftB^syn) <= 1:
+			f.start(true, false)
+		case bits.OnesCount16(f.shiftB^^uint16(syn)) <= 1:
+			f.start(true, true)
+		}
+		return
 	}
-	b := f.out
-	f.byteIn(b)
-	fl := f.flip
-	f.flip = false
-	return fl
-}
-
-func (f *acarsFramer) byteIn(b byte) {
-	const syn, soh, etx, etb = 0x16, 0x01, 0x83, 0x97
-	switch f.state {
-	case 0:
-		if b == syn {
-			f.state, f.nbits = 1, 8
-		} else if b == ^byte(syn) {
-			f.flip = true
-			f.state, f.nbits = 1, 8
-		} else {
-			f.nbits = 1
+	if f.alt {
+		b ^= par
+	}
+	if f.inv {
+		b ^= 1
+	}
+	f.cur |= byte(b) << f.nbit
+	f.nbit++
+	if f.nbit < 8 {
+		return
+	}
+	c := f.cur
+	f.nbit, f.cur = 0, 0
+	if !f.sawSOH {
+		switch {
+		case c == acarsSOH:
+			f.sawSOH = true
+		case c == acarsSyn: // extra sync characters
+		default:
+			f.stop()
 		}
-	case 1:
-		if b == syn {
-			f.state, f.nbits = 2, 8
-		} else if b == ^byte(syn) {
-			f.flip = true
-			f.nbits = 8
-		} else {
-			f.idle()
-		}
-	case 2:
-		if b == soh {
-			f.buf = f.buf[:0]
-			f.perr = 0
-			f.state, f.nbits = 3, 8
-		} else {
-			f.idle()
-		}
-	case 3:
-		f.buf = append(f.buf, b)
-		if !oddParity(b) {
-			f.perr++
-			if f.perr > 3 {
-				f.idle()
-				return
+		return
+	}
+	f.buf = append(f.buf, c)
+	n := len(f.buf)
+	if n > acarsMaxBlk {
+		f.stop()
+		return
+	}
+	// The block is complete once the character three back is ETX/ETB and
+	// the two characters after it satisfy the block check. The trailing DEL
+	// is not needed, so a damaged DEL does not lose the block.
+	if n >= acarsMinBody+2 {
+		if s := f.buf[n-3] & 0x7f; s == acarsETX || s == acarsETB {
+			if f.finish() {
+				f.stop()
 			}
 		}
-		if b == etx || b == etb {
-			f.state, f.nbits = 4, 8
-			return
-		}
-		if len(f.buf) > 240 {
-			f.idle()
-			return
-		}
-		f.nbits = 8
-	case 4:
-		f.crcB[0] = b
-		f.state, f.nbits = 5, 8
-	case 5:
-		f.crcB[1] = b
-		var crc uint16
-		for _, c := range f.buf {
-			crc = acarsCRCUpdate(crc, c)
-		}
-		crc = acarsCRCUpdate(crc, f.crcB[0])
-		crc = acarsCRCUpdate(crc, f.crcB[1])
-		if crc == 0 && f.perr == 0 && len(f.buf) >= 13 {
-			f.emit(append([]byte(nil), f.buf...))
-		}
-		f.idle()
 	}
+}
+
+// start switches from hunting to collecting. The preamble just seen is two
+// whole characters, so the next bit begins a new character.
+func (f *acarsFramer) start(alt, inv bool) {
+	f.hunt, f.alt, f.inv = false, alt, inv
+	f.nbit, f.cur, f.buf, f.sawSOH = 0, 0, f.buf[:0], false
+}
+
+func (f *acarsFramer) stop() { f.hunt, f.shiftA, f.shiftB = true, 0, 0 }
+
+// finish checks parity and the block check on the collected characters,
+// which end with the suffix and the two BCS characters. It reports whether
+// a valid block was emitted.
+func (f *acarsFramer) finish() bool {
+	b := f.buf
+	n := len(b)
+	for _, c := range b[:n-2] {
+		if !oddParity(c) {
+			return false
+		}
+	}
+	var crc uint16
+	for _, c := range b {
+		crc = acarsCRCUpdate(crc, c)
+	}
+	if crc != 0 {
+		return false
+	}
+	f.emit(append([]byte(nil), b[:n-2]...))
+	return true
 }
 
 // ACARSDecode decodes ACARS blocks from one channel of AM-demodulated
@@ -274,7 +351,6 @@ func ACARSDecode(samples []float64, rate int, channel int) []ACARSMsg {
 	if rate != acarsRate {
 		x = resampleLinear(samples, rate, acarsRate)
 	}
-	// Peak-normalise so the matched filter sees a sane level.
 	var peak float64
 	for _, v := range x {
 		peak = math.Max(peak, math.Abs(v))
@@ -288,7 +364,7 @@ func ACARSDecode(samples []float64, rate int, channel int) []ACARSMsg {
 	}
 	var out []ACARSMsg
 	var at int
-	fr := newACARSFramer(func(buf []byte) {
+	emit := func(buf []byte) {
 		body := buf[:len(buf)-1]
 		suffix := buf[len(buf)-1] & 0x7f
 		m := ACARSMsg{Mode: body[0] & 0x7f, Ack: acarsAck(body[8] & 0x7f), Label: acarsLabel(body[9]&0x7f, body[10]&0x7f), BlockID: body[11] & 0x7f, Suffix: suffix, Channel: channel, AtSec: float64(at) / acarsRate}
@@ -309,9 +385,9 @@ func ACARSDecode(samples []float64, rate int, channel int) []ACARSMsg {
 		}
 		m.Text = sb.String()
 		out = append(out, m)
-	})
-	msk := newACARSMSK()
-	// position tracking for AtSec: approximate by sample index per chunk
+	}
+	fr := newACARSFramer(emit)
+	dm := newACARSDemod()
 	const chunk = 125
 	for i := 0; i < len(x); i += chunk {
 		at = i
@@ -319,7 +395,7 @@ func ACARSDecode(samples []float64, rate int, channel int) []ACARSMsg {
 		if e > len(x) {
 			e = len(x)
 		}
-		msk.run(x[i:e], fr.put)
+		dm.run(x[i:e], fr.put)
 	}
 	return out
 }
