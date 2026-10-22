@@ -1,65 +1,60 @@
 # Third-party notices
 
-This repository vendors or adapts third-party code. Copyright stays with
-the original authors; each entry names the source and its license.
+This notice identifies third-party components incorporated into sdrstream or
+adapted to implement its decoders. Each entry retains its upstream copyright
+and license terms. The repository's AGPL-3.0-or-later terms apply to the
+combined work only to the extent compatible with each component's original
+license. See `LICENSE` for the GNU Affero General Public License.
 
-## go/internal/decode/ft8.go and ftx_tables.go
+## GNU GPL-3.0-or-later-derived components
 
-Go port of the decode path of kgoba/ft8_lib (MIT License, Copyright (c)
-2018 Karlis Goba); the LDPC tables come from WSJT-X via ft8_lib. License
-text: go/internal/decode/testdata/ft8_lib.LICENSE. Test recordings under
-go/internal/decode/testdata/ft8 come from the ft8_lib test suite.
+- `go/internal/decode/wspr.go`, `go/internal/decode/wspr_tables.go`: Go port
+  of the single-pass `wsprd` decoder path and soft-symbol metric table from
+  WSJT-X, Copyright 2001-2018 Joe Taylor K1JT, 2014-2018 Steven Franke K9AN;
+  Fano decoder Copyright 1994 Phil Karn KA9Q. Source: WSJT-X project,
+  https://wsjt.sourceforge.io/ .
+- `go/internal/hfdl`: portions ported from `dumphfdl`, Copyright Tomasz
+  Lemiech. Source: https://github.com/szpajder/dumphfdl . The Viterbi decoder
+  in `go/internal/hfdl/viterbi.go` is separately from libfec, LGPL-2.1-or-later.
+- `go/internal/decode/flex.go`: FLEX demodulator/decoder follows
+  `demod_flex.c`, Copyright Elias Oenal and contributors, under
+  GPL-2.0-or-later. This is explicitly GPL-2.0-or-later, not GPL-2.0-only.
+  Source: https://github.com/EliasOenal/multimon-ng .
 
-## go/internal/rivaspeech
+## LGPL-derived component
 
-Go bindings generated from NVIDIA's Riva speech proto files
-(`riva_asr.proto`, `riva_audio.proto`, `riva_common.proto`), fetched from
-github.com/nvidia-riva/common (riva/proto, main branch, 2026-10-22) and
-compiled with protoc 29.3, protoc-gen-go and protoc-gen-go-grpc.
+- `go/internal/decode/acars.go`: adapted from sdr-acars by jasonherald,
+  which reimplemented ACARS demodulation by Thierry Leconte, LGPL-2.0.
+  Source: https://github.com/jasonherald/sdr-acars . No ACARS recording is
+  included in this repository.
 
-Copyright NVIDIA CORPORATION and Google LLC. License: MIT / Apache-2.0,
-as stated in the SPDX and license headers preserved at the top of each
-generated file.
+## MIT and Apache-2.0 components
 
-## ACARS MSK demodulator and framer (go/internal/decode/acars.go)
+- `go/internal/decode/ft8.go`, `go/internal/decode/ftx_tables.go`: Go port of
+  kgoba/ft8_lib decode path, Copyright 2018 Karlis Goba, MIT. The upstream
+  license is retained at `go/internal/decode/testdata/ft8_lib.LICENSE`.
+  https://github.com/kgoba/ft8_lib .
+- `go/internal/hfdl`: parsing adapted from libacars (MIT), Copyright
+  2018-2023 Tomasz Lemiech; soft-demapper scaling informed by liquid-dsp (MIT),
+  Copyright 2007-2023 Joseph Gaeddert.
+- `go/internal/rivaspeech`: generated protobuf/gRPC bindings preserve NVIDIA
+  and Google MIT/Apache-2.0 copyright and license headers in each source file.
+- `go/internal/vocoder`: WebSDR stream decoder and table reproduce publicly
+  documented WebSDR HTML5 client behavior, copyright 2013-2025 PA3FWM.
+  https://www.websdr.org/ .
+- `go/internal/adpcm`: mirrors OpenWebRX's public IMA-ADPCM decoder behavior;
+  no upstream source file is included. OpenWebRX source: https://github.com/jketterl/openwebrx .
 
-Ported to Go from sdr-acars (https://github.com/jasonherald/sdr-acars),
-`src/msk.rs` and `src/frame.rs`, licensed LGPL-2.0. sdr-acars is itself a
-port of acarsdec by Thierry Leconte (https://github.com/TLeconte/acarsdec).
-Copyright remains with those authors. The 7-block regression oracle comes
-from the sdr-acars test fixture derived from acarsdec's test.wav; the WAV
-is not vendored in this repository.
+## Independently written decoders and protocol material
 
-# Third-party code and attribution
+The aircraft/marine message semantics (`go/internal/decode/modes.go`,
+`aisnmea.go`, `acarsmsg.go`) are original implementations from public
+protocol specifications and community-feed payloads. The satellite GMSK/BPSK
+demodulators and blob pipeline are original implementations and use public
+protocol specifications. Other decoders that cite multimon-ng follow its
+published protocol/framing descriptions or use its output only as an external
+reference tool; multimon-ng itself is not bundled or linked into sdrstream.
 
-## HFDL decoder (go/internal/hfdl)
-
-Ported to Go from:
-
-- **dumphfdl** - Copyright (c) Tomasz Lemiech. GPL-3.0-or-later.
-  https://github.com/szpajder/dumphfdl
-  Used for: frame structure and state machine, A/M1/T sequences, scrambler,
-  deinterleaver, per-mode parameters, MPDU/LPDU/SPDU/HFNPDU parsing, CRC.
-- **libacars** - Copyright (c) 2018-2023 Tomasz Lemiech. MIT.
-  https://github.com/szpajder/libacars
-  Used for: ACARS block parsing (acars.c) and its CRC (crc.c).
-- **libfec** (K=7 Viterbi decoder as shipped in dumphfdl) - Copyright Phil
-  Karn, KA9Q. LGPL-2.1-or-later. Used for: the soft-decision Viterbi decoder.
-- **liquid-dsp** - Copyright (c) 2007-2023 Joseph Gaeddert. MIT.
-  https://github.com/jgaeddert/liquid-dsp
-  Used for: soft PSK demapper scaling, AGC update rule, the m-sequence LFSR.
-
-The HFDL package as a whole is therefore distributed under terms compatible
-with GPL-3.0-or-later.
-
-Test audio is not part of this repository. The tests read public recordings
-from signals.taunus.de when `HFDL_SAMPLES` points at them.
-
-
-go/internal/decode/wspr.go and wspr_tables.go are a Go port of the single-pass
-path of wsprd from WSJT-X (GNU GPL v3; Copyright 2001-2018 Joe Taylor K1JT,
-2014-2018 Steven Franke K9AN; Fano decoder Copyright 1994 Phil Karn KA9Q),
-read from github.com/pavel-demin/wsprd. These files are GPL v3, so a binary
-that includes them is GPL v3. Reference oracle for tests: wsprd built from
-the same source.
-
+No third-party sample audio is included unless separately identified by a
+license file in the relevant test-data directory. The test harness fetches
+recordings when explicitly requested.

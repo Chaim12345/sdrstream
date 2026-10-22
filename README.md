@@ -660,9 +660,12 @@ That is your call to make, not this library's.
 
 ## License
 
-MIT. The WebSDR companding table in `sdrstream/_websdr_table.py` is reproduced
-from the public WebSDR HTML5 client (copyright 2013–2025 PA3FWM), which permits
-redistribution as part of a client.
+GNU Affero General Public License, version 3 or later (AGPL-3.0-or-later).
+See `LICENSE` and `NOTICE-third-party.md` for the corresponding source terms
+and third-party attributions. The web UI footer links to this source tree and
+license. The build requires Go; optional live speech transcription uses
+`SDRSTREAM_WHISPER` and `SDRSTREAM_WHISPER_MODEL` (or hosted NIM when
+`SDRSTREAM_NIM_API_KEY` is present).
 
 ## Live public feeds (Live data tab)
 
@@ -686,3 +689,40 @@ for an offline quality check on narrowband radio clips. The `.en` model is
 English-only. For non-English clips, use a multilingual small q5_1 model instead
 and compare transcripts against the saved audio before changing the live
 quality gate. Whisper output remains subject to the existing verification gate.
+
+This repository is distributed under the GNU Affero General Public License,
+version 3 or later (AGPL-3.0-or-later). See `LICENSE` and
+[`NOTICE-third-party.md`](NOTICE-third-party.md) for third-party components,
+source links and their original terms. Where the license requires corresponding
+source for the network-accessible program, provide the complete source for the
+running version through the source link in the web UI footer or on request from
+the project maintainers.
+
+
+## Current Go web run flags
+
+The integrator scanner supports bounded public-directory scans, the Kiwi cache,
+HF cycles, optional feeds, and receive-only activity monitoring. Example local
+run (scanner cap is globally held to 12 in the current deployment):
+
+```bash
+cd go
+SDRSTREAM_UI_PASSWORD='(set in environment, do not put in shell history)' \
+SDRSTREAM_AIS_KEY='(optional, set in environment)' \
+go run ./cmd/sdrstream web --host 127.0.0.1 --port 8000 \
+  --captures-dir ../captures \
+  --scan-start-connections 12 --scan-max-connections 12 --scan-ramp 12 \
+  --scan-open-directory --scan-kiwi-directory \
+  --scan-hf-server https://websdr.ewi.utwente.nl:8901 --scan-wspr \
+  --feeds-lat 31.8 --feeds-lon 35
+```
+
+Useful options: `--monitor-server URL --monitor-kind openwebrx|websdr|kiwi`,
+`--monitor-strategy sweep|spectrum|broadcast`, `--monitor-channels`,
+`--monitor-out DIR`, `--monitor-listen`, and `--monitor-voice`;
+`--scan-stations 'TYPE|URL,...'` for an explicit receiver list;
+`--scan-target-limit` and `--scan-station-session` for per-visit bounds;
+and `--no-feeds` to disable public-data panels. Run
+`go run ./cmd/sdrstream web -h` for the full current flag list. Never place
+secrets in command-line arguments or documentation; pass them through the
+process environment or a secret manager.
