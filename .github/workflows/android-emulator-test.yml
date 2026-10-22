@@ -23,8 +23,18 @@ jobs:
         run: |
           yes | sudo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
           sudo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" >/dev/null
-      - name: Cross-compile Go engine (arm64 + x86_64 for the emulator)
-        run: ./android/fetch-engine.sh arm64 x86_64
+      - name: Cross-compile Go engine (arm64)
+        run: ./android/fetch-engine.sh
+      - name: Cross-compile Go engine (x86_64 via NDK, emulator-only fallback)
+        run: |
+          NDK=$(ls -d "$ANDROID_HOME/ndk/"* | sort -V | tail -1)
+          echo "using NDK at $NDK"
+          mkdir -p android/app/src/main/jniLibs/x86_64
+          cd go
+          CGO_ENABLED=1 GOOS=android GOARCH=amd64 \
+            CC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android34-clang" \
+            go build -trimpath -ldflags "-s -w" \
+            -o ../android/app/src/main/jniLibs/x86_64/libsdrstreamd.so ./cmd/sdrstream
       - name: Build fat test APK (arm64-v8a + x86_64)
         working-directory: android
         run: ./gradlew assembleDebug -PsdrstreamAbis=arm64-v8a,x86_64
