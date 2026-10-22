@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/kiwisdr"
@@ -170,6 +171,18 @@ func decodeHF(target HFTarget, server string, samples16 []int16, rate int) HFRes
 		} else {
 			result.Gate = verify.Result{Live: false, Reason: err.Error()}
 		}
+	case "ft8":
+		proto := "FT8"
+		if strings.Contains(strings.ToUpper(target.Name), "FT4") {
+			proto = "FT4"
+		}
+		start := float64(result.Started.UnixNano())/1e9 - float64(len(samples))/float64(rate)
+		var lines []string
+		for _, m := range FTXDecodeStream(samples, rate, start, proto) {
+			lines = append(lines, fmt.Sprintf("%s %s %+.1f %.0f Hz %s", time.Unix(m.SlotUnix, 0).UTC().Format("150405"), m.Protocol, m.DT, m.FreqHz, m.Text))
+		}
+		result.Text = strings.Join(lines, "\n")
+		result.Gate = verify.FTX(len(lines), proto == "FT8", result.Text)
 	default:
 		result.Gate = verify.Result{Live: false, Reason: "no backend for kind " + target.Kind}
 	}

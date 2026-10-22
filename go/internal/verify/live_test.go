@@ -127,3 +127,18 @@ func TestMaritimeWordHitsDoesNotLoosenGate(t *testing.T) {
 		t.Error("unframed maritime-looking noise passed the NAVTEX gate")
 	}
 }
+
+func TestFTXGate(t *testing.T) {
+	if r := FTX(0, true, ""); r.Live {
+		t.Fatal("empty must not pass")
+	}
+	if r := FTX(2, false, "K1ABC W9XYZ -11"); r.Live {
+		t.Fatal("FT4 must not publish")
+	}
+	if r := FTX(1, true, "000000 FT8 +0.3 1000 Hz CQ K1ABC FN42"); !r.Live {
+		t.Fatal(r.Reason)
+	}
+	if r := FTX(1, true, "000000 FT8 +0.3 1000 Hz hello"); r.Live {
+		t.Fatal("no callsign")
+	}
+}
