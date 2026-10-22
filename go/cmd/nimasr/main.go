@@ -17,7 +17,7 @@ import (
 )
 
 func main() {
-	model := flag.String("model", "parakeet", "parakeet | whisper-large-v3 | canary")
+	model := flag.String("model", "whisper-large-v3", "parakeet | whisper-large-v3 | canary")
 	lang := flag.String("lang", "", "language code (en, es-ES, multi); default multi")
 	flag.Parse()
 	if flag.NArg() != 1 {

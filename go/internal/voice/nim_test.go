@@ -26,9 +26,11 @@ type fakeRiva struct {
 	request    *rivaspeech.RecognizeRequest
 	err        error
 	text       string
+	calls      int
 }
 
 func (f *fakeRiva) Recognize(ctx context.Context, request *rivaspeech.RecognizeRequest) (*rivaspeech.RecognizeResponse, error) {
+	f.calls++
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		f.auth = strings.Join(md.Get("authorization"), ",")
 		f.functionID = strings.Join(md.Get("function-id"), ",")
@@ -106,7 +108,7 @@ func TestNIMRecognizeFakeServer(t *testing.T) {
 	if transcript.Text != "hola mundo" {
 		t.Errorf("text = %q, want %q", transcript.Text, "hola mundo")
 	}
-	if transcript.Backend != "nvidia-nim" {
+	if !strings.HasPrefix(transcript.Backend, "nvidia-nim/") {
 		t.Errorf("backend = %q, want nvidia-nim", transcript.Backend)
 	}
 	if !transcript.Spoken {
@@ -158,12 +160,21 @@ func TestTranscribeBestFallbackError(t *testing.T) {
 	// hide a NIM outage.
 	_, err := TranscribeBest(context.Background(), toneSamples(8000), 8000,
 		Options{Binary: "/nonexistent/whisper", Model: "/nonexistent/model.bin"},
-		testNIMOptions())
+		func() NIMOptions { o := testNIMOptions(); o.FunctionID = WhisperLargeV3FunctionID; return o }())
 	if err == nil {
 		t.Fatal("expected an error when both backends fail")
 	}
 	if !strings.Contains(err.Error(), "quota exceeded") {
 		t.Errorf("error %q should mention the NIM failure", err)
+	}
+	// Default order is whisper-large-v3 then parakeet, both reported.
+	for _, want := range []string{"whisper-large-v3", "parakeet"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should name %s", err, want)
+		}
+	}
+	if server.calls < 2 {
+		t.Errorf("expected whisper then parakeet attempts, got %d calls", server.calls)
 	}
 }
 
@@ -191,8 +202,8 @@ func TestDefaultNIMOptions(t *testing.T) {
 	if options.Endpoint != DefaultNIMEndpoint {
 		t.Errorf("endpoint = %q, want catalog default", options.Endpoint)
 	}
-	if options.FunctionID != DefaultNIMFunctionID {
-		t.Errorf("function id = %q, want canary default", options.FunctionID)
+	if options.FunctionID != WhisperLargeV3FunctionID {
+		t.Errorf("function id = %q, want whisper-large-v3 default", options.FunctionID)
 	}
 	if !NIMAvailable(options) {
 		t.Error("NIMAvailable should be true with key and defaults")
@@ -209,7 +220,7 @@ func ExampleTranscribeBest() {
 
 func TestNIMModelPresets(t *testing.T) {
 	for name, want := range map[string]string{
-		"":                 DefaultNIMFunctionID,
+		"":                 WhisperLargeV3FunctionID,
 		"parakeet":         DefaultNIMFunctionID,
 		"Whisper-Large-V3": WhisperLargeV3FunctionID,
 		"whisper":          WhisperLargeV3FunctionID,

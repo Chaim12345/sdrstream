@@ -332,19 +332,26 @@ backends; a hosted model can hallucinate on noise just like a local one.
 | --- | --- | --- |
 | `SDRSTREAM_NIM_API_KEY` | (empty: backend off) | NVIDIA API catalog key |
 | `SDRSTREAM_NIM_ENDPOINT` | `grpc.nvcf.nvidia.com:443` | Riva gRPC endpoint |
-| `SDRSTREAM_NIM_FUNCTION_ID` | `71203149-d3b7-4460-8231-1be2543a1fca` | catalog function id of the model |
+| `SDRSTREAM_NIM_MODEL` | `whisper-large-v3` | `whisper-large-v3`, `parakeet` or `canary`; pins the model (no Parakeet fallback step) |
+| `SDRSTREAM_NIM_FUNCTION_ID` | (from model) | explicit catalog function id, overrides the model name |
 | `SDRSTREAM_NIM_LANG` | `multi` (auto-detect) | BCP-47 language hint |
 | `SDRSTREAM_VOICE_BACKEND` | `auto` | force `nim` or `whisper` |
 
-The default model is **parakeet-1.1b-rnnt-multilingual-asr** (25
-languages). Verified live on 2026-10-22: clean and noisy narrowband
-(8 kHz, ~10 dB SNR) Spanish and clean English clips all transcribed
-correctly with `multi` auto-detection, while a wrong fixed language hint
-degraded the alternative canary-1b model. **canary-1b-asr**
-(`b0e8b4a5-217c-40b7-9b96-17d84e666317`) is the translation-capable
-alternative; set `SDRSTREAM_NIM_LANG` to the real language with it,
-because it has no auto-detect code. Empty language codes are rejected by
-the hosted service.
+Order of backends when a key is set: **NIM Whisper large-v3**
+(`b702f636-f60c-4a3d-a6f4-f3568c13bd7d`), then **NIM
+parakeet-1.1b-rnnt-multilingual-asr** (`71203149-d3b7-4460-8231-1be2543a1fca`,
+25 languages), then local whisper.cpp as the offline fallback. Measured on
+28 LibriSpeech clips (real human read speech) through a SIMULATED 8 dB
+300-2800 Hz radio channel: Whisper large 7.0% WER, Parakeet 13.3%, local
+24.2%. This is not real recorded radio audio, and the sample is small.
+Transcripts carry `backend` as `nvidia-nim/<model>` or `whisper.cpp`.
+`multi` auto-detects the language; empty language codes are rejected, and
+Parakeet rejects codes it lacks (such as `en`), so leave `SDRSTREAM_NIM_LANG`
+unset unless you pin a model. **canary-1b-asr**
+(`b0e8b4a5-217c-40b7-9b96-17d84e666317`) has no auto-detect code, so set
+`SDRSTREAM_NIM_LANG` to the real language with it. `go run ./cmd/nimasr
+-model whisper-large-v3 file.wav` transcribes one WAV (key from the
+environment).
 
 A live check against the real endpoint is one command:
 

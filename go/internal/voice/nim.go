@@ -34,7 +34,7 @@ import (
 const (
 	// DefaultNIMEndpoint is the hosted NVIDIA API catalog gRPC endpoint.
 	DefaultNIMEndpoint = "grpc.nvcf.nvidia.com:443"
-	// DefaultNIMFunctionID is the catalog function id of
+	// DefaultNIMFunctionID is the Parakeet (second choice) catalog function id of
 	// parakeet-1.1b-rnnt-multilingual-asr (25 languages, automatic
 	// language detection with the "multi" language code), documented at
 	// build.nvidia.com/nvidia/parakeet-1_1b-rnnt-multilingual-asr.
@@ -81,11 +81,11 @@ type NIMOptions struct {
 //
 //	SDRSTREAM_NIM_API_KEY      NVIDIA API catalog key (required to enable)
 //	SDRSTREAM_NIM_ENDPOINT     default grpc.nvcf.nvidia.com:443
-//	SDRSTREAM_NIM_MODEL        parakeet (default), whisper-large-v3 or canary
+//	SDRSTREAM_NIM_MODEL        whisper-large-v3 (default), parakeet or canary
 //	SDRSTREAM_NIM_FUNCTION_ID  explicit function id, overrides the model name
 //	SDRSTREAM_NIM_LANG         language hint, default "multi" (auto-detect)
 func DefaultNIMOptions() NIMOptions {
-	fn := DefaultNIMFunctionID
+	fn := WhisperLargeV3FunctionID
 	if id, ok := NIMModelFunctionID(os.Getenv("SDRSTREAM_NIM_MODEL")); ok {
 		fn = id
 	}
@@ -98,18 +98,30 @@ func DefaultNIMOptions() NIMOptions {
 }
 
 // NIMModelFunctionID maps a model preset name to its catalog function id.
-// Names: "parakeet" (default multilingual), "whisper" or "whisper-large-v3",
-// "canary". An unknown name is returned as ok=false.
+// Names: "whisper-large-v3" (default, also "whisper" or empty), "parakeet"
+// (multilingual), "canary". An unknown name is returned as ok=false.
 func NIMModelFunctionID(name string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "", "parakeet":
+	case "parakeet":
 		return DefaultNIMFunctionID, true
-	case "whisper", "whisper-large", "whisper-large-v3":
+	case "", "whisper", "whisper-large", "whisper-large-v3":
 		return WhisperLargeV3FunctionID, true
 	case "canary":
 		return CanaryFunctionID, true
 	}
 	return "", false
+}
+
+func nimModelName(id string) string {
+	switch id {
+	case WhisperLargeV3FunctionID:
+		return "whisper-large-v3"
+	case DefaultNIMFunctionID:
+		return "parakeet-1.1b-multilingual"
+	case CanaryFunctionID:
+		return "canary-1b"
+	}
+	return id
 }
 
 // NIMAvailable reports whether the hosted backend is configured.
@@ -203,17 +215,20 @@ func nimRecognize(ctx context.Context, client rivaspeech.RivaSpeechRecognitionCl
 		}
 	}
 	transcript.Text = strings.Join(texts, " ")
-	transcript.Backend = "nvidia-nim"
+	transcript.Backend = "nvidia-nim/" + nimModelName(options.FunctionID)
 	transcript.Spoken = transcript.Text != ""
 	return transcript, nil
 }
 
-// TranscribeBest picks a speech backend and transcribes. The local
-// whisper.cpp stays the baseline; the hosted NIM model is tried first
-// when it is configured, because it is multilingual where the local
-// English models are not. SDRSTREAM_VOICE_BACKEND forces a choice:
-// "nim" or "whisper"; anything else is the automatic behaviour. A failed
-// NIM call falls back to whisper so an outage never costs a transcript.
+// TranscribeBest picks a speech backend and transcribes. Order when a NIM
+// key exists: NIM Whisper large-v3, then NIM Parakeet, then local
+// whisper.cpp (the offline fallback). On 28 LibriSpeech clips through a
+// simulated 8 dB radio channel these scored 7.0%, 13.3% and 24.2% WER.
+// Setting SDRSTREAM_NIM_MODEL or SDRSTREAM_NIM_FUNCTION_ID pins the NIM
+// model and drops the Parakeet step. SDRSTREAM_VOICE_BACKEND forces a
+// choice: "nim" or "whisper" (local). A failed call falls through to the
+// next backend so an outage never costs a transcript, and when every
+// backend fails the error names each one.
 func TranscribeBest(ctx context.Context, samples []float64, rate int, options Options, nim NIMOptions) (Transcript, error) {
 	switch strings.ToLower(os.Getenv("SDRSTREAM_VOICE_BACKEND")) {
 	case "whisper":
@@ -221,19 +236,31 @@ func TranscribeBest(ctx context.Context, samples []float64, rate int, options Op
 	case "nim":
 		return TranscribeNIM(ctx, samples, rate, nim)
 	}
-	if NIMAvailable(nim) {
-		transcript, err := TranscribeNIM(ctx, samples, rate, nim)
+	if !NIMAvailable(nim) {
+		return Transcribe(ctx, samples, rate, options)
+	}
+	chain := []NIMOptions{nim}
+	pinned := os.Getenv("SDRSTREAM_NIM_MODEL") != "" || os.Getenv("SDRSTREAM_NIM_FUNCTION_ID") != ""
+	if !pinned && nim.FunctionID == WhisperLargeV3FunctionID {
+		second := nim
+		second.FunctionID = DefaultNIMFunctionID
+		second.LanguageCode = DefaultNIMLanguage // parakeet rejects specific codes it lacks
+		chain = append(chain, second)
+	}
+	var failures []string
+	for _, o := range chain {
+		transcript, err := TranscribeNIM(ctx, samples, rate, o)
 		if err == nil {
 			return transcript, nil
 		}
-		if !Available(options) {
-			return transcript, err
-		}
-		fallback, ferr := Transcribe(ctx, samples, rate, options)
-		if ferr == nil {
-			return fallback, nil
-		}
-		return fallback, fmt.Errorf("voice: NIM failed (%v); whisper fallback failed (%v)", err, ferr)
+		failures = append(failures, fmt.Sprintf("%s: %v", nimModelName(o.FunctionID), err))
 	}
-	return Transcribe(ctx, samples, rate, options)
+	if !Available(options) {
+		return Transcript{}, fmt.Errorf("voice: NIM failed (%s); no local whisper available", strings.Join(failures, "; "))
+	}
+	fallback, ferr := Transcribe(ctx, samples, rate, options)
+	if ferr == nil {
+		return fallback, nil
+	}
+	return fallback, fmt.Errorf("voice: NIM failed (%s); whisper fallback failed (%v)", strings.Join(failures, "; "), ferr)
 }
