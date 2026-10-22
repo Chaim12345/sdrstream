@@ -56,7 +56,11 @@ session added:
   fails, and merges new stations into the next pass. Kiwi visits resume the HF
   target list after the last target they actually processed, and OpenWebRX
   visits rotate one profile per connection, so later targets/profiles get a
-  slot instead of the first few being rescanned forever.
+  slot instead of the first few being rescanned forever. Those cursors are
+  persisted in `scan-rotation.json` (`SDRSTREAM_STATE_DIR`, default
+  `~/sdrstream-state`; `--scan-state` overrides, empty disables), so a restart
+  resumes coverage instead of re-tuning the top of the list. The file is
+  written atomically once per visit and a corrupt/missing file is ignored.
 * **Record-all archive** — `--scan-record-all` archives a WAV plus a
   `key=value` sidecar (frequency, mode, receiver, kind, target, gate, started,
   duration, verified) for every detected activity, including unverified

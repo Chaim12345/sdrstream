@@ -1458,6 +1458,7 @@ func cmdWeb(args []string) error {
 	scanKiwiDirectory := fs.Bool("scan-kiwi-directory", false, "scan free-slot KiwiSDR entries from cached public directory")
 	scanDirectoryRefresh := fs.Duration("scan-directory-refresh", time.Hour, "re-fetch receiver directories this often; 0 disables refresh")
 	scanRecordAll := fs.Bool("scan-record-all", false, "archive audio for every detected activity, including unverified/noise/carrier clips")
+	scanState := fs.String("scan-state", defaultRotationStatePath(), "file that carries HF target / OpenWebRX profile rotation across restarts (empty disables)")
 	scanWSPR := fs.Bool("scan-wspr", false, "run a separate 250s WSPR capture on the configured HF receiver")
 	scanHFServer := fs.String("scan-hf-server", "", "HF receiver URL for FT8/WSPR session; use WebSDR/OpenWebRX host")
 	kiwiPreflightOnly := fs.Bool("kiwi-preflight", false, "preflight Kiwi receivers and print first-pass verdict counts, then exit")
@@ -1537,6 +1538,9 @@ func cmdWeb(args []string) error {
 		}
 	}
 	server := web.New(*capturesDir, *galleryDir)
+	// Rotation cursors survive a restart when the operator keeps the state
+	// file; a corrupt or missing file just starts coverage from the top.
+	configureRotationState(*scanState, log.Printf)
 	// The board state is persisted with the server; seed the scanner's copy
 	// so a restart does not rewrite decoded rows as "queued".
 	scansMu.Lock()

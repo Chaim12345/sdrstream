@@ -726,7 +726,10 @@ Useful options: `--monitor-server URL --monitor-kind openwebrx|websdr|kiwi`,
 without dropping hand-picked stations; `--scan-record-all` to archive a WAV
 plus metadata sidecar for every detected activity, verified or not;
 `--captures-max-gb` and `--captures-retain` to cap that archive (both default
-to unlimited); and `--no-feeds` to disable public-data panels. Run
+to unlimited); and `--no-feeds` to disable public-data panels. Rotation cursors
+(HF target, OpenWebRX profile) are kept across restarts in
+`$SDRSTREAM_STATE_DIR/scan-rotation.json` (`~/sdrstream-state` by default);
+`--scan-state PATH` moves that file and `--scan-state=` disables it. Run
 `go run ./cmd/sdrstream web -h` for the full current flag list. Never place
 secrets in command-line arguments or documentation; pass them through the
 process environment or a secret manager.

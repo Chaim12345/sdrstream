@@ -202,14 +202,22 @@ Slices (a)–(g) landed in PR #4. The integration changes that followed:
   monitor activity IDs reset per station. `--captures-max-gb` and
   `--captures-retain` run a retention loop; both default to unlimited.
 
+* **Rotation cursors survive a restart.** `scan-rotation.json` under
+  `SDRSTREAM_STATE_DIR` (default `~/sdrstream-state`, override with
+  `--scan-state`, empty disables) stores the last processed HF target and each
+  OpenWebRX receiver's profile list plus next index. Load happens once at
+  startup; `noteKiwiProgress`/`noteOpenWebRXProfiles`/the reset paths write it
+  atomically (temp file + rename, `0600`) once per visit. A missing, corrupt
+  or newer-version file is ignored, so a bad state file can only restart
+  coverage from the top — it can never stop a scan.
+
 Remaining:
 
 * WebSDR and KiwiSDR have no spectrum in this client, so they still use fixed
   targets; a `decode.BandScanner` sweep over the advertised band is next.
-* Rotation cursors live in memory, so a restart re-scans from the top of the
-  HF target list / the default OpenWebRX profile. Persisting them next to the
-  scan state would make coverage monotonic across restarts, and a per-station
-  profile hint would let an operator pin the span deliberately.
+* Rotation is per receiver and per target list, not a global coverage map: a
+  receiver that never answers keeps its cursor at the top, and there is no
+  per-station profile hint for an operator who wants to pin the span.
 * Record-all keeps everything by default. A long fleet run needs an operator
   to set `--captures-max-gb`/`--captures-retain`; there is no automatic
   budget yet, and the Gallery index is rebuilt from disk at startup.

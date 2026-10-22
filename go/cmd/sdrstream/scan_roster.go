@@ -200,7 +200,6 @@ func noteOpenWebRXProfiles(host, used string, names []string) {
 		return
 	}
 	openProfileMu.Lock()
-	defer openProfileMu.Unlock()
 	if !reflect.DeepEqual(openProfilesByHost[host], clean) {
 		openProfilesByHost[host] = clean
 		openProfileNext[host] = 0
@@ -216,6 +215,10 @@ func noteOpenWebRXProfiles(host, used string, names []string) {
 	if openProfileNext[host] >= len(clean) {
 		openProfileNext[host] = 0
 	}
+	// Unlock before persisting: persistRotation re-enters both cursor
+	// mutexes, so the deferred unlock below would deadlock it.
+	openProfileMu.Unlock()
+	persistRotation()
 }
 
 func resetOpenWebRXRotation(host string) {
@@ -223,6 +226,7 @@ func resetOpenWebRXRotation(host string) {
 	delete(openProfilesByHost, host)
 	delete(openProfileNext, host)
 	openProfileMu.Unlock()
+	persistRotation()
 }
 
 // Kiwi HF target rotation. A session stops at MaxTargets or MaxSession, so
@@ -269,10 +273,12 @@ func noteKiwiProgress(host string, results []decode.HFResult) {
 	kiwiCursorMu.Lock()
 	kiwiCursorByHost[host] = last
 	kiwiCursorMu.Unlock()
+	persistRotation()
 }
 
 func resetKiwiRotation(host string) {
 	kiwiCursorMu.Lock()
 	delete(kiwiCursorByHost, host)
 	kiwiCursorMu.Unlock()
+	persistRotation()
 }
