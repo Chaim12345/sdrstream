@@ -63,19 +63,27 @@ func goertzel(samples []int16, rate int, freqHz float64) float64 {
 // 300-2700 Hz USB passband and clear of the tone itself.
 var noiseOffsets = []float64{-250, -150, 150, 250, 350, 500}
 
-// beaconSNRBandwidthHz is the nominal measurement bandwidth the estimate is
-// normalised to. 500 Hz is the convention for narrowband carrier/beacon SNR;
-// without the normalisation the Goertzel processing gain would inflate the
-// reading by tens of dB on long recordings.
-const beaconSNRBandwidthHz = 500.0
-
-// EstimateToneSNR estimates the SNR (dB, normalised to a 500 Hz bandwidth)
-// of a tone at toneHz in the recorded audio: tone-bin power against the
-// median power of six neighbouring bins, scaled out of the Goertzel bin
-// bandwidth. It is an approximation - on-off keyed or ticking carriers (time
-// signals tick once per second) read a little low - but it ranks receivers
-// consistently, which is what the health table needs. ok is false when the
-// buffer is too short to say anything.
+// EstimateToneSNR estimates how far a tone at toneHz stands above the
+// neighbouring noise floor, in dB: tone-bin power (minus the floor) against
+// the median power of six neighbouring bins. Tone and floor bins share the
+// same Goertzel analysis bandwidth (~rate/n Hz), so their ratio needs no
+// bandwidth scaling. An earlier version subtracted a
+// 10*log10(2*rate/(n*500)) "500 Hz normalisation" - about 31 dB at the
+// fixed 5 s/12 kHz listen - which treated the tone bin as if its energy
+// were spread over 500 Hz while the floor bins stayed single-bin
+// estimates. That term was miscalibrated: on a live receiver it turned a
+// carrier +17.3 dB over the floor (FFT of the same capture) into a -23.2
+// dB reading, dragging every health-table score toward zero.
+//
+// The estimate is a per-analysis-bin figure, not a 500 Hz-normalised
+// carrier SNR: a longer capture narrows the bin and reads higher on the
+// same signal, so receivers are only comparable at the same listen time
+// (MeasureBeaconSNR fixes it). The figure matches what an FFT of the same
+// recording shows. It is still an approximation - on-off keyed or ticking
+// carriers (RWM keys its carrier; time signals tick once per second) read
+// low by the duty cycle - but it ranks receivers consistently, which is
+// what the health table needs. ok is false when the buffer is too short to
+// say anything.
 func EstimateToneSNR(samples []int16, rate int, toneHz float64) (snrDB float64, ok bool) {
 	if rate <= 0 || toneHz <= 0 || len(samples) < rate/2 {
 		return 0, false
@@ -98,16 +106,14 @@ func EstimateToneSNR(samples []int16, rate int, toneHz float64) (snrDB float64, 
 		floor = 1e-12
 	}
 	// Tone bin holds signal+noise; subtract the floor so a pure-noise
-	// recording floors instead of reading 0 dB "signal". Then scale from
-	// the Goertzel bin's noise bandwidth (rate/2n of the full span per bin,
-	// with the tone's coherent gain at exactly 2x the bin's noise width) to
-	// the nominal 500 Hz measurement bandwidth.
+	// recording floors instead of reading 0 dB "signal". The ratio is the
+	// estimate: both bins share the analysis bandwidth, so no further
+	// scaling applies.
 	excess := tone - floor
 	if excess < floor*1e-6 {
 		excess = floor * 1e-6
 	}
 	snr := 10 * math.Log10(excess/floor)
-	snr += 10 * math.Log10(2*float64(rate)/(float64(len(samples))*beaconSNRBandwidthHz))
 	return snr, true
 }
 

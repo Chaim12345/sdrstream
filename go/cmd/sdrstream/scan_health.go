@@ -216,7 +216,7 @@ func (p *healthPool) probeOneIdleBeacon(ctx context.Context, roster *scanRoster)
 			return
 		}
 		p.table.ObserveBeaconSNR(key, beacon.Name, snr)
-		p.logf("scan health: %s beacon %s SNR %.1f dB (500 Hz BW)", parts[1], beacon.Name, snr)
+		p.logf("scan health: %s beacon %s SNR %.1f dB (tone vs neighbouring floor)", parts[1], beacon.Name, snr)
 		p.save()
 		return
 	}
