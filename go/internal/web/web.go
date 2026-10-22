@@ -97,34 +97,42 @@ type LiveGalleryItem struct {
 }
 
 type ScanStatus struct {
-	StationType string    `json:"station_type,omitempty"`
-	Station     string    `json:"station"`
-	FrequencyHz float64   `json:"frequency_hz"`
-	Mode        string    `json:"mode"`
-	State       string    `json:"state"`
-	Result      string    `json:"result,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	StationType  string     `json:"station_type,omitempty"`
+	Station      string     `json:"station"`
+	FrequencyHz  float64    `json:"frequency_hz"`
+	Mode         string     `json:"mode"`
+	State        string     `json:"state"`
+	Result       string     `json:"result,omitempty"`
+	BlockedUntil *time.Time `json:"blocked_until,omitempty"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 	// BandCondition is the advisory HF band label (from the cached NOAA
 	// K-index) for scan targets inside an amateur HF band.
 	BandCondition string `json:"band_condition,omitempty"`
 }
 
 // ScanMetrics reports the bounded station-scan ramp and its current load.
+type DroppedStation struct {
+	Station string     `json:"station"`
+	Reason  string     `json:"reason"`
+	Until   *time.Time `json:"until,omitempty"`
+}
+
 type ScanMetrics struct {
-	RampStep               int          `json:"ramp_step"`
-	MaxConnections         int          `json:"max_connections"`
-	ActiveConnections      int          `json:"active_connections"`
-	Refusals               int          `json:"refusals"`
-	Timeouts               int          `json:"timeouts"`
-	LoadAverage            float64      `json:"load_average"`
-	CoreCount              int          `json:"core_count"`
-	EstimatedBandwidthMbps float64      `json:"estimated_bandwidth_mbps"`
-	BandwidthLimitMbps     float64      `json:"bandwidth_limit_mbps"`
-	TargetConcurrency      int          `json:"target_concurrency"`
-	Paused                 bool         `json:"paused"`
-	MemoryBytes            uint64       `json:"memory_bytes"`
-	OpenFDs                int          `json:"open_fds"`
-	Stations               []ScanStatus `json:"stations"`
+	RampStep               int              `json:"ramp_step"`
+	MaxConnections         int              `json:"max_connections"`
+	ActiveConnections      int              `json:"active_connections"`
+	Refusals               int              `json:"refusals"`
+	Timeouts               int              `json:"timeouts"`
+	LoadAverage            float64          `json:"load_average"`
+	CoreCount              int              `json:"core_count"`
+	EstimatedBandwidthMbps float64          `json:"estimated_bandwidth_mbps"`
+	BandwidthLimitMbps     float64          `json:"bandwidth_limit_mbps"`
+	TargetConcurrency      int              `json:"target_concurrency"`
+	Paused                 bool             `json:"paused"`
+	MemoryBytes            uint64           `json:"memory_bytes"`
+	OpenFDs                int              `json:"open_fds"`
+	Stations               []ScanStatus     `json:"stations"`
+	Dropped                []DroppedStation `json:"dropped"`
 }
 
 type Server struct {
@@ -757,7 +765,15 @@ func (s *Server) handleScans(w http.ResponseWriter, r *http.Request) {
 	if metrics.TargetConcurrency == 0 {
 		metrics.TargetConcurrency = metrics.RampStep
 	}
-	metrics.Stations = append([]ScanStatus(nil), s.scans...)
+	metrics.Stations = make([]ScanStatus, 0, len(s.scans))
+	metrics.Dropped = make([]DroppedStation, 0)
+	for _, item := range s.scans {
+		if item.State == "blocked" || strings.Contains(strings.ToLower(item.State), "error") || strings.Contains(strings.ToLower(item.State), "timeout") || strings.Contains(strings.ToLower(item.State), "refused") || strings.Contains(strings.ToLower(item.State), "failed") {
+			metrics.Dropped = append(metrics.Dropped, DroppedStation{Station: item.Station, Reason: item.Result, Until: item.BlockedUntil})
+			continue
+		}
+		metrics.Stations = append(metrics.Stations, item)
+	}
 	if len(s.cond.Bands) > 0 && time.Since(s.condAt) < 3*time.Hour {
 		for i := range metrics.Stations {
 			if label, ok := s.cond.LabelForHz(metrics.Stations[i].FrequencyHz); ok {

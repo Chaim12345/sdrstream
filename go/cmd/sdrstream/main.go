@@ -4,12 +4,13 @@ package main
 
 import (
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"github.com/chaim12345/sdrstream/go/internal/hfdl"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -1399,6 +1400,7 @@ func cmdWeb(args []string) error {
 	capturesDir := fs.String("captures-dir", "../captures", "directory of saved WAV captures to list and serve")
 	galleryDir := fs.String("gallery-dir", "", "directory for SatNOGS gallery artefacts (default: cache/gallery)")
 	scanStations := fs.String("scan-stations", "", "comma-separated public receivers for bounded parallel scan (one connection per receiver)")
+	scanOpenDirectory := fs.Bool("scan-open-directory", false, "scan OpenWebRX and WebSDR entries from receiverbook")
 	kiwiPreflightOnly := fs.Bool("kiwi-preflight", false, "preflight Kiwi receivers and print first-pass verdict counts, then exit")
 	scanStart := fs.Int("scan-start-connections", 49, "initial scanner concurrency ramp step")
 	scanMax := fs.Int("scan-max-connections", 100, "integrator scanner maximum concurrency (hard limit 1000)")
@@ -1475,6 +1477,18 @@ func cmdWeb(args []string) error {
 		feedsCtx, feedsCancel := context.WithCancel(context.Background())
 		defer feedsCancel()
 		feeds.Start(feedsCtx, feedsManager, *feedsLat, *feedsLon, *aisKey)
+	}
+	if *scanOpenDirectory {
+		stations, err := directory.FetchStations(context.Background(), 30*time.Second)
+		if err != nil {
+			return fmt.Errorf("fetch receiver directory: %w", err)
+		}
+		for _, station := range stations {
+			if station.Type == "OpenWebRX" || station.Type == "WebSDR" {
+				*scanStations += "," + station.Type + "|" + station.URL
+			}
+		}
+		*scanStations += ",WebSDR|http://websdr.ewi.utwente.nl:8901/"
 	}
 	if strings.TrimSpace(*scanStations) != "" {
 		config, err := newScanConfig(*scanStart, *scanMax, *scanRamp, *scanGoodRate, *scanRefusalBackoff, *scanLoadAdvance, *scanLoadBackoff, *scanBandwidth, *scanStreamKbps, *scanTargetLimit, *scanStationSession)
@@ -1873,6 +1887,58 @@ func newScanConfig(start, maximum int, ramp string, advanceError, backoffRefusal
 	return scanConfig{start: start, maximum: maximum, ramp: steps, advanceErrorRate: advanceError, backoffRefusalRate: backoffRefusal, advanceLoadRatio: advanceLoad, backoffLoadRatio: backoffLoad, bandwidthLimitMbps: bandwidth, streamKbps: streamKbps, targetLimit: targetLimit, stationSession: stationSession}, nil
 }
 
+type stationBlock struct {
+	Reason string
+	Until  time.Time
+}
+
+var blockMu sync.Mutex
+
+func blocklistPath() string {
+	dir := os.Getenv("SDRSTREAM_STATE_DIR")
+	if dir == "" {
+		dir = filepath.Join(os.Getenv("HOME"), "sdrstream-state")
+	}
+	return filepath.Join(dir, "station-blocklist.gob")
+}
+func loadBlocklist() map[string]stationBlock {
+	m := map[string]stationBlock{}
+	f, err := os.Open(blocklistPath())
+	if err != nil {
+		return m
+	}
+	defer f.Close()
+	_ = gob.NewDecoder(f).Decode(&m)
+	return m
+}
+func saveBlocklist(m map[string]stationBlock) {
+	path := blocklistPath()
+	_ = os.MkdirAll(filepath.Dir(path), 0700)
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	if gob.NewEncoder(f).Encode(m) != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		return
+	}
+	_ = f.Sync()
+	_ = f.Close()
+	_ = os.Rename(tmp, path)
+}
+func blockStation(server *web.Server, host, reason string, duration time.Duration) {
+	until := time.Now().Add(duration)
+	blockMu.Lock()
+	m := loadBlocklist()
+	m[strings.ToLower(host)] = stationBlock{reason, until}
+	saveBlocklist(m)
+	blockMu.Unlock()
+	t := until
+	server.UpsertScanStatus(web.ScanStatus{Station: host, State: "blocked", Result: reason, BlockedUntil: &t, UpdatedAt: time.Now()})
+}
+
 func runParallelScan(ctx context.Context, server *web.Server, receivers []string, multimonPath, direwolfPath string, cfg scanConfig, guard *loadGuard) {
 	if guard == nil {
 		guard = newLoadGuard(0, 0, 0, 0, 0, 0, 0, 0)
@@ -1892,6 +1958,24 @@ func runParallelScan(ctx context.Context, server *web.Server, receivers []string
 		seen[key] = true
 		unique = append(unique, kind+"|"+host)
 	}
+	if len(unique) == 0 {
+		return
+	}
+	blockMu.Lock()
+	blocked := loadBlocklist()
+	blockMu.Unlock()
+	activeUnique := make([]string, 0, len(unique))
+	for _, entry := range unique {
+		parts := strings.SplitN(entry, "|", 2)
+		b, ok := blocked[strings.ToLower(parts[1])]
+		if ok && time.Now().Before(b.Until) {
+			t := b.Until
+			server.UpsertScanStatus(web.ScanStatus{Station: parts[1], StationType: parts[0], State: "blocked", Result: b.Reason, BlockedUntil: &t, UpdatedAt: time.Now()})
+			continue
+		}
+		activeUnique = append(activeUnique, entry)
+	}
+	unique = activeUnique
 	if len(unique) == 0 {
 		return
 	}
@@ -2009,6 +2093,10 @@ func runParallelScan(ctx context.Context, server *web.Server, receivers []string
 		select {
 		case <-ctx.Done():
 		case r := <-results:
+			if r.outcome.refused || r.outcome.timedOut {
+				reason := "receiver refused or timed out"
+				blockStation(server, r.host, reason, 30*time.Minute)
+			}
 			inFlight--
 			delete(activeStations, r.host)
 			delete(activeCancels, r.host)
@@ -2271,8 +2359,10 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		cancelConnect()
 		active.Add(-1)
 		updateMetrics()
-		addScan(server, web.ScanStatus{StationType: stationType, Station: host, State: "refused/skipped", Result: err.Error(), UpdatedAt: time.Now()})
-		return classifyScanFailure(err)
+		outcome := classifyScanFailure(err)
+		reason := err.Error()
+		blockStation(server, host, reason, 30*time.Minute)
+		return outcome
 	}
 	source, err := monitor.SourceFor(connectCtx, protocol, host, "")
 	cancelConnect()
@@ -2280,11 +2370,7 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		active.Add(-1)
 		updateMetrics()
 		outcome := classifyScanFailure(err)
-		state := "error"
-		if outcome.refused {
-			state = "refused/skipped"
-		}
-		addScan(server, web.ScanStatus{StationType: stationType, Station: host, State: state, Result: err.Error(), UpdatedAt: time.Now()})
+		blockStation(server, host, err.Error(), 30*time.Minute)
 		return outcome
 	}
 	defer func() { source.Close(); active.Add(-1); updateMetrics() }()
@@ -2294,6 +2380,9 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		{host, 446093750, "fm"}, {host, 162400e3, "fm"}, {host, 162425e3, "fm"}, {host, 162450e3, "fm"},
 		{host, 162475e3, "fm"}, {host, 162500e3, "fm"}, {host, 162525e3, "fm"}, {host, 162550e3, "fm"},
 		{host, 88.1e6, "wfm"}, {host, 94.5e6, "wfm"}, {host, 100e6, "wfm"}, {host, 104.5e6, "wfm"},
+	}
+	if strings.Contains(strings.ToLower(host), "websdr.ewi.utwente.nl") {
+		targets = []scanTarget{{host, 7074e3, "usb"}}
 	}
 	if targetLimit < len(targets) {
 		targets = targets[:targetLimit]
@@ -2307,8 +2396,12 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		update("connected", "")
 		update("tuning", "")
 		update("listening", "")
-		targetCtx, cancelTarget := context.WithTimeout(ctx, 12*time.Second)
-		samples, rate, err := source.Listen(targetCtx, target.frequency, target.mode, 12*time.Second)
+		listen := 12 * time.Second
+		if strings.Contains(strings.ToLower(host), "websdr.ewi.utwente.nl") && target.frequency == 7074e3 {
+			listen = 35 * time.Second
+		}
+		targetCtx, cancelTarget := context.WithTimeout(ctx, listen+5*time.Second)
+		samples, rate, err := source.Listen(targetCtx, target.frequency, target.mode, listen)
 		cancelTarget()
 		if err != nil {
 			result := classifyScanFailure(err)
@@ -2320,6 +2413,7 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 				state = "timeout"
 			}
 			update(state, err.Error())
+			blockStation(server, host, err.Error(), 30*time.Minute)
 			return result
 		}
 		decodeCtx, cancelDecode := context.WithTimeout(ctx, 12*time.Second)

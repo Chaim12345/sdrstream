@@ -105,16 +105,20 @@ func TestPSKReporterRun(t *testing.T) {
 	go fakeMQTT(t, ln, payload)
 	src := &PSKReporter{Server: ln.Addr().String()}
 	ctx, cancel := context.WithCancel(context.Background())
-	var got []Item
+	got := make(chan Item, 2)
 	done := make(chan error, 1)
-	go func() { done <- src.Run(ctx, func(it Item) { got = append(got, it) }) }()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && len(got) == 0 {
-		time.Sleep(20 * time.Millisecond)
+	go func() { done <- src.Run(ctx, func(it Item) { got <- it }) }()
+	var item Item
+	select {
+	case item = <-got:
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for feed item")
 	}
 	cancel()
 	<-done
-	if len(got) != 1 || got[0].Label != "4X1RF" {
-		t.Fatalf("want one 4X1RF spot, got %+v", got)
+	if item.Label != "4X1RF" {
+		t.Fatalf("want 4X1RF spot, got %+v", item)
 	}
 }

@@ -47,12 +47,16 @@ func TestAISRunSendsKey(t *testing.T) {
 	defer srv.Close()
 	src := &AIS{URL: "ws" + strings.TrimPrefix(srv.URL, "http"), Key: "test-key-123"}
 	ctx, cancel := context.WithCancel(context.Background())
-	var got []Item
+	got := make(chan Item, 2)
 	done := make(chan error, 1)
-	go func() { done <- src.Run(ctx, func(it Item) { got = append(got, it) }) }()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && len(got) == 0 {
-		time.Sleep(20 * time.Millisecond)
+	go func() { done <- src.Run(ctx, func(it Item) { got <- it }) }()
+	var item Item
+	select {
+	case item = <-got:
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for feed item")
 	}
 	cancel()
 	<-done
@@ -62,8 +66,8 @@ func TestAISRunSendsKey(t *testing.T) {
 	if len(received.BoundingBoxes) != 1 {
 		t.Fatalf("bounding box missing: %+v", received)
 	}
-	if len(got) != 1 || got[0].Label != "TEST VESSEL" {
-		t.Fatalf("want one vessel, got %+v", got)
+	if item.Label != "TEST VESSEL" {
+		t.Fatalf("want TEST VESSEL, got %+v", item)
 	}
 }
 
