@@ -98,6 +98,59 @@ func MorseDecode(path string) (MorseResult, error) {
 	return res, nil
 }
 
+// morseEnvelope tracks the keyed-on/off envelope at one tone frequency
+// using 10 ms Goertzel magnitude windows.
+func morseEnvelope(samples []float64, rate int, tone float64) []float64 {
+	win := rate / 100
+	if win < 1 {
+		win = 1
+	}
+	var env []float64
+	for start := 0; start+win <= len(samples); start += win {
+		env = append(env, goertzel(samples[start:start+win], rate, tone))
+	}
+	return env
+}
+
+// morseSecondTone finds the strongest tone at least 80 Hz away from the
+// primary tone, used to follow two-tone MCW signals that alternate
+// between two keyed carriers (numbers-station Morse such as M1).
+func morseSecondTone(samples []float64, rate int, primary float64) float64 {
+	const lo, hi, step = 300.0, 2600.0, 5.0
+	bestHz, bestMag := 0.0, -1.0
+	for f := lo; f <= hi; f += step {
+		if math.Abs(f-primary) < 80 {
+			continue
+		}
+		if mag := goertzel(samples, rate, f); mag > bestMag {
+			bestMag, bestHz = mag, f
+		}
+	}
+	if bestHz <= 0 {
+		return 0
+	}
+	refined, refMag := bestHz, bestMag
+	for f := bestHz - step; f <= bestHz+step; f += 1 {
+		if f <= 0 || math.Abs(f-primary) < 80 {
+			continue
+		}
+		if mag := goertzel(samples, rate, f); mag > refMag {
+			refined, refMag = f, mag
+		}
+	}
+	return refined
+}
+
+func morseLetters(text string) int {
+	n := 0
+	for _, r := range text {
+		if r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			n++
+		}
+	}
+	return n
+}
+
 func morseFromSamples(samples []float64, rate int) (MorseResult, float64, float64) {
 	// Analyse in 1 s windows: pick the strongest window's tone once, then
 	// track the envelope at that frequency for the whole file.
@@ -106,27 +159,56 @@ func morseFromSamples(samples []float64, rate int) (MorseResult, float64, float6
 		chunk = len(samples)
 	}
 	bestTone, bestSNR := 0.0, math.Inf(-1)
+	bestStart := 0
 	for start := 0; start+chunk <= len(samples); start += chunk {
 		f, snr := FindDominantTone(samples[start:start+chunk], rate)
 		if snr > bestSNR {
 			bestTone, bestSNR = f, snr
+			bestStart = start
 		}
 	}
 	if bestTone <= 0 {
 		return MorseResult{Text: ""}, 0, bestSNR
 	}
 
-	// Envelope at the tone frequency: 10 ms Goertzel magnitude windows.
+	env := morseEnvelope(samples, rate, bestTone)
+	if len(env) < 3 {
+		return MorseResult{Text: ""}, bestTone, bestSNR
+	}
+	res := morseFromEnvelope(env, rate, bestTone, bestSNR, 2000)
+	if plausibleMorse(res) {
+		return res, bestTone, bestSNR
+	}
+
+	// Two-tone fallback: numbers-station MCW alternates the keying
+	// between two carriers, so a single-tone envelope sees only half the
+	// elements. Combine both envelopes and try again with a wider tone
+	// ceiling. Only a strictly better read replaces the first attempt.
+	if tone2 := morseSecondTone(samples[bestStart:bestStart+chunk], rate, bestTone); tone2 > 0 {
+		env2 := morseEnvelope(samples, rate, tone2)
+		if len(env2) == len(env) {
+			comb := make([]float64, len(env))
+			for i := range comb {
+				if env2[i] > env[i] {
+					comb[i] = env2[i]
+				} else {
+					comb[i] = env[i]
+				}
+			}
+			if res2 := morseFromEnvelope(comb, rate, bestTone, bestSNR, 2500); plausibleMorseRange(res2, 2500) && morseLetters(res2.Text) > morseLetters(res.Text) {
+				return res2, bestTone, bestSNR
+			}
+		}
+	}
+	return res, bestTone, bestSNR
+}
+
+// morseFromEnvelope turns a keyed-tone envelope into text. maxToneHz is
+// the plausibility ceiling for the reported tone frequency.
+func morseFromEnvelope(env []float64, rate int, bestTone, bestSNR, maxToneHz float64) MorseResult {
 	win := rate / 100
 	if win < 1 {
 		win = 1
-	}
-	var env []float64
-	for start := 0; start+win <= len(samples); start += win {
-		env = append(env, goertzel(samples[start:start+win], rate, bestTone))
-	}
-	if len(env) < 3 {
-		return MorseResult{Text: ""}, bestTone, bestSNR
 	}
 	sort2 := make([]float64, len(env))
 	copy(sort2, env)
@@ -134,7 +216,7 @@ func morseFromSamples(samples []float64, rate int) (MorseResult, float64, float6
 	floor := sort2[len(sort2)/4] // noise floor from the quietest quartile
 	peak := sort2[3*len(sort2)/4]
 	if peak <= floor {
-		return MorseResult{Text: ""}, bestTone, bestSNR
+		return MorseResult{Text: "", ToneHz: bestTone, SnrdB: bestSNR}
 	}
 	threshold := math.Sqrt(floor * peak)
 
@@ -165,7 +247,7 @@ func morseFromSamples(samples []float64, rate int) (MorseResult, float64, float6
 		}
 	}
 	if len(onLens) == 0 {
-		return MorseResult{Text: ""}, bestTone, bestSNR
+		return MorseResult{Text: "", ToneHz: bestTone, SnrdB: bestSNR}
 	}
 	sort.Ints(onLens)
 	dot := onLens[0]
@@ -216,12 +298,15 @@ func morseFromSamples(samples []float64, rate int) (MorseResult, float64, float6
 				symbol.WriteByte('-')
 			}
 		} else {
-			// Gap: intra-character, inter-character or word.
-			if l <= dot {
+			// Gap: intra-character, inter-character or word. Real
+			// captures lose gap length to envelope rise/fall bleed, so
+			// the thresholds sit below the textbook 1/3/7 dot ratios:
+			// a 3-dot character gap can arrive measuring just over two.
+			if l <= dot*2 {
 				// element gap, nothing
-			} else if l <= dot*3+1 {
+			} else if l <= dot*4 {
 				flushSymbol()
-			} else if l >= dot*5 {
+			} else {
 				flushSymbol()
 				sb.WriteByte(' ')
 			}
@@ -234,20 +319,27 @@ func morseFromSamples(samples []float64, rate int) (MorseResult, float64, float6
 		ToneHz: bestTone, SnrdB: bestSNR}
 	// Noise keys into plausible-looking runs, so the text is only kept when
 	// the timing and the character mix both look like real CW.
-	if !plausibleMorse(result) {
+	if !plausibleMorseRange(result, maxToneHz) {
 		result.Text = ""
 	}
-	return result, bestTone, bestSNR
+	return result
 }
 
 // plausibleMorse rejects output that is really noise. A CW beacon keys at
 // 5-40 words per minute, so a dot lasts 30-200 ms; noise produces runs far
 // shorter than that. The character mix must also be mostly decodable.
 func plausibleMorse(result MorseResult) bool {
+	return plausibleMorseRange(result, 2000)
+}
+
+// plausibleMorseRange is plausibleMorse with a caller-set tone ceiling.
+// Numbers-station MCW (e.g. the Conet M1 family) keys tones above the
+// 2 kHz amateur-beacon range, so the two-tone fallback allows 2.5 kHz.
+func plausibleMorseRange(result MorseResult, maxToneHz float64) bool {
 	if result.DotMs < 25 || result.DotMs > 250 {
 		return false
 	}
-	if result.ToneHz < 150 || result.ToneHz > 2000 {
+	if result.ToneHz < 150 || result.ToneHz > maxToneHz {
 		return false
 	}
 	letters, unknown := 0, 0

@@ -224,8 +224,14 @@ func wefaxLockTonePair(samples []float64, rate int) (black, white, share, promin
 		}
 		return
 	}
-	black, pb := peakIn(wefaxBlackHz-150, wefaxBlackHz+150)
-	white, pw := peakIn(wefaxWhiteHz-150, wefaxWhiteHz+150)
+	// The windows are wide on the low side: amateur and demo WEFAX
+	// captures (e.g. the circulating IOC576 2m demo) use a shifted
+	// 1200/1800 Hz pair rather than the standard 1500/2300 Hz. The
+	// strongest peak inside each window still wins, so standard signals
+	// lock exactly as before, and the prominence, anti-correlation and
+	// phasing checks below still gate false locks.
+	black, pb := peakIn(wefaxBlackHz-450, wefaxBlackHz+150)
+	white, pw := peakIn(wefaxWhiteHz-650, wefaxWhiteHz+150)
 	if white-black < 600 || white-black > 1000 || median <= 0 {
 		return black, white, 0, 0
 	}
