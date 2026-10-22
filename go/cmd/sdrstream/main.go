@@ -208,6 +208,7 @@ func cmdRecord(args []string) error {
 	seconds := fs.Float64("seconds", 10, "recording duration in seconds")
 	out := fs.String("out", "recording.wav", "output file")
 	noReconnect := fs.Bool("no-reconnect", false, "do not reconnect when the connection drops")
+	profileSub := fs.String("profile", "", "openwebrx: select the first profile whose name contains this text (case-insensitive) before tuning; \"list\" prints the profiles and exits")
 	fs.Parse(args)
 	if *server == "" {
 		return fmt.Errorf("--server is required")
@@ -266,6 +267,31 @@ func cmdRecord(args []string) error {
 		return err
 	}
 	defer client.Close()
+	if *profileSub != "" {
+		time.Sleep(1500 * time.Millisecond) // profile list arrives after connect
+		profiles := client.ProfileList()
+		if *profileSub == "list" {
+			for _, p := range profiles {
+				fmt.Printf("%s\t%s\n", p.Key, p.Name)
+			}
+			return nil
+		}
+		picked := false
+		for _, p := range profiles {
+			if strings.Contains(strings.ToLower(p.Name), strings.ToLower(*profileSub)) {
+				fmt.Printf("profile: %s\n", p.Name)
+				if err := client.SelectProfile(ctx, p.Key); err != nil {
+					return err
+				}
+				picked = true
+				time.Sleep(2 * time.Second)
+				break
+			}
+		}
+		if !picked {
+			return fmt.Errorf("no profile matches %q", *profileSub)
+		}
+	}
 	frequency, _ := strconv.ParseInt(*freq, 10, 64)
 	if err := client.Tune(ctx, &frequency, *mode, nil); err != nil {
 		return err
