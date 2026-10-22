@@ -1538,6 +1538,7 @@ func cmdDecode(args []string) error {
 	mode := fs.String("mode", "auto", "auto | aprs | morse | dtmf | rtty | psk31 | sstv | pocsag | eas | navtex | voice | all (every data mode, no speech)")
 	offset := fs.Float64("offset", 0, "audio centre frequency in Hz for psk31/rtty (0 = auto)")
 	imageOut := fs.String("sstv-image", "", "write decoded Martin M2 SSTV image as PNG")
+	aptOut := fs.String("apt-image", "", "write decoded NOAA APT picture as PNG (with -mode apt)")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
 		return fmt.Errorf("decode: pass one or more WAV files")
@@ -1550,6 +1551,22 @@ func cmdDecode(args []string) error {
 			continue
 		}
 		wantAll := *mode == "all"
+
+		if *mode == "apt" {
+			r := decode.APTDecode(samples, rate)
+			ok, why := r.Verified()
+			if r == nil {
+				fmt.Println("   apt:    no sync found")
+				continue
+			}
+			fmt.Printf("   apt:    lines=%d locked=%d syncA=%.2f syncB=%.2f verified=%v (%s)\n", r.Lines, r.LinesLocked, r.MeanSyncA, r.SyncB, ok, why)
+			if *aptOut != "" && ok {
+				if b, err := r.PNG(); err == nil {
+					os.WriteFile(*aptOut, b, 0o644)
+				}
+			}
+			continue
+		}
 
 		if *mode == "dtmf" || wantAll {
 			if s := decode.DTMFDecode(samples, rate); s != "" {
