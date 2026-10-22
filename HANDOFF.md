@@ -137,13 +137,13 @@ far** (commits `9856a52`, `41efb0d`, `7259d71`, `c1051e4`):
   unused - consumers must reconnect instead), kiwi in-flight reconnect
   (fixed interval, masked error), websdr backoff reset + preflight
   short-read, and a websdr test suite (still zero tests).
-* **M4 kiwi tune-drain still OPEN** — the socket-drain approach was
-  reverted in `0441873`: it swallowed live audio and broke the three
-  `TestRunHFSession*` reference tests (they record a fixed sample count
-  from a fake receiver). The openwebrx (audio-buffer drain) and websdr
-  (event-buffer drain) versions are safe and landed. Kiwi needs a design
-  that discards pre-tune audio *without consuming the capture it is
-  meant to prepare*.
+* **M4 kiwi tune-drain** - fixed on branch `fix/kiwi-precapture-drain`:
+  `Record` now discards audio for 250 ms after a tune (decoding frames so
+  ADPCM state stays continuous) BEFORE its duration clock starts, and keeps
+  the first post-settle frame. The caller gets the full duration of
+  post-tune audio; `Record` can take up to 250 ms longer. The earlier
+  socket-drain inside `Tune` was wrong twice: it swallowed capture audio,
+  and a read-deadline timeout is permanent on a gorilla websocket.
 * **M15 remainder:** ~345 MB/h retention (capture quota knob);
   WSPR Fano "off-by-one" re-verified against the Phil Karn reference
   (Guenael/rtlsdr-wsprd `wsprd/fano.c`) and is a **FALSE positive** -
