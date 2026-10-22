@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chaim12345/sdrstream/go/internal/icecast"
 	"github.com/chaim12345/sdrstream/go/internal/kiwisdr"
 	"github.com/chaim12345/sdrstream/go/internal/openwebrx"
 	"github.com/chaim12345/sdrstream/go/internal/websdr"
@@ -251,6 +252,8 @@ func SourceFor(ctx context.Context, kind, server, profile string) (Source, error
 		return OpenWebRXSource(ctx, server, profile)
 	case "websdr":
 		return WebSDRSource(ctx, server)
+	case "icecast", "shoutcast", "nwr":
+		return icecast.NewSource(server), nil
 	case "kiwi", "kiwisdr":
 		return KiwiSource(ctx, server)
 	}

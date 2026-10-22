@@ -7,7 +7,7 @@ STATE_DIR="${SDRSTREAM_STATE_DIR:-$HOME/sdrstream-state}"
 CLOUDFLARED="${CLOUDFLARED:-$HOME/toolchain/cloudflared}"
 : "${SDRSTREAM_UI_PASSWORD:=$(cat "$HOME/.vault/sdrstream-demo-ui-94f577/password")}" 
 : "${SDRSTREAM_NIM_API_KEY:=$(cat "$HOME/.vault/nvidia-nim-api-key-4ab10a/password")}" 
-EXTRA_ARGS="${EXTRA_ARGS:---scan-start-connections 12 --scan-max-connections 12 --scan-ramp 12 --scan-open-directory --scan-hf-server https://websdr.ewi.utwente.nl:8901 --scan-wspr}"
+EXTRA_ARGS="${EXTRA_ARGS:---scan-start-connections 12 --scan-max-connections 12 --scan-ramp 12 --scan-open-directory --scan-hf-server http://websdr.ewi.utwente.nl:8901,http://websdr.fi:8080,f4kiy.ddns.net:8073 --scan-wspr}"
 export SDRSTREAM_UI_PASSWORD SDRSTREAM_NIM_API_KEY SDRSTREAM_STATE_DIR="$STATE_DIR" EXTRA_ARGS RUN_DIR
 mkdir -p "$RUN_DIR" "$STATE_DIR"
 app_up() {

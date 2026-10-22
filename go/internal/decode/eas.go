@@ -45,7 +45,7 @@ func EASDecode(samples []float64, rate int) []EASAlert {
 		return nil
 	}
 	spb := float64(rate) / easBaud
-	win := int(spb * 0.8)
+	win := int(spb * easWinFrac)
 	if win < 8 {
 		win = 8
 	}
@@ -238,3 +238,8 @@ func parseEASHeader(raw string) EASAlert {
 	}
 	return a
 }
+
+// easWinFrac is the tone-measurement window as a fraction of one bit. Measured
+// on synthetic headers pushed through a 32 kbps MP3 encode: 0.5 decoded 15 of
+// 17 bursts exactly, 0.8 only 8 of 17.
+const easWinFrac = 0.5
