@@ -71,7 +71,7 @@ func RunHFTarget(ctx context.Context, server string, target HFTarget, listen tim
 		}
 		result.Gate = verify.CW(result.Text, target.Expect)
 	case "navtex":
-		msgs := NAVTEXDecode(samples, rate, (target.MarkHz+target.SpaceHz)/2)
+		msgs := NAVTEXDecode(samples, rate, 0)
 		for _, m := range msgs {
 			result.Text += m.Raw + "\n"
 		}

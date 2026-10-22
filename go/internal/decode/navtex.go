@@ -1,6 +1,9 @@
 package decode
 
-import "strings"
+import (
+	"math"
+	"strings"
+)
 
 // NAVTEX is the maritime navigational-telex service. It layers its messages
 // on SITOR collective B-mode (AMTOR-FEC): 100 baud FSK with a 170 Hz shift
@@ -63,7 +66,7 @@ func NAVTEXDecode(samples []float64, rate int, centerHz float64) []NAVTEXMessage
 		return nil
 	}
 	if centerHz == 0 {
-		centerHz = navtexCenter
+		centerHz = navtexCenterHz(samples, rate)
 	}
 	mark := centerHz + navtexShift
 	space := centerHz - navtexShift
@@ -81,33 +84,32 @@ func NAVTEXDecode(samples []float64, rate int, centerHz float64) []NAVTEXMessage
 			dec[p] = 1
 		}
 	}
-	// Search one character period (7 bits) for the start offset and try both
-	// mark/space polarities, keeping the alignment that yields the most valid
-	// CCIR 476 characters. Only the first second is scored so a long capture
-	// is not re-scanned for every candidate offset.
-	scoreLen := int(float64(rate))
-	if scoreLen > n {
-		scoreLen = n
-	}
-	var bestStart float64
+	// Search the start phase, polarity and a narrow symbol-clock range.
+	// Scoring the whole capture makes the selected clock rate minimize drift
+	// across long NAVTEX slots rather than only fitting the first second.
+	var bestStart, bestSPB float64
 	bestInvert := false
 	bestScore := -1.0
-	step := spb / 14
-	for pol := 0; pol < 2; pol++ {
-		for start := 0.0; start < 7*spb; start += step {
-			chars := navtexChars(dec[:scoreLen], start, spb, pol == 1)
-			score := navtexScore(chars)
-			if score > bestScore {
-				bestScore = score
-				bestStart = start
-				bestInvert = pol == 1
+	for baud := 99.0; baud <= 101.001; baud += 0.1 {
+		candidateSPB := float64(rate) / baud
+		step := candidateSPB / 14
+		for pol := 0; pol < 2; pol++ {
+			for start := 0.0; start < 7*candidateSPB; start += step {
+				chars := navtexChars(dec, start, candidateSPB, pol == 1)
+				score := navtexScore(chars)
+				if score > bestScore {
+					bestScore = score
+					bestStart = start
+					bestSPB = candidateSPB
+					bestInvert = pol == 1
+				}
 			}
 		}
 	}
 	if bestScore < 0.5 {
 		return nil
 	}
-	bestChars := navtexChars(dec, bestStart, spb, bestInvert)
+	bestChars := navtexChars(dec, bestStart, bestSPB, bestInvert)
 	// Every character is sent twice, alternating alpha and its repeat five
 	// characters later, so only one parity carries the data.
 	a := navtexText(bestChars, 0)
@@ -117,6 +119,28 @@ func NAVTEXDecode(samples []float64, rate int, centerHz float64) []NAVTEXMessage
 		text = b
 	}
 	return navtexMessages(text)
+}
+
+// navtexCenterHz estimates the center of the 170 Hz FSK pair by searching
+// for the candidate pair whose weaker tone has the most energy. Scoring the
+// weaker tone rejects a single unrelated carrier that would dominate a
+// one-tone peak detector.
+func navtexCenterHz(samples []float64, rate int) float64 {
+	bestCenter, bestScore := navtexCenter, -1.0
+	// NAVTEX audio commonly lies near 1700 Hz but receivers can place it
+	// anywhere in the usable SSB passband.
+	if len(samples) > rate/2 {
+		samples = samples[:rate/2]
+	}
+	for center := 900.0; center <= 2800; center += 5 {
+		mark := goertzel(samples, rate, center+navtexShift)
+		space := goertzel(samples, rate, center-navtexShift)
+		score := math.Min(mark, space)
+		if score > bestScore {
+			bestScore, bestCenter = score, center
+		}
+	}
+	return bestCenter
 }
 
 // navtexChars samples the decision stream on the bit grid anchored at start
