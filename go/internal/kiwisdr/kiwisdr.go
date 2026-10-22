@@ -52,7 +52,8 @@ type Options struct {
 	IdentUser    string
 	OpenTimeout  time.Duration
 	IdleTimeout  time.Duration
-	Waterfall    bool // also open the /W/F waterfall connection
+	Waterfall    bool   // also open the /W/F waterfall connection
+	WSPath       string // preflight-selected path style: "/ws/kiwi" or "legacy"
 	WriteTimeout time.Duration
 }
 
@@ -121,7 +122,12 @@ func New(server string, opts Options) (*Client, error) {
 // Connect opens the stream and starts audio flowing. It does not tune; call
 // Tune separately so repeated reconnections replay the last tuning.
 func (c *Client) Connect(ctx context.Context) error {
-	uri := fmt.Sprintf("ws://%s/%d/SND", c.base, time.Now().Unix())
+	timestamp := time.Now().Unix()
+	path := ""
+	if c.opts.WSPath == "/ws/kiwi" {
+		path = "/ws/kiwi"
+	}
+	uri := fmt.Sprintf("ws://%s%s/%d/SND", c.base, path, timestamp)
 	dialer := websocket.Dialer{HandshakeTimeout: c.opts.OpenTimeout}
 	ws, response, err := dialer.DialContext(ctx, uri, nil)
 	if err != nil {

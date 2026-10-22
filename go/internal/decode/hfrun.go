@@ -65,6 +65,7 @@ type SessionOptions struct {
 	MaxSession      time.Duration // per connection; default 5 min
 	SkipInactive    bool          // skip targets whose schedule says off-air
 	RecordFullAudio bool          // keep AudioWAV on every result, not only failures
+	WSPath          string        // preflight-selected Kiwi WebSocket path style
 }
 
 func (o *SessionOptions) defaults() {
@@ -101,7 +102,9 @@ func RunHFSession(ctx context.Context, server string, targets []HFTarget, opts S
 		remaining = append(remaining, targets[opts.MaxTargets:]...)
 		targets = targets[:opts.MaxTargets]
 	}
-	client, err := kiwisdr.New(server, kiwisdr.DefaultOptions())
+	kiwiOptions := kiwisdr.DefaultOptions()
+	kiwiOptions.WSPath = opts.WSPath
+	client, err := kiwisdr.New(server, kiwiOptions)
 	if err != nil {
 		return nil, targets, err
 	}

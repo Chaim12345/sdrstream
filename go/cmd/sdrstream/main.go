@@ -2055,19 +2055,20 @@ func openFDCount() int {
 
 func scanStation(ctx context.Context, server *web.Server, stationType, host string, targetLimit int, multimonPath, direwolfPath string, active *atomic.Int64, updateMetrics func()) scanOutcome {
 	if strings.EqualFold(stationType, "KiwiSDR") || looksLikeKiwi(host) {
-		if st := kiwiPreflight.Check(ctx, host); !st.Free() {
+		preflight := kiwiPreflight.Check(ctx, host)
+		if !preflight.Free() {
 			state := "refused/skipped"
-			reason := "preflight " + st.Verdict + ": " + st.Err
-			if st.Verdict == kiwisdr.VerdictBusy {
-				reason = fmt.Sprintf("preflight busy: users %d/%d", st.Users, st.UsersMax)
+			reason := "preflight " + preflight.Verdict + ": " + preflight.Err
+			if preflight.Verdict == kiwisdr.VerdictBusy {
+				reason = fmt.Sprintf("preflight busy: users %d/%d", preflight.Users, preflight.UsersMax)
 			}
 			if d := kiwiPreflight.EgressDiagnostic(); d != "" {
 				reason += " | " + d
 			}
 			addScan(server, web.ScanStatus{StationType: stationType, Station: host, State: state, Result: reason, UpdatedAt: time.Now()})
-			return scanOutcome{refused: st.Verdict != kiwisdr.VerdictTimeout, timedOut: st.Verdict == kiwisdr.VerdictTimeout}
+			return scanOutcome{refused: preflight.Verdict != kiwisdr.VerdictTimeout, timedOut: preflight.Verdict == kiwisdr.VerdictTimeout}
 		}
-		return scanKiwiStation(ctx, server, host, targetLimit, active, updateMetrics)
+		return scanKiwiStation(ctx, server, host, targetLimit, active, updateMetrics, preflight.WSPath)
 	}
 	active.Add(1)
 	updateMetrics()
@@ -2154,52 +2155,51 @@ func looksLikeKiwi(host string) bool {
 	return strings.Contains(text, "kiwisdr") || strings.Contains(text, ":8073") || strings.Contains(text, "kiwi")
 }
 
-func scanKiwiStation(ctx context.Context, server *web.Server, host string, targetLimit int, active *atomic.Int64, updateMetrics func()) scanOutcome {
-	var refusal, timeout bool
+func scanKiwiStation(ctx context.Context, server *web.Server, host string, targetLimit int, active *atomic.Int64, updateMetrics func(), wsPath string) scanOutcome {
 	targets := decode.HFBroadcasts
-	if targetLimit < len(targets) {
+	keys := make(map[string]string, len(targets))
+	for _, target := range targets {
+		if target.ActiveNow(time.Now()) {
+			keys[target.Name] = addScan(server, web.ScanStatus{StationType: "KiwiSDR", Station: host, FrequencyHz: target.DialKHz * 1000, Mode: target.Mode, State: "queued", UpdatedAt: time.Now()})
+		}
+	}
+	if targetLimit > 0 && targetLimit < len(targets) {
 		targets = targets[:targetLimit]
 	}
-	for _, target := range targets {
-		if ctx.Err() != nil {
-			break
+	active.Add(1)
+	updateMetrics()
+	results, _, err := decode.RunHFSession(ctx, host, targets, decode.SessionOptions{Listen: 8 * time.Second, MaxTargets: targetLimit, MaxSession: 5 * time.Minute, SkipInactive: true, WSPath: wsPath})
+	active.Add(-1)
+	updateMetrics()
+	if err != nil {
+		outcome := classifyScanFailure(err)
+		state := "error"
+		if outcome.refused {
+			state = "refused/skipped"
 		}
-		if !target.ActiveNow(time.Now()) {
-			continue
+		if outcome.timedOut {
+			state = "timeout"
 		}
-		key := addScan(server, web.ScanStatus{StationType: "KiwiSDR", Station: host, FrequencyHz: target.DialKHz * 1000, Mode: target.Mode, State: "connecting", UpdatedAt: time.Now()})
-		active.Add(1)
-		updateMetrics()
-		targetCtx, cancelTarget := context.WithTimeout(ctx, 12*time.Second)
-		result, err := decode.RunHFTarget(targetCtx, host, target, 12*time.Second)
-		cancelTarget()
-		active.Add(-1)
-		updateMetrics()
-		if err != nil {
-			outcome := classifyScanFailure(err)
-			refusal = refusal || outcome.refused
-			timeout = timeout || outcome.timedOut
-			state := "error"
-			if outcome.refused {
-				state = "refused/skipped"
+		for _, target := range targets {
+			if key := keys[target.Name]; key != "" {
+				setScanResult(server, key, state, err.Error())
 			}
-			if outcome.timedOut {
-				state = "timeout"
-			}
-			setScanResult(server, key, state, err.Error())
-			if outcome.refused || outcome.timedOut {
-				break
-			}
+		}
+		return outcome
+	}
+	for _, result := range results {
+		key := keys[result.Target.Name]
+		if key == "" {
 			continue
 		}
 		if !result.Live() {
 			setScanResult(server, key, "unverified decode", result.Gate.Reason)
 			continue
 		}
-		activity := monitor.Activity{ID: int(time.Now().UnixNano()), Started: result.Started, FrequencyHz: target.DialKHz * 1000, Kind: "data", Mode: target.Kind, Detail: result.Text, VerificationAnchor: target.Expect, Source: host}
+		activity := monitor.Activity{ID: int(time.Now().UnixNano()), Started: result.Started, FrequencyHz: result.Target.DialKHz * 1000, Kind: "data", Mode: result.Target.Kind, Detail: result.Text, VerificationAnchor: result.Target.Expect, Source: host}
 		imageData := result.ImagePNG
 		if len(imageData) > 0 {
-			activity.Kind = target.Kind
+			activity.Kind = result.Target.Kind
 		}
 		if err := server.AddLiveArtifact(activity, imageData); err != nil {
 			setScanResult(server, key, "unverified decode", err.Error())
@@ -2207,7 +2207,7 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 		}
 		setScanResult(server, key, "decoded", result.Gate.Reason)
 	}
-	return scanOutcome{refused: refusal, timedOut: timeout}
+	return scanOutcome{}
 }
 
 func setScanResult(server *web.Server, key string, state, result string) {
