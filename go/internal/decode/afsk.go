@@ -13,6 +13,21 @@ import (
 // transitions. Input is resampled to the reference rate of 22050 Hz
 // because the correlator length and PLL increment are tuned for it.
 func fskDemod(samples []float64, rate int) []bool {
+	return fskDemodOpt(samples, rate, fskOpts{markGain: 1, pllDiv: 8})
+}
+
+// fskOpts tunes one demodulator variant. markGain scales the 2200 Hz
+// correlator energy against the 1200 Hz one to compensate for pre- or
+// de-emphasised audio; pllDiv sets how hard the bit clock follows tone
+// transitions (smaller is faster); offset delays the first sample so
+// variants sample the bit period at different phases.
+type fskOpts struct {
+	markGain float64
+	pllDiv   uint32
+	offset   int
+}
+
+func fskDemodOpt(samples []float64, rate int, o fskOpts) []bool {
 	// Resample to 22050 Hz: the correlation window must be exactly one bit
 	// period and the PLL increment is fixed-point, so the reference rate is
 	// built in. Linear interpolation is sufficient; the correlator
@@ -21,6 +36,9 @@ func fskDemod(samples []float64, rate int) []bool {
 	x := samples
 	if rate != refRate {
 		x = resampleLinear(samples, rate, refRate)
+	}
+	if o.offset > 0 && o.offset < len(x) {
+		x = x[o.offset:]
 	}
 	n := len(x)
 	const corrLen = refRate / 1200 // 18 samples, one bit period
@@ -51,15 +69,15 @@ func fskDemod(samples []float64, rate int) []bool {
 			si += s * corrSI[j]
 			sq += s * corrSQ[j]
 		}
-		f := mi*mi + mq*mq - si*si - sq*sq
+		f := o.markGain*(mi*mi+mq*mq) - (si*si + sq*sq)
 		shreg = (shreg << 1) | uint32(boolToInt(f > 0))
 		// Proportional PLL on tone transitions. The parentheses matter:
 		// the transition flag is bit 0 of the XOR, not of the whole shift.
 		if (shreg^(shreg>>1))&1 == 1 {
 			if sphase < 0x8000-sphaseInc/2 {
-				sphase += sphaseInc / 8
+				sphase += sphaseInc / o.pllDiv
 			} else {
-				sphase -= sphaseInc / 8
+				sphase -= sphaseInc / o.pllDiv
 			}
 		}
 		sphase += sphaseInc
@@ -304,8 +322,7 @@ func AFSKFrames(path string) ([]AX25, error) {
 	}
 	var out []AX25
 	for _, b := range bursts {
-		frames := hdlcFrames(fskDemod(samples[b[0]:b[1]], rate))
-		for _, f := range frames {
+		for _, f := range ensembleFrames(samples[b[0]:b[1]], rate) {
 			if ax, ok := parseAX25(f); ok {
 				out = append(out, ax)
 			}
@@ -381,3 +398,51 @@ func sortFloats(v []float64) {
 }
 
 var _ = math.Pi
+
+// ensembleVariants are the demodulator settings tried on every burst. Real
+// off-air audio is pre- or de-emphasised by an unknown amount, so one
+// fixed tone balance misses a third of the packets; running several and
+// keeping every distinct CRC-valid frame recovers them (the same idea as
+// Dire Wolf's multiple decoders). The CRC makes false positives negligible.
+func ensembleVariants() []fskOpts {
+	var v []fskOpts
+	for _, g := range []float64{1, 0.5, 2, 0.25, 4} {
+		for _, p := range []uint32{8, 4} {
+			v = append(v, fskOpts{markGain: g, pllDiv: p})
+		}
+	}
+	v = append(v, fskOpts{markGain: 1, pllDiv: 8, offset: 5}, fskOpts{markGain: 1, pllDiv: 8, offset: 11})
+	return v
+}
+
+// ensembleFrames runs every variant and returns the union of CRC-valid
+// frames. A frame seen n times by one variant counts n times in the
+// result, so identical back-to-back transmissions are not collapsed.
+func ensembleFrames(samples []float64, rate int) [][]byte {
+	best := map[string]int{}
+	first := map[string][]byte{}
+	var order []string
+	for _, o := range ensembleVariants() {
+		seen := map[string]int{}
+		for _, f := range hdlcFrames(fskDemodOpt(samples, rate, o)) {
+			k := string(f)
+			seen[k]++
+			if _, ok := first[k]; !ok {
+				first[k] = f
+				order = append(order, k)
+			}
+		}
+		for k, n := range seen {
+			if n > best[k] {
+				best[k] = n
+			}
+		}
+	}
+	var out [][]byte
+	for _, k := range order {
+		for i := 0; i < best[k]; i++ {
+			out = append(out, first[k])
+		}
+	}
+	return out
+}
