@@ -283,7 +283,7 @@ func (s *Server) wrapAuth(mux *http.ServeMux) http.Handler {
 		return mux
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/login" || r.URL.Path == "/logout" {
+		if r.URL.Path == "/login" || r.URL.Path == "/logout" || r.URL.Path == "/healthz" {
 			mux.ServeHTTP(w, r)
 			return
 		}
@@ -333,6 +333,9 @@ func (s *Server) wrapAuth(mux *http.ServeMux) http.Handler {
 // directory, never the shared OS temp dir itself: filenames there are
 // predictable and the directory is world-searchable, which would expose the
 // session table to other local users.
+// StateFile exposes the per-user state path for other packages' files.
+func StateFile(name string) string { return stateFile(name) }
+
 func stateFile(name string) string {
 	if dir := os.Getenv("SDRSTREAM_STATE_DIR"); dir != "" {
 		return filepath.Join(dir, name)

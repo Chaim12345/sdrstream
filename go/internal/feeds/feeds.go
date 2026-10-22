@@ -27,6 +27,11 @@ type Item struct {
 	Lon    float64   `json:"lon,omitempty"`
 	HasPos bool      `json:"has_pos,omitempty"`
 	Ref    string    `json:"ref,omitempty"` // upstream link for the item
+	// FetchedAt is when this process received the item (Time is the
+	// provider's own timestamp). DecodedBy is DecodedByProvider unless a
+	// feed sets DecodedByUs for something sdrstream decoded itself.
+	FetchedAt time.Time `json:"fetched_at,omitempty"`
+	DecodedBy string    `json:"decoded_by,omitempty"`
 }
 
 // StreamSource is a long-lived feed connection (TCP, WebSocket, MQTT).
@@ -66,6 +71,9 @@ type SourceStatus struct {
 	Samples        []Item    `json:"samples,omitempty"`
 	DetailURL      string    `json:"detail_url,omitempty"`
 	Attribution    string    `json:"attribution,omitempty"`
+	License        string    `json:"license,omitempty"`
+	TermsNotes     string    `json:"terms_notes,omitempty"`
+	MaxAgeSeconds  int       `json:"max_age_seconds,omitempty"`
 }
 
 // Snapshot is the API payload for /api/feeds.json.
@@ -87,6 +95,9 @@ type Manager struct {
 	items   map[string]*Item
 	sources map[string]*sourceState
 	cap     int
+	seen    map[string]time.Time
+	metrics map[string]*srcMetrics
+	ledger  *Ledger
 	logf    func(string, ...any)
 }
 
@@ -110,7 +121,18 @@ func (m *Manager) source(name, kind string, maxAge time.Duration) *sourceState {
 			st.status.DetailURL = "https://sondehub.org/"
 			st.status.Detail = "One bootstrap fetch, then live MQTT/WebSocket updates"
 		}
+		if t, ok := TermsFor(name); ok {
+			st.status.License = t.License
+			st.status.TermsNotes = t.Notes
+			if st.status.DetailURL == "" {
+				st.status.DetailURL = t.HomeURL
+			}
+		}
 		m.sources[name] = st
+	}
+	if maxAge > 0 {
+		st.maxAge = maxAge
+		st.status.MaxAgeSeconds = int(maxAge / time.Second)
 	}
 	return st
 }
@@ -416,6 +438,18 @@ func (m *Manager) addLocked(items []Item) {
 		}
 		if it.Time.IsZero() {
 			it.Time = time.Now()
+		}
+		now := time.Now()
+		if it.FetchedAt.IsZero() {
+			it.FetchedAt = now
+		}
+		if it.DecodedBy == "" {
+			it.DecodedBy = DecodedByProvider
+		}
+		if m.noteSeenLocked(it, now) && m.ledger != nil {
+			m.ledger.Append(LedgerEntry{Source: it.Source, Kind: it.Kind, ID: it.ID, Label: it.Label,
+				Detail: it.Detail, ProviderT: it.Time, FetchedAt: it.FetchedAt, DecodedBy: it.DecodedBy,
+				Ref: it.Ref, Lat: it.Lat, Lon: it.Lon})
 		}
 		if old, ok := m.items[it.ID]; ok {
 			*old = it

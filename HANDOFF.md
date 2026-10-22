@@ -3,6 +3,19 @@
 Current as of **2026-10-22, post-deep-review**. Self-contained: everything a
 fresh session needs is here.
 
+## Health, metrics and the proof ledger
+
+* `GET /healthz` - unauthenticated liveness probe, returns only `{"ok":true}`.
+* `GET /api/metrics.json` (login) - uptime, capture count, scan outcomes and
+  per feed source: state, items now, new items in the last hour and since
+  boot. Counts are first sightings seen by this process and reset on restart.
+* `GET /api/ledger.json` and `/api/ledger.csv` (login, `?source=`, `?limit=`)
+  - append-only record of every first sighting: provider time, our fetch
+  time, who decoded it (`provider` for every current feed) and a link to the
+  provider. It is sdrstream's normalised view, not the raw upstream bytes.
+  File: `sdrstream-ledger.jsonl` in the state dir, rotated at 64 MiB per file (SDRSTREAM_LEDGER_MAX_MB, 1-1024).
+* Each feed card in the UI has a "proof" toggle with the same fields.
+
 ## 1. The product and its stated end goal
 
 **Vision (from `AGENTS.md` + `go/docs/SCAN-DESIGN.md`):** sdrstream finds

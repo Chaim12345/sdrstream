@@ -1582,6 +1582,13 @@ func cmdWeb(args []string) error {
 	}
 	if !*noFeeds {
 		feedsManager := feeds.New(0, nil)
+		ledgerBytes, ledgerOK := feeds.LedgerBytesFromEnv(os.Getenv)
+		if !ledgerOK {
+			log.Printf("feeds: ignoring invalid SDRSTREAM_LEDGER_MAX_MB (want 1-%d); using %d MiB", feeds.MaxLedgerMB, ledgerBytes>>20)
+		}
+		ledger := feeds.NewLedger(web.StateFile("sdrstream-ledger.jsonl"), ledgerBytes)
+		defer ledger.Close()
+		feedsManager.SetLedger(ledger)
 		server.SetFeeds(feedsManager)
 		feedsCtx, feedsCancel := context.WithCancel(ctx)
 		defer feedsCancel()
