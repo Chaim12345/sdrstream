@@ -67,25 +67,27 @@ type Preflighter struct {
 	ProbeWS  bool
 	Timeout  time.Duration
 
-	mu       sync.Mutex
-	cache    map[string]Status
-	fails    map[string]int       // consecutive failures per host
-	until    map[string]time.Time // backoff deadline
-	attempts map[string][]time.Time
-	allTO    int // consecutive hosts whose attempt timed out with no response at all
-	okSeen   bool
+	mu         sync.Mutex
+	cache      map[string]Status
+	fails      map[string]int       // consecutive failures per host
+	until      map[string]time.Time // backoff deadline
+	attempts   map[string][]time.Time
+	probeSlots chan struct{} // bounded concurrent network probes
+	allTO      int           // consecutive hosts whose attempt timed out with no response at all
+	okSeen     bool
 }
 
 // NewPreflighter builds one with sane defaults.
 func NewPreflighter() *Preflighter {
 	return &Preflighter{
-		HTTP:     &http.Client{Timeout: 8 * time.Second},
-		Now:      time.Now,
-		Timeout:  8 * time.Second,
-		cache:    map[string]Status{},
-		fails:    map[string]int{},
-		until:    map[string]time.Time{},
-		attempts: map[string][]time.Time{},
+		HTTP:       &http.Client{Timeout: 8 * time.Second},
+		Now:        time.Now,
+		Timeout:    8 * time.Second,
+		cache:      map[string]Status{},
+		fails:      map[string]int{},
+		until:      map[string]time.Time{},
+		attempts:   map[string][]time.Time{},
+		probeSlots: make(chan struct{}, 16),
 	}
 }
 
@@ -197,7 +199,13 @@ func (p *Preflighter) Check(ctx context.Context, host string) Status {
 	p.attempts[host] = append(recent, now)
 	p.mu.Unlock()
 
+	select {
+	case p.probeSlots <- struct{}{}:
+	case <-ctx.Done():
+		return Status{Host: host, Verdict: VerdictTimeout, Err: ctx.Err().Error(), CheckedAt: p.Now()}
+	}
 	st := p.probe(ctx, host)
+	<-p.probeSlots
 	st.CheckedAt = p.Now()
 
 	p.mu.Lock()

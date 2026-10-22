@@ -2059,18 +2059,41 @@ func openFDCount() int {
 
 // cmdKiwiPreflight checks a bounded receiver list and prints aggregate verdicts.
 func cmdKiwiPreflight(receivers []string) error {
+	type item struct {
+		host   string
+		result kiwisdr.Status
+	}
+	jobs := make(chan string)
+	results := make(chan item)
+	var workers sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for host := range jobs {
+				results <- item{host, kiwiPreflight.Check(context.Background(), host)}
+			}
+		}()
+	}
+	go func() {
+		for _, raw := range receivers {
+			parts := strings.SplitN(strings.TrimSpace(raw), "|", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			if !strings.EqualFold(strings.TrimSpace(parts[0]), "KiwiSDR") && !looksLikeKiwi(parts[1]) {
+				continue
+			}
+			jobs <- strings.TrimSpace(parts[1])
+		}
+		close(jobs)
+		workers.Wait()
+		close(results)
+	}()
 	counts := map[string]int{}
-	for _, raw := range receivers {
-		parts := strings.SplitN(strings.TrimSpace(raw), "|", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		if !strings.EqualFold(strings.TrimSpace(parts[0]), "KiwiSDR") && !looksLikeKiwi(parts[1]) {
-			continue
-		}
-		st := kiwiPreflight.Check(context.Background(), strings.TrimSpace(parts[1]))
-		counts[st.Verdict]++
-		fmt.Printf("%s %s users=%d/%d ws=%s\n", strings.TrimSpace(parts[1]), st.Verdict, st.Users, st.UsersMax, st.WSPath)
+	for result := range results {
+		counts[result.result.Verdict]++
+		fmt.Printf("%s %s users=%d/%d ws=%s\n", result.host, result.result.Verdict, result.result.Users, result.result.UsersMax, result.result.WSPath)
 	}
 	fmt.Printf("preflight counts: %+v\n", counts)
 	if diagnostic := kiwiPreflight.EgressDiagnostic(); diagnostic != "" {
