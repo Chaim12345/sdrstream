@@ -109,3 +109,31 @@ func TestFT4SyntheticFixture(t *testing.T) {
 		t.Fatalf("freq %v", got[0].FreqHz)
 	}
 }
+
+// Live capture from the public Twente WebSDR (websdr.ewi.utwente.nl:8901),
+// 7074 kHz USB, 2026-10-22 05:28:41 UTC start (first sample 1792646921.15),
+// 46 s at 7119 Hz through the WebSDR vocoder. Real over-the-air audio, no
+// reference list: every message is accepted only through LDPC plus CRC-14.
+func TestFT8LiveWebSDRCapture(t *testing.T) {
+	samples, rate, err := ReadWAV("testdata/ft8/live_websdr_utwente_7074kHz_20261022T052841Z.wav")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := FTXDecodeStream(samples, rate, 1792646921.15, "FT8")
+	if len(msgs) < 20 {
+		t.Fatalf("only %d CRC-valid messages from a busy band", len(msgs))
+	}
+	slots := map[int64]bool{}
+	for _, m := range msgs {
+		slots[m.SlotUnix] = true
+		if m.FreqHz < 200 || m.FreqHz > 3000 {
+			t.Fatalf("freq out of band: %+v", m)
+		}
+	}
+	if len(slots) < 2 {
+		t.Fatalf("expected two full slots, got %d", len(slots))
+	}
+	if !strings.Contains(msgs[0].Text, " ") {
+		t.Fatalf("odd message %q", msgs[0].Text)
+	}
+}
