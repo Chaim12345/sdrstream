@@ -118,7 +118,11 @@ func TestFT4SyntheticFixture(t *testing.T) {
 // 46 s at 7119 Hz through the WebSDR vocoder. Real over-the-air audio, no
 // reference list: every message is accepted only through LDPC plus CRC-14.
 func TestFT8LiveWebSDRCapture(t *testing.T) {
-	samples, rate, err := ReadWAV("testdata/ft8/live_websdr_utwente_7074kHz_20261022T052841Z.wav")
+	path := "testdata/ft8/live_websdr_utwente_7074kHz_20261022T052841Z.wav"
+	if _, err := os.Stat(path); err != nil {
+		t.Skip("live Twente capture fixture is not present; see the live verification report")
+	}
+	samples, rate, err := ReadWAV(path)
 	if err != nil {
 		t.Fatal(err)
 	}
