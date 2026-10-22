@@ -23,6 +23,7 @@ jobs:
         run: |
           yes | sudo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
           sudo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" >/dev/null
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/.config"
       - name: Cross-compile Go engine (arm64)
         run: ./android/fetch-engine.sh
       - name: Build shipping APK (arm64 only; the API 34 google_apis emulator translates arm64)
