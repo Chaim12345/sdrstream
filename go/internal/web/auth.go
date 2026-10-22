@@ -262,7 +262,7 @@ func (s *Server) wrapAuth(mux *http.ServeMux) http.Handler {
 		return mux
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/login" || r.URL.Path == "/logout" {
+		if r.URL.Path == "/login" || r.URL.Path == "/logout" || r.URL.Path == "/healthz" {
 			mux.ServeHTTP(w, r)
 			return
 		}

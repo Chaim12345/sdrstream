@@ -87,6 +87,8 @@ type Manager struct {
 	items   map[string]*Item
 	sources map[string]*sourceState
 	cap     int
+	seen    map[string]time.Time
+	metrics map[string]*srcMetrics
 	logf    func(string, ...any)
 }
 
@@ -417,6 +419,7 @@ func (m *Manager) addLocked(items []Item) {
 		if it.Time.IsZero() {
 			it.Time = time.Now()
 		}
+		m.noteSeenLocked(it, time.Now())
 		if old, ok := m.items[it.ID]; ok {
 			*old = it
 		} else {
