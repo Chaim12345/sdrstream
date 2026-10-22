@@ -45,11 +45,31 @@ type Capture struct {
 	FrequencyHz float64   `json:"frequency_hz,omitempty"`
 	Mode        string    `json:"mode,omitempty"`
 	Decode      string    `json:"decode,omitempty"`
+	Kind        string    `json:"kind,omitempty"`   // voice, data, cw, carrier, noise
+	Target      string    `json:"target,omitempty"` // named service the clip was aimed at
+	Verified    bool      `json:"verified"`         // live quality gate verdict
+	Gate        string    `json:"gate,omitempty"`   // gate reason when unverified
 	Start       time.Time `json:"start"`
 	Samples     int       `json:"samples"`
 	Rate        int       `json:"rate"`
 	Path        string    `json:"path"`
 	URL         string    `json:"url,omitempty"`
+}
+
+// CaptureMetadata is the provenance written beside a capture. The scanner
+// writes it for every archived clip, including unverified and non-decodable
+// activity, so "record everything" still produces a searchable archive.
+type CaptureMetadata struct {
+	FrequencyHz float64
+	Mode        string
+	Receiver    string
+	Detail      string
+	Kind        string
+	Target      string
+	Gate        string
+	Started     time.Time
+	DurationSec float64
+	Verified    bool
 }
 
 // Status is the live snapshot the UI polls.
@@ -328,10 +348,49 @@ func (s *Server) passesLoop() {
 
 // AddCaptureMetadata persists scanner metadata alongside the WAV filename.
 func (s *Server) AddCaptureMetadata(name, mode, receiver, detail string, frequencyHz float64) {
-	if s.capturesDir == "" || filepath.Base(name) != name {
-		return
+	_ = s.AddCaptureMetadataFull(name, CaptureMetadata{
+		FrequencyHz: frequencyHz, Mode: mode, Receiver: receiver, Detail: detail,
+	})
+}
+
+// AddCaptureMetadataFull writes the complete provenance sidecar for a
+// capture, including the record-all fields (kind, target, gate, verified).
+func (s *Server) AddCaptureMetadataFull(name string, meta CaptureMetadata) error {
+	return WriteCaptureMetadata(s.capturesDir, name, meta)
+}
+
+// WriteCaptureMetadata writes a sidecar next to name without needing a
+// Server. Scanners use it directly; the key=value format stays compatible
+// with the older four-field sidecars.
+func WriteCaptureMetadata(dir, name string, meta CaptureMetadata) error {
+	if dir == "" || filepath.Base(name) != name {
+		return fmt.Errorf("web: capture name %q must be a bare filename", name)
 	}
-	_ = os.WriteFile(filepath.Join(s.capturesDir, strings.TrimSuffix(name, ".wav")+".txt"), []byte(fmt.Sprintf("frequency_hz=%.0f\nmode=%s\nreceiver=%s\ndecode=%s\n", frequencyHz, mode, receiver, strings.ReplaceAll(detail, "\n", " "))), 0644)
+	if meta.Started.IsZero() {
+		meta.Started = time.Now().UTC()
+	}
+	if meta.DurationSec <= 0 {
+		meta.DurationSec = 0
+	}
+	oneLine := func(value string) string {
+		return strings.ReplaceAll(strings.ReplaceAll(value, "\r", " "), "\n", " ")
+	}
+	var body strings.Builder
+	fmt.Fprintf(&body, "frequency_hz=%.0f\n", meta.FrequencyHz)
+	fmt.Fprintf(&body, "mode=%s\n", oneLine(meta.Mode))
+	fmt.Fprintf(&body, "receiver=%s\n", oneLine(meta.Receiver))
+	fmt.Fprintf(&body, "decode=%s\n", oneLine(meta.Detail))
+	fmt.Fprintf(&body, "kind=%s\n", oneLine(meta.Kind))
+	fmt.Fprintf(&body, "target=%s\n", oneLine(meta.Target))
+	fmt.Fprintf(&body, "gate=%s\n", oneLine(meta.Gate))
+	fmt.Fprintf(&body, "started=%s\n", meta.Started.UTC().Format(time.RFC3339))
+	fmt.Fprintf(&body, "duration_sec=%.3f\n", meta.DurationSec)
+	fmt.Fprintf(&body, "verified=%t\n", meta.Verified)
+	path := filepath.Join(dir, strings.TrimSuffix(name, ".wav")+".txt")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(body.String()), 0o644)
 }
 
 // AddCapture records a completed capture for the UI.
@@ -374,7 +433,9 @@ func (s *Server) scanCaptures() []Capture {
 		}
 		parts := strings.Split(strings.TrimSuffix(name, ".wav"), "_")
 		var freq float64
-		mode, receiver, detail := "", "sdrstream", ""
+		mode, receiver, detail, kind, target, gate := "", "sdrstream", "", "", "", ""
+		verified := false
+		started := info.ModTime().UTC()
 		for _, part := range parts {
 			if strings.HasSuffix(part, "kHz") {
 				v, _ := strconv.ParseFloat(strings.TrimSuffix(part, "kHz"), 64)
@@ -389,17 +450,29 @@ func (s *Server) scanCaptures() []Capture {
 		}
 		if sidecar, err := os.ReadFile(strings.TrimSuffix(path, ".wav") + ".txt"); err == nil {
 			for _, line := range strings.Split(string(sidecar), "\n") {
-				if strings.HasPrefix(line, "frequency_hz=") {
+				switch {
+				case strings.HasPrefix(line, "frequency_hz="):
 					freq, _ = strconv.ParseFloat(strings.TrimPrefix(line, "frequency_hz="), 64)
-				}
-				if strings.HasPrefix(line, "mode=") {
+				case strings.HasPrefix(line, "mode="):
 					mode = strings.TrimPrefix(line, "mode=")
-				}
-				if strings.HasPrefix(line, "receiver=") {
+				case strings.HasPrefix(line, "receiver="):
 					receiver = strings.TrimPrefix(line, "receiver=")
-				}
-				if strings.HasPrefix(line, "decode=") {
+				case strings.HasPrefix(line, "decode="):
 					detail = strings.TrimPrefix(line, "decode=")
+				case strings.HasPrefix(line, "kind="):
+					kind = strings.TrimPrefix(line, "kind=")
+				case strings.HasPrefix(line, "target="):
+					target = strings.TrimPrefix(line, "target=")
+				case strings.HasPrefix(line, "gate="):
+					gate = strings.TrimPrefix(line, "gate=")
+				case line == "verified=true":
+					verified = true
+				case line == "verified=false":
+					verified = false
+				case strings.HasPrefix(line, "started="):
+					if parsed, err := time.Parse(time.RFC3339, strings.TrimPrefix(line, "started=")); err == nil {
+						started = parsed.UTC()
+					}
 				}
 			}
 		}
@@ -407,7 +480,8 @@ func (s *Server) scanCaptures() []Capture {
 			Satellite:   satellite,
 			Receiver:    receiver,
 			FrequencyHz: freq, Mode: mode, Decode: detail,
-			Start:   info.ModTime().UTC(),
+			Kind: kind, Target: target, Verified: verified, Gate: gate,
+			Start:   started,
 			Samples: int(dataBytes / 2),
 			Rate:    rate,
 			Path:    name,

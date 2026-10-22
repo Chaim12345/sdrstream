@@ -49,6 +49,7 @@ type Activity struct {
 	Detail             string     `json:"detail,omitempty"` // decoded payload or transcript
 	VerificationAnchor string     `json:"-"`                // expected callsign/phrase for the live quality gate
 	Label              string     `json:"label,omitempty"`
+	Target             string     `json:"target,omitempty"` // named service a scheduled target was aimed at
 	Source             string     `json:"source"`
 	DurationSec        float64    `json:"duration_sec"`
 	AudioPath          string     `json:"audio_path,omitempty"`
@@ -96,6 +97,11 @@ type Options struct {
 	// disk. Nil saves every kind. Fleet scans use it to keep voice (and
 	// image-bearing SSTV) audio without archiving every data burst.
 	SaveAudio func(kind string) bool
+	// OnCapture is called after a WAV is written to OutDir. It runs for
+	// every archived clip, including noise, carrier and clips that later
+	// fail verification, so the fleet scanner can write provenance and
+	// keep a complete record.
+	OnCapture func(activity Activity, path string)
 	// Channels, when set with the broadcast strategy, is the rotation of
 	// fixed voice channels to visit (see DefaultVoiceChannels).
 	Channels []Channel
@@ -910,15 +916,25 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 			DurationSec: float64(len(samples)) / float64(rate),
 			Confidence:  asr.Confidence, Language: asr.Language, ASRModel: asr.Model, ASRFallback: asr.Fallback, VerificationAnchor: activity.VerificationAnchor,
 		}
-		if kind == "noise" || kind == "silence" || kind == "unknown" {
-			continue
-		}
 		if m.opts.OutDir != "" && (m.opts.SaveAudio == nil || m.opts.SaveAudio(kind)) {
-			path := filepath.Join(m.opts.OutDir, fmt.Sprintf("activity-%03d-%d-%s.wav",
-				activity.ID, int(work.frequency), modeName))
+			// Archive before the noise/unknown filter. The detector already
+			// decided this was a real peak; in record-all mode the clip is
+			// kept even when classification cannot name it.
+			prefix := captureToken(m.opts.Name)
+			if prefix == "" {
+				prefix = "activity"
+			}
+			path := filepath.Join(m.opts.OutDir, fmt.Sprintf("%s-activity-%03d-%d-%s-%d.wav",
+				prefix, activity.ID, int(work.frequency), captureToken(modeName), time.Now().UnixNano()))
 			if err := voice.WriteWAV(path, samples, rate); err == nil {
 				candidate.AudioPath = path
+				if m.opts.OnCapture != nil {
+					m.opts.OnCapture(candidate, path)
+				}
 			}
+		}
+		if kind == "noise" || kind == "silence" || kind == "unknown" {
+			continue
 		}
 		// A verdict with content beats one without; otherwise the first
 		// classification stands, so the activity never stays "unknown".
@@ -948,6 +964,20 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 			m.opts.OnImage(best, bestImage)
 		}
 	}
+}
+
+// captureToken makes a receiver or mode name safe for a filename. Receiver
+// names are often URLs, and two monitors on the same frequency must not
+// overwrite each other's archive entries.
+func captureToken(value string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
+			return r
+		default:
+			return '_'
+		}
+	}, strings.TrimSpace(value))
 }
 
 // publish hands an activity to the callback.

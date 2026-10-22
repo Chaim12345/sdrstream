@@ -16,8 +16,9 @@ import (
 // the server sends its own FFT, so the monitor can see every transmission
 // in the profile's span, not just the one the server is tuned to.
 type openWebRXSource struct {
-	client *openwebrx.Client
-	name   string
+	client  *openwebrx.Client
+	name    string
+	profile string // display name selected at connect, empty for the default
 
 	mu       sync.Mutex
 	bins     []float64
@@ -37,7 +38,7 @@ func OpenWebRXSource(ctx context.Context, server, profile string) (Source, error
 	if _, err := client.Connect(ctx); err != nil {
 		return nil, err
 	}
-	source := &openWebRXSource{client: client, name: server}
+	source := &openWebRXSource{client: client, name: server, profile: profile}
 	if profile != "" {
 		key, err := resolveProfile(client, profile)
 		if err != nil {
@@ -52,6 +53,24 @@ func OpenWebRXSource(ctx context.Context, server, profile string) (Source, error
 	go source.pump(ctx)
 	return source, nil
 }
+
+// ProfileNames lists the tunable profiles the receiver advertised. The
+// fleet scanner rotates through them between visits so a station with
+// several bands is not surveyed on only its default profile forever.
+func (s *openWebRXSource) ProfileNames() []string {
+	profiles := s.client.ProfileList()
+	names := make([]string, 0, len(profiles))
+	for _, profile := range profiles {
+		if name := strings.TrimSpace(profile.Name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// ActiveProfile is the display name selected for this connection, or empty
+// when the server's default profile is in use.
+func (s *openWebRXSource) ActiveProfile() string { return s.profile }
 
 // resolveProfile turns a profile name into the key the server expects.
 // The server identifies a profile as "sdr_id|profile_id", so a name has to

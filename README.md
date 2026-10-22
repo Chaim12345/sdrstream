@@ -722,7 +722,11 @@ Useful options: `--monitor-server URL --monitor-kind openwebrx|websdr|kiwi`,
 `--monitor-out DIR`, `--monitor-listen`, and `--monitor-voice`;
 `--scan-stations 'TYPE|URL,...'` for an explicit receiver list;
 `--scan-target-limit` and `--scan-station-session` for per-visit bounds;
-and `--no-feeds` to disable public-data panels. Run
+`--scan-directory-refresh` (default 1 h) to re-fetch the receiver directories
+without dropping hand-picked stations; `--scan-record-all` to archive a WAV
+plus metadata sidecar for every detected activity, verified or not;
+`--captures-max-gb` and `--captures-retain` to cap that archive (both default
+to unlimited); and `--no-feeds` to disable public-data panels. Run
 `go run ./cmd/sdrstream web -h` for the full current flag list. Never place
 secrets in command-line arguments or documentation; pass them through the
 process environment or a secret manager.

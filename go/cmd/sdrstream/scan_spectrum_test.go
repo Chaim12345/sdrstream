@@ -68,7 +68,7 @@ func TestScanOpenWebRXSpectrumPublishesVerifiedDecode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	started := time.Now()
-	scanOpenWebRXSpectrum(ctx, server, source, "OpenWebRX", "fake.receiver", 20, "", "", t.TempDir())
+	scanOpenWebRXSpectrum(ctx, server, source, "OpenWebRX", "fake.receiver", 20, false, "", "", t.TempDir())
 	if elapsed := time.Since(started); elapsed > 20*time.Second {
 		t.Fatalf("survey took %v, want the 6 s session bound", elapsed)
 	}
@@ -147,7 +147,7 @@ func TestScanStationKeepsSourceAlive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var active atomic.Int64
-	scanStation(ctx, server, "OpenWebRX", page.URL, 3, "", "", t.TempDir(), &active, func() {})
+	scanStation(ctx, server, "OpenWebRX", page.URL, 3, false, "", "", t.TempDir(), &active, func() {})
 
 	if got := active.Load(); got != 0 {
 		t.Errorf("active connections = %d after the session, want 0", got)

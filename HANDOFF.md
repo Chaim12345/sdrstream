@@ -50,6 +50,21 @@ session added:
   longer reset to "queued" before the receiver is retuned. The header's
   "verified activity" pill also counts scanner/gallery decodes, not only
   monitor activity.
+* **Continuous fleet, rotating coverage** — the scanner no longer freezes its
+  station list at startup. `--scan-directory-refresh` (default 1 h) re-fetches
+  receiverbook and the Kiwi directory, keeps the previous list when a refresh
+  fails, and merges new stations into the next pass. Kiwi visits resume the HF
+  target list after the last target they actually processed, and OpenWebRX
+  visits rotate one profile per connection, so later targets/profiles get a
+  slot instead of the first few being rescanned forever.
+* **Record-all archive** — `--scan-record-all` archives a WAV plus a
+  `key=value` sidecar (frequency, mode, receiver, kind, target, gate, started,
+  duration, verified) for every detected activity, including unverified
+  decodes, carriers and detector noise. Verified results still feed the
+  Gallery and Rdio; the archive also keeps the rejected evidence. OpenWebRX
+  clips are written by the monitor (`OnCapture`), Kiwi/WebSDR/HF clips by the
+  scanner. `--captures-max-gb` and `--captures-retain` run a retention loop so
+  continuous recording cannot fill the disk; both default to unlimited.
 * `AGENTS.md` records the standing directives (personal use: licensing is not
   a gate; prefer NIM over local).
 
@@ -60,6 +75,22 @@ transcripts on 5505 kHz USB (Manchester, Zurich, Geneva, Stockholm Arlanda,
 Milan Malpensa METARs), visible in the Scan board and the "verified live
 decodes" Gallery; the OpenWebRX spectrum survey at `sdr.ladar.club` detects
 and classifies peaks with no invented RTTY.
+
+Latest live run (record-all + rotation, 4 min, one Kiwi receiver): three
+consecutive visits covered **twelve distinct HF targets** instead of the same
+first four — visit 1 tuned VOLMET 5505 (voice) and DWD RTTY 4583/7646/10100.8;
+visit 2 resumed at OK0EU CW 7037, NAVTEX 518 and DWD WEFAX 3855/7880; visit 3
+ran to WEFAX 13882.5 and the RWM time signals on 4996/9996/14996. That is the
+target cursor working: with `--scan-target-limit 4` the old code would have
+re-tuned 5505–10100.8 on every pass. Every visit left a WAV plus sidecar in
+`--captures-dir`; the verified voice clip carries `verified=true`,
+`kind=voice`, `gate=live gate passed` and a NIM transcript ("Wind 350 degrees,
+10 knots. Cloud full at 2500 feet. Madrid-Barajas forecast…"), while the
+unverified clips are archived with their audio and their rejection reason
+(`gate=callsign not heard`, `gate=expected service anchor missing`,
+`gate=wefax: no phasing wedge`, `verified=false`) so the rejected evidence can
+be inspected. No local whisper process ran: the hosted NIM path handled the
+voice target.
 
 ## What the tool does
 

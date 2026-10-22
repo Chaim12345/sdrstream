@@ -707,6 +707,34 @@ func TestScanCaptureMetadataSurvivesReload(t *testing.T) {
 	}
 }
 
+func TestScanCaptureReadsRecordAllMetadata(t *testing.T) {
+	dir := t.TempDir()
+	name := "DATA_7074kHz_ft8_kiwi_test_8073_20261022T092000Z_1.wav"
+	if err := common.WriteWAVFile(filepath.Join(dir, name), []int16{1, 2, 3}, 8000); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Date(2026, 10, 22, 9, 20, 0, 0, time.UTC)
+	if err := WriteCaptureMetadata(dir, name, CaptureMetadata{
+		FrequencyHz: 7074000, Mode: "ft8", Receiver: "kiwi.test:8073",
+		Detail: "CQ DL1ABC", Kind: "data", Target: "FT8 40m",
+		Gate: "2 messages", Started: started, DurationSec: 15, Verified: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{capturesDir: dir}
+	got := s.scanCaptures()
+	if len(got) != 1 {
+		t.Fatalf("captures = %+v, want one", got)
+	}
+	capture := got[0]
+	if capture.Kind != "data" || capture.Target != "FT8 40m" || !capture.Verified || capture.Gate != "2 messages" {
+		t.Fatalf("record-all metadata = %+v", capture)
+	}
+	if !capture.Start.Equal(started) {
+		t.Fatalf("start = %v, want the sidecar timestamp %v", capture.Start, started)
+	}
+}
+
 // TestMonitorControl exercises the live receiver knobs: method and origin
 // checks, validation, no-monitor 404, and that accepted values show up in
 // the monitor's live snapshot.
