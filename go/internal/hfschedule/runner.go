@@ -167,6 +167,14 @@ type Audit struct {
 	RMS                 float64
 	DecodeLive          bool
 	DecodeReason        string
+	// RTTY cross-check against the independent reference engine. Verified
+	// is set only when the reference agrees with the Go decode; the gate
+	// verdict alone never marks a capture verified.
+	Verified       bool   `json:",omitempty"`
+	VerifiedLines  int    `json:",omitempty"`
+	VerifiedReason string `json:",omitempty"`
+	RefEngine      string `json:",omitempty"`
+	RefText        string `json:",omitempty"`
 }
 type State struct {
 	Attempts map[string]Audit
@@ -183,6 +191,10 @@ type Runner struct {
 	Listen    time.Duration
 	Record    RecordFunc
 	Now       func() time.Time
+	// CrossCheck independently re-decodes a recorded RTTY capture before it
+	// may be marked verified. Nil uses CrossCheckRTTY (minimodem
+	// subprocess). Tests inject a fake to avoid the external binary.
+	CrossCheck func(ctx context.Context, t decode.HFTarget, wavPath, goText, dir, key string) RTTYVerdict
 	// At most one capture is performed per RunOnce call, one connection at a time.
 }
 
@@ -344,6 +356,20 @@ func (r *Runner) RunOnce(ctx context.Context, entries []Entry) (*Audit, error) {
 				if err = atomicWrite(a.Text, []byte(result.Text)); err != nil {
 					return nil, err
 				}
+			}
+			if o.Entry.Target.Kind == "rtty" && a.Status == "recorded" {
+				cross := r.CrossCheck
+				if cross == nil {
+					cross = CrossCheckRTTY
+				}
+				vctx, vcancel := context.WithTimeout(ctx, 3*time.Minute)
+				v := cross(vctx, o.Entry.Target, a.WAV, result.Text, r.Dir, o.Key())
+				vcancel()
+				a.RefEngine = v.Engine
+				a.RefText = v.RefTextPath
+				a.Verified = v.Verified
+				a.VerifiedLines = v.VerifiedLines
+				a.VerifiedReason = v.Reason
 			}
 		}
 		m := state.Metrics[receiver.URL]

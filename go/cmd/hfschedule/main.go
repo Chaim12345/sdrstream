@@ -53,6 +53,7 @@ func main() {
 	out := flag.String("out", "captures/hfschedule", "isolated state and capture directory")
 	listen := flag.Duration("listen", 30*time.Second, "capture length, capped by broadcast end and 20 minutes")
 	run := flag.Bool("run", false, "record due entries as a continuous service (default is plan only)")
+	report := flag.Bool("report", false, "print proof-ledger statistics for -out (verified lines/hour) and exit")
 	once := flag.Bool("once", false, "perform at most one due capture and exit")
 	poll := flag.Duration("poll", hfschedule.DefaultPollInterval, "service poll interval between due-entry checks")
 	reload := flag.Duration("reload", hfschedule.DefaultReloadInterval, "service schedule reload interval; a failed reload keeps the previous schedule")
@@ -134,6 +135,16 @@ func main() {
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
+	if *report {
+		rep, err := hfschedule.ReadLedgerReport(*out)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := enc.Encode(rep); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if !*run {
 		filtered, err := loadEntries(ctx)
 		if err != nil {

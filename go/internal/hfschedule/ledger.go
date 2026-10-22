@@ -18,53 +18,63 @@ const LedgerName = "proof-ledger.jsonl"
 // (recorded, silent or failed) and never implies decode validity;
 // DecodeLive is the quality-gate verdict, DecodeReason its explanation.
 type LedgerEntry struct {
-	Key          string  `json:"key"`
-	UTCStarted   string  `json:"utc_started"`
-	UTCFinished  string  `json:"utc_finished"`
-	Name         string  `json:"name"`
-	Kind         string  `json:"kind"`
-	CarrierKHz   float64 `json:"carrier_khz"`
-	DialKHz      float64 `json:"dial_khz"`
-	Mode         string  `json:"mode"`
-	Receiver     string  `json:"receiver"`
-	ReceiverType string  `json:"receiver_type"`
-	Status       string  `json:"status"`
-	DecodeLive   bool    `json:"decode_live"`
-	DecodeReason string  `json:"decode_reason"`
-	Error        string  `json:"error,omitempty"`
-	WAV          string  `json:"wav,omitempty"`
-	Text         string  `json:"text,omitempty"`
-	PNG          string  `json:"png,omitempty"`
-	SampleRate   int     `json:"sample_rate,omitempty"`
-	Samples      int     `json:"samples,omitempty"`
-	Peak         int     `json:"peak,omitempty"`
-	RMS          float64 `json:"rms,omitempty"`
+	Key            string  `json:"key"`
+	UTCStarted     string  `json:"utc_started"`
+	UTCFinished    string  `json:"utc_finished"`
+	Name           string  `json:"name"`
+	Kind           string  `json:"kind"`
+	CarrierKHz     float64 `json:"carrier_khz"`
+	DialKHz        float64 `json:"dial_khz"`
+	Mode           string  `json:"mode"`
+	Receiver       string  `json:"receiver"`
+	ReceiverType   string  `json:"receiver_type"`
+	Status         string  `json:"status"`
+	DecodeLive     bool    `json:"decode_live"`
+	DecodeReason   string  `json:"decode_reason"`
+	Error          string  `json:"error,omitempty"`
+	WAV            string  `json:"wav,omitempty"`
+	Text           string  `json:"text,omitempty"`
+	PNG            string  `json:"png,omitempty"`
+	SampleRate     int     `json:"sample_rate,omitempty"`
+	Samples        int     `json:"samples,omitempty"`
+	Peak           int     `json:"peak,omitempty"`
+	RMS            float64 `json:"rms,omitempty"`
+	Verified       bool    `json:"verified,omitempty"`
+	VerifiedLines  int     `json:"verified_lines,omitempty"`
+	VerifiedReason string  `json:"verified_reason,omitempty"`
+	RefEngine      string  `json:"ref_engine,omitempty"`
+	RefText        string  `json:"ref_text,omitempty"`
 }
 
 // LedgerEntryFrom flattens one audit into its proof-ledger record.
 func LedgerEntryFrom(a Audit) LedgerEntry {
 	return LedgerEntry{
-		Key:          a.Occurrence.Key(),
-		UTCStarted:   a.Started.UTC().Format("2006-01-02T15:04:05Z"),
-		UTCFinished:  a.Finished.UTC().Format("2006-01-02T15:04:05Z"),
-		Name:         a.Occurrence.Entry.Target.Name,
-		Kind:         a.Occurrence.Entry.Target.Kind,
-		CarrierKHz:   a.Occurrence.Entry.Target.CarrierKHz,
-		DialKHz:      a.Occurrence.Entry.Target.DialKHz,
-		Mode:         a.Occurrence.Entry.Target.Mode,
-		Receiver:     a.Receiver.URL,
-		ReceiverType: a.Receiver.Type,
-		Status:       a.Status,
-		DecodeLive:   a.DecodeLive,
-		DecodeReason: a.DecodeReason,
-		Error:        a.Error,
-		WAV:          a.WAV,
-		Text:         a.Text,
-		PNG:          a.PNG,
-		SampleRate:   a.SampleRate,
-		Samples:      a.Samples,
-		Peak:         a.Peak,
-		RMS:          a.RMS,
+		Key:            a.Occurrence.Key(),
+		UTCStarted:     a.Started.UTC().Format("2006-01-02T15:04:05Z"),
+		UTCFinished:    a.Finished.UTC().Format("2006-01-02T15:04:05Z"),
+		Name:           a.Occurrence.Entry.Target.Name,
+		Kind:           a.Occurrence.Entry.Target.Kind,
+		CarrierKHz:     a.Occurrence.Entry.Target.CarrierKHz,
+		DialKHz:        a.Occurrence.Entry.Target.DialKHz,
+		Mode:           a.Occurrence.Entry.Target.Mode,
+		Receiver:       a.Receiver.URL,
+		ReceiverType:   a.Receiver.Type,
+		Status:         a.Status,
+		DecodeLive:     a.DecodeLive,
+		DecodeReason:   a.DecodeReason,
+		Error:          a.Error,
+		WAV:            a.WAV,
+		Text:           a.Text,
+		PNG:            a.PNG,
+		SampleRate:     a.SampleRate,
+		Samples:        a.Samples,
+		Peak:           a.Peak,
+		RMS:            a.RMS,
+		Verified:       a.Verified,
+		VerifiedLines:  a.VerifiedLines,
+		VerifiedReason: a.VerifiedReason,
+		RefEngine:      a.RefEngine,
+		RefText:        a.RefText,
 	}
 }
 

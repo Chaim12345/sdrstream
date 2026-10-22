@@ -1,0 +1,84 @@
+sdrstream DWD RTTY hourly capture schedule (EiBi fixed-width format)
+====================================================================
+DWD Pinneberg RTTY (DDK2 4583 kHz, DDH7 7646 kHz, DDK9 10100.8 kHz) is
+continuous in EiBi A26; these hourly windows give every hour its own
+capture slot per frequency, so the scheduler re-captures each service
+hourly instead of once per day. Times follow the same 5-past/5-to window
+shape as examples/hfschedule/eibi-extra.txt.
+
+         Valid March 29, 2026 - October 25, 2026
+
+kHz           Time(UTC) Days  ITU Station                Lang. Target   Remarks
+================================================================================
+4583          0005-0055       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          0005-0055       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       0005-0055       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0105-0155       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          0105-0155       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       0105-0155       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0205-0255       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          0205-0255       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       0205-0255       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0305-0355       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          0305-0355       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       0305-0355       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0405-0455       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          0405-0455       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       0405-0455       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0505-0555       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          0505-0555       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       0505-0555       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0605-0655       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          0605-0655       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       0605-0655       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0705-0755       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          0705-0755       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       0705-0755       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0805-0855       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          0805-0855       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       0805-0855       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          0905-0955       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          0905-0955       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       0905-0955       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1005-1055       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          1005-1055       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       1005-1055       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1105-1155       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          1105-1155       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       1105-1155       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1205-1255       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          1205-1255       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       1205-1255       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1305-1355       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          1305-1355       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       1305-1355       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1405-1455       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          1405-1455       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       1405-1455       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1505-1555       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          1505-1555       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       1505-1555       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1605-1655       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          1605-1655       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       1605-1655       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1705-1755       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          1705-1755       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       1705-1755       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1805-1855       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          1805-1855       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       1805-1855       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          1905-1955       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          1905-1955       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       1905-1955       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          2005-2055       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          2005-2055       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       2005-2055       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          2105-2155       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          2105-2155       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       2105-2155       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          2205-2255       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          2205-2255       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       2205-2255       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+4583          2305-2355       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+7646          2305-2355       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
+10100.8       2305-2355       D   DWD 1 Pinneberg RTTY   E     Eu           hourly
