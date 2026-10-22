@@ -546,6 +546,18 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// limitRequestBody caps POST/PUT forms. Every control the UI offers is a
+// few hundred bytes; an unbounded body parser is a free memory-amplifier
+// for anyone with a bored HTTP client.
+func limitRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch) {
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 //go:embed static
 var staticFS embed.FS
 
@@ -580,7 +592,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/audio/", s.handleAudio)
 	mux.HandleFunc("/audio/live/", s.handleLiveAudio)
 	mux.HandleFunc("/gallery/", s.handleGalleryFile)
-	return securityHeaders(s.wrapAuth(mux))
+	return limitRequestBody(securityHeaders(s.wrapAuth(mux)))
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -885,7 +897,6 @@ func (s *Server) handleScanLog(w http.ResponseWriter, r *http.Request) {
 		since, _ = strconv.ParseUint(raw, 10, 64)
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	start := uint64(0)
 	if uint64(len(s.scanLog)) > s.scanLogSeq {
 		start = 0
@@ -900,12 +911,16 @@ func (s *Server) handleScanLog(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sort.SliceStable(items, func(i, j int) bool { return fmt.Sprint(items[i]["updated_at"]) < fmt.Sprint(items[j]["updated_at"]) })
-	writeJSON(w, map[string]any{"items": items, "next_since": s.scanLogSeq})
+	// Snapshot complete; drop the lock before the network write. A slow
+	// browser tab polling this must not block every scanner status update
+	// that wants the mutex.
+	next := s.scanLogSeq
+	s.mu.Unlock()
+	writeJSON(w, map[string]any{"items": items, "next_since": next})
 }
 
 func (s *Server) handleScans(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	metrics := s.scanMetrics
 	if metrics.TargetConcurrency == 0 {
 		metrics.TargetConcurrency = metrics.RampStep
@@ -927,6 +942,9 @@ func (s *Server) handleScans(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	s.mu.Unlock()
+	// Deep-copied and annotated; the write happens without the lock so a
+	// slow reader cannot stall the scanner's status updates.
 	writeJSON(w, metrics)
 }
 
@@ -1365,7 +1383,19 @@ func (s *Server) ServeContext(ctx context.Context, addr string) error {
 		log.Printf("web: WARNING: no SDRSTREAM_UI_PASSWORD - serving an open UI on loopback only; set a password before exposing this beyond the local machine")
 	}
 	log.Printf("web UI on http://%s", addr)
-	server := &http.Server{Addr: addr, Handler: s.Handler()}
+	// Brokered defaults: slowloris-proof header read, bounded idle connections.
+	// No global ReadTimeout beyond the header stage is set here; the JSON
+	// and file handlers are all quick, but a hung scanner-writer connection
+	// would otherwise be killed mid-response.
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+	}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.ListenAndServe() }()
 	select {

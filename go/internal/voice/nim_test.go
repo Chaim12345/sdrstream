@@ -10,8 +10,10 @@ import (
 	"testing"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/chaim12345/sdrstream/go/internal/rivaspeech"
@@ -249,5 +251,74 @@ func TestNIMModelPresets(t *testing.T) {
 	t.Setenv("SDRSTREAM_NIM_FUNCTION_ID", "")
 	if got := DefaultNIMOptions().FunctionID; got != WhisperLargeV3FunctionID {
 		t.Errorf("env preset: %q", got)
+	}
+}
+
+// dialPooledTLS points the pool path (Insecure=false) at a bufconn fake
+// while counting dial attempts; the client credentials do not matter to
+// the pooling logic, only the branch switch does.
+func dialPooledTLS(t *testing.T, server *fakeRiva) (dialed *int, restore func()) {
+	t.Helper()
+	nimResetForTests()
+	t.Cleanup(nimResetForTests)
+	listener := bufconn.Listen(1 << 20)
+	grpcServer := grpc.NewServer()
+	rivaspeech.RegisterRivaSpeechRecognitionServer(grpcServer, server)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		listener.Close()
+	})
+	previous := nimDial
+	count := 0
+	nimDial = func(ctx context.Context, options NIMOptions) (*grpc.ClientConn, error) {
+		count++
+		return grpc.DialContext(ctx, "bufnet",
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		)
+	}
+	return &count, func() { nimDial = previous }
+}
+
+// The TLS path must reuse one connection per endpoint: a fleet scan
+// transcribing hundreds of clips through a fresh TLS handshake per clip
+// multiplied latency and handshake failures.
+func TestNIMPoolsTLSConnection(t *testing.T) {
+	server := &fakeRiva{text: "hola mundo"}
+	dials, restore := dialPooledTLS(t, server)
+	defer restore()
+	options := NIMOptions{APIKey: "k", Endpoint: "bufnet", FunctionID: "f", LanguageCode: "multi"}
+	for range 3 {
+		if _, err := TranscribeNIM(context.Background(), toneSamples(8000), 8000, options); err != nil {
+			t.Fatalf("TranscribeNIM: %v", err)
+		}
+	}
+	if *dials != 1 {
+		t.Errorf("dialed %d times for 3 calls, want 1 pooled connection", *dials)
+	}
+}
+
+// A quota or auth rejection must trip the cooldown: subsequent clips fail
+// fast without dialing, uploading audio or burning further quota, until
+// the window expires.
+func TestNIMCooldownAfterQuotaFailure(t *testing.T) {
+	server := &fakeRiva{err: status.Error(codes.ResourceExhausted, "rate limited")}
+	_, restore := dialPooledTLS(t, server)
+	defer restore()
+	options := NIMOptions{APIKey: "k", Endpoint: "bufnet", FunctionID: "f", LanguageCode: "multi"}
+	if _, err := TranscribeNIM(context.Background(), toneSamples(8000), 8000, options); err == nil {
+		t.Fatal("expected quota failure")
+	}
+	if wait := nimCooldownRemaining(); wait <= 0 {
+		t.Fatalf("cooldown not armed after quota failure (wait %v)", wait)
+	}
+	calls := server.calls
+	_, err := TranscribeNIM(context.Background(), toneSamples(8000), 8000, options)
+	if err == nil || !strings.Contains(err.Error(), "cooling down") {
+		t.Fatalf("second call = %v, want a fast cooldown rejection", err)
+	}
+	if server.calls != calls {
+		t.Errorf("backend hit %d more times during cooldown", server.calls-calls)
 	}
 }

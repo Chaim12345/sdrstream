@@ -3129,6 +3129,13 @@ func kiwiVoiceActivityAt(ctx context.Context, host string, result decode.HFResul
 	if err := verify.Live("voice", "speech", text, nil); err != nil {
 		return monitor.Activity{}, err
 	}
+	// HF voice is the hallucination magnet: a hosted model would happily
+	// read weather-forecast prose into static. The guard cross-checks the
+	// transcript against the speech actually measured in the clip (canned
+	// text and decoder loops are rejected upstream of the gallery).
+	if verdict := voice.GuardTranscript(samples, rate, text); verdict.Rejected {
+		return monitor.Activity{}, fmt.Errorf("transcript guard rejected (%s)", verdict.Reason)
+	}
 	activity := monitor.Activity{
 		ID:          int(time.Now().UnixNano()),
 		Started:     result.Started,

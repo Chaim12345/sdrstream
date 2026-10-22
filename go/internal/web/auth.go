@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,11 @@ const (
 	sessionTTL         = time.Hour
 	sessionRenewWindow = 30 * time.Minute
 )
+
+// maxLoginAttemptsTracked bounds the per-IP lockout map so a rotating
+// attacker cannot grow process memory forever. Var (not const) so tests
+// can exercise the eviction with a small cap.
+var maxLoginAttemptsTracked = 10_000
 
 type loginAttempt struct {
 	started time.Time
@@ -79,14 +85,28 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-func clearSessionCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: "sdrstream_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+// cookieSecure says whether the connection (or the TLS-terminating proxy
+// in front of us) speaks HTTPS. Browsers silently drop Secure cookies over
+// plain HTTP, which made login impossible on an http:// deployment —
+// loopback dev servers and bare-LAN ports never received a session. HTTPS
+// keeps Secure unconditionally; a forged X-Forwarded-Proto only works when
+// the attacker controls the request line anyway, and it only ever relaxes
+// the flag downward, matching the actual transport.
+func cookieSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
 }
 
-func sessionCookie(value string, maxAge int) *http.Cookie {
+func clearSessionCookie(w http.ResponseWriter, secure bool) {
+	http.SetCookie(w, &http.Cookie{Name: "sdrstream_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode})
+}
+
+func sessionCookie(value string, maxAge int, secure bool) *http.Cookie {
 	return &http.Cookie{
 		Name: "sdrstream_session", Value: value, Path: "/", MaxAge: maxAge,
-		HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
+		HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode,
 	}
 }
 
@@ -114,6 +134,38 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := clientIP(r)
 	s.auth.mu.Lock()
+	// The lockout map must not grow forever: an attacker rotating source
+	// addresses (or spamming CF-Connecting-IP through a loopback tunnel)
+	// would otherwise leak one entry per attempt for the life of the
+	// process. Sweep expired entries, then hard-cap.
+	if len(s.auth.attempts) >= maxLoginAttemptsTracked {
+		now := time.Now()
+		for key, entry := range s.auth.attempts {
+			if now.Sub(entry.started) > 15*time.Minute {
+				delete(s.auth.attempts, key)
+			}
+		}
+		for len(s.auth.attempts) >= maxLoginAttemptsTracked {
+			// Still full: shed the oldest quarter so the newest
+			// attackers are the ones still counted.
+			type holder struct {
+				key     string
+				started time.Time
+			}
+			holders := make([]holder, 0, len(s.auth.attempts))
+			for key, entry := range s.auth.attempts {
+				holders = append(holders, holder{key, entry.started})
+			}
+			sort.Slice(holders, func(i, j int) bool { return holders[i].started.Before(holders[j].started) })
+			shed := len(holders) / 4
+			if shed < 1 {
+				shed = 1
+			}
+			for _, h := range holders[:shed] {
+				delete(s.auth.attempts, h.key)
+			}
+		}
+	}
 	attempt, found := s.auth.attempts[ip]
 	if found && time.Since(attempt.started) > 15*time.Minute {
 		delete(s.auth.attempts, ip)
@@ -148,7 +200,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.auth.sessions[sessionValue] = time.Now().Add(sessionTTL)
 	s.persistSessionsLocked()
 	s.auth.mu.Unlock()
-	http.SetCookie(w, sessionCookie(sessionValue, 3600))
+	http.SetCookie(w, sessionCookie(sessionValue, 3600, cookieSecure(r)))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -160,7 +212,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "logout requires POST", http.StatusMethodNotAllowed)
 		return
 	}
-	clearSessionCookie(w)
+	clearSessionCookie(w, cookieSecure(r))
 	if cookie, err := r.Cookie("sdrstream_session"); err == nil {
 		s.auth.mu.Lock()
 		delete(s.auth.sessions, cookie.Value)
@@ -211,7 +263,7 @@ func (s *Server) wrapAuth(mux *http.ServeMux) http.Handler {
 		}
 		s.auth.mu.Unlock()
 		if !ok {
-			clearSessionCookie(w)
+			clearSessionCookie(w, cookieSecure(r))
 			if resource {
 				http.Error(w, "access denied", http.StatusUnauthorized)
 				return
@@ -220,7 +272,7 @@ func (s *Server) wrapAuth(mux *http.ServeMux) http.Handler {
 			return
 		}
 		if renew {
-			http.SetCookie(w, sessionCookie(cookie.Value, 3600))
+			http.SetCookie(w, sessionCookie(cookie.Value, 3600, cookieSecure(r)))
 		}
 		mux.ServeHTTP(w, r)
 	})

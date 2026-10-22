@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -273,8 +274,27 @@ func TestPasswordLoginProtectsUIAndAPIs(t *testing.T) {
 		t.Fatalf("valid password status=%d, want 303", recorder.Code)
 	}
 	cookies := recorder.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != "sdrstream_session" || !cookies[0].HttpOnly || !cookies[0].Secure || cookies[0].SameSite != http.SameSiteStrictMode {
+	if len(cookies) != 1 || cookies[0].Name != "sdrstream_session" || cookies[0].HttpOnly != true || cookies[0].SameSite != http.SameSiteStrictMode {
 		t.Fatalf("session cookie attributes are unsafe: %+v", cookies)
+	}
+	// M13: Secure must follow the scheme. Over plain HTTP the browser
+	// drops Secure cookies, which used to make login silently impossible
+	// on a http:// deployment; over https (flagged directly or by the
+	// terminating proxy) the cookie must stay Secure.
+	if cookies[0].Secure {
+		t.Errorf("secure flag set over plain http; browsers would drop the cookie: %+v", cookies[0])
+	}
+	tlsGood := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("password=test-demo-password"))
+	tlsGood.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tlsGood.Header.Set("X-Forwarded-Proto", "https")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, tlsGood)
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("valid password (https) status=%d, want 303", recorder.Code)
+	}
+	secureCookies := recorder.Result().Cookies()
+	if len(secureCookies) != 1 || !secureCookies[0].Secure {
+		t.Fatalf("https session cookie must be Secure: %+v", secureCookies)
 	}
 
 	api := httptest.NewRequest(http.MethodGet, "/api/status.json", nil)
@@ -845,5 +865,39 @@ func TestAddLiveArtifactFeedsRdioOnlyWhenAudioExists(t *testing.T) {
 	}
 	if len(hooked) != 1 {
 		t.Fatalf("rdio hook called without audio: %+v", hooked)
+	}
+}
+
+// The lockout map must not grow forever: an attacker rotating source
+// addresses leaks one entry per attempt otherwise. The eviction sweep
+// (expired first, then oldest-shed) keeps it bounded.
+func TestLoginAttemptsMapCapped(t *testing.T) {
+	previous := maxLoginAttemptsTracked
+	maxLoginAttemptsTracked = 100
+	t.Cleanup(func() { maxLoginAttemptsTracked = previous })
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "test-demo-password")
+
+	s := &Server{}
+	_ = s.Handler()
+	playback := func() {
+		for ip := 0; ip < 250; ip++ {
+			req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(fmt.Sprintf("password=wrong-ip-%03d", ip)))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.RemoteAddr = fmt.Sprintf("10.%d.%d.%d:55555", ip/256, ip%256, 1)
+			recorder := httptest.NewRecorder()
+			s.Handler().ServeHTTP(recorder, req)
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("attempt %d status=%d, want 401", ip, recorder.Code)
+			}
+		}
+	}
+	playback()
+	s.auth.mu.Lock()
+	size := len(s.auth.attempts)
+	s.auth.mu.Unlock()
+	// The length can touch the cap (eviction fires on the next login at
+	// a full map) but must never exceed it.
+	if size > 100 {
+		t.Fatalf("lockout map grew to %d entries with a cap of 100", size)
 	}
 }

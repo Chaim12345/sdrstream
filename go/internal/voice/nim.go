@@ -21,12 +21,16 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"github.com/chaim12345/sdrstream/go/internal/rivaspeech"
 )
@@ -164,14 +168,43 @@ func TranscribeNIM(ctx context.Context, samples []float64, rate int, options NIM
 	if !NIMAvailable(options) {
 		return transcript, fmt.Errorf("voice: NVIDIA NIM backend not configured (set SDRSTREAM_NIM_API_KEY)")
 	}
-	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	conn, err := nimDial(dialCtx, options)
-	cancel()
+	// Quota/auth cooldown: fail fast during the window instead of paying
+	// a dial + minute-long upload per clip for the same rejection.
+	if wait := nimCooldownRemaining(); wait > 0 {
+		return transcript, fmt.Errorf("voice: NIM cooling down after quota/auth failure, retry in %s", wait.Round(time.Second))
+	}
+	// Bounded concurrency against the catalog tier; a wide scan must not
+	// empty the request quota in a single wave.
+	select {
+	case nimSlots <- struct{}{}:
+		defer func() { <-nimSlots }()
+	case <-ctx.Done():
+		return transcript, fmt.Errorf("voice: NIM call cancelled waiting for a free slot: %w", ctx.Err())
+	}
+	if options.Insecure {
+		// Insecure dialing is the test path: each call gets its own
+		// connection so every test owns its server lifecycle.
+		dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		conn, err := nimDial(dialCtx, options)
+		cancel()
+		if err != nil {
+			return transcript, fmt.Errorf("voice: NIM dial %s: %w", options.Endpoint, err)
+		}
+		defer conn.Close()
+		return nimRecognize(ctx, rivaspeech.NewRivaSpeechRecognitionClient(conn), samples, rate, options)
+	}
+	conn, err := nimConnFor(ctx, options)
 	if err != nil {
 		return transcript, fmt.Errorf("voice: NIM dial %s: %w", options.Endpoint, err)
 	}
-	defer conn.Close()
-	return nimRecognize(ctx, rivaspeech.NewRivaSpeechRecognitionClient(conn), samples, rate, options)
+	out, err := nimRecognize(ctx, rivaspeech.NewRivaSpeechRecognitionClient(conn), samples, rate, options)
+	if err != nil {
+		if cooldown := nimFailureCooldown(err); cooldown > 0 {
+			nimCooldownUntil.Store(time.Now().Add(cooldown).UnixNano())
+		}
+		return out, err
+	}
+	return out, nil
 }
 
 // nimRecognize runs one offline Recognize call through an existing client,
@@ -277,4 +310,79 @@ func TranscribeBest(ctx context.Context, samples []float64, rate int, options Op
 		return fallback, nil
 	}
 	return fallback, fmt.Errorf("voice: NIM failed (%s); whisper fallback failed (%v)", strings.Join(failures, "; "), ferr)
+}
+
+var (
+	// nimConns pools one client connection per TLS endpoint. Dialing
+	// cost a full TLS + HTTP2 handshake per clip before; a fleet scan
+	// transcribing hundreds of clips paid it repeatedly against the
+	// same grpc.nvcf.nvidia.com endpoint. gRPC reconnects internally,
+	// so the pooled conn survives server-side blips.
+	nimConnsMu sync.Mutex
+	nimConns   = map[string]*grpc.ClientConn{}
+	// nimSlots caps concurrent recognize calls. The free catalog tier
+	// throttles by request rate; a wide parallel scan that jams every
+	// clip through at once burns the whole quota in one wave and then
+	// poisons every recorder with quota errors.
+	nimSlots = make(chan struct{}, nimMaxConcurrent)
+)
+
+const nimMaxConcurrent = 2
+
+// Cooldowns after a systemic failure: during the window TranscribeNIM
+// fails fast instead of paying a dial + upload per clip against a backend
+// that will return the same error.
+const (
+	// Quota and auth failures will not recover next call; give the
+	// window real room.
+	nimQuotaCooldown = 10 * time.Minute
+	// Unavailable is usually a brief flap; a full minute is enough.
+	nimOutageCooldown = time.Minute
+)
+
+// nimCooldownUntil is unix-nanoseconds of the cooldown expiry; 0 = none.
+var nimCooldownUntil atomic.Int64
+
+func nimFailureCooldown(err error) time.Duration {
+	switch status.Code(err) {
+	case codes.ResourceExhausted, codes.Unauthenticated, codes.PermissionDenied:
+		return nimQuotaCooldown
+	case codes.Unavailable:
+		return nimOutageCooldown
+	}
+	return 0
+}
+
+func nimCooldownRemaining() time.Duration {
+	return time.Until(time.Unix(0, nimCooldownUntil.Load()))
+}
+
+// nimConnFor returns the pooled connection for an endpoint, dialing on
+// first use. Concurrent first users queue on the mutex and reuse the
+// winner's connection.
+func nimConnFor(ctx context.Context, options NIMOptions) (*grpc.ClientConn, error) {
+	nimConnsMu.Lock()
+	defer nimConnsMu.Unlock()
+	if conn, ok := nimConns[options.Endpoint]; ok {
+		return conn, nil
+	}
+	conn, err := nimDial(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	nimConns[options.Endpoint] = conn
+	return conn, nil
+}
+
+// nimResetForTests drops pooled connections and any cooldown; tests that
+// swap nimDial also need a clean pool, since a cached bufconn would
+// outlive its fake server.
+func nimResetForTests() {
+	nimConnsMu.Lock()
+	for _, conn := range nimConns {
+		_ = conn.Close()
+	}
+	nimConns = map[string]*grpc.ClientConn{}
+	nimConnsMu.Unlock()
+	nimCooldownUntil.Store(0)
 }
