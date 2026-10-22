@@ -226,7 +226,9 @@ func cmdRecord(args []string) error {
 	}
 	ctx := context.Background()
 	if *kind == "kiwi" {
-		client, err := kiwisdr.New(*server, kiwisdr.DefaultOptions())
+		kiwiOpts := kiwisdr.DefaultOptions()
+		kiwiOpts.AllowPrivate = true // operator-named server
+		client, err := kiwisdr.New(*server, kiwiOpts)
 		if err != nil {
 			return err
 		}
@@ -270,7 +272,7 @@ func cmdRecord(args []string) error {
 		}
 		return finish(samples, rate, *out)
 	}
-	client, err := openwebrx.New(*server, openwebrx.DefaultOptions())
+	client, err := openwebrx.New(*server, operatorOpenWebRXOptions())
 	if err != nil {
 		return err
 	}
@@ -404,7 +406,7 @@ func cmdInfo(args []string) error {
 		}
 		return nil
 	}
-	client, err := openwebrx.New(*server, openwebrx.DefaultOptions())
+	client, err := openwebrx.New(*server, operatorOpenWebRXOptions())
 	if err != nil {
 		return err
 	}
@@ -855,7 +857,7 @@ func cmdMonitor(args []string) error {
 	ctx, stopSignals := signal.NotifyContext(ctx, os.Interrupt)
 	defer stopSignals()
 
-	source, err := monitor.SourceFor(ctx, *kind, *server, *profile)
+	source, err := monitor.SourceForLocal(ctx, *kind, *server, *profile)
 	if err != nil {
 		return err
 	}
@@ -1286,12 +1288,20 @@ func cmdSpectrum(args []string) error {
 	return nil
 }
 
+// operatorOpenWebRXOptions allows private/loopback receivers: these commands
+// connect to a server the operator named explicitly.
+func operatorOpenWebRXOptions() openwebrx.Options {
+	opts := openwebrx.DefaultOptions()
+	opts.AllowPrivate = true
+	return opts
+}
+
 // connectWithRetry dials and handshakes, retrying a few times with backoff
 // because some servers reject rapid successive connections.
 func connectWithRetry(ctx context.Context, server string, attempts int) (*openwebrx.Client, openwebrx.Config, error) {
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		client, err := openwebrx.New(server, openwebrx.DefaultOptions())
+		client, err := openwebrx.New(server, operatorOpenWebRXOptions())
 		if err != nil {
 			return nil, openwebrx.Config{}, err
 		}
@@ -1542,7 +1552,7 @@ func cmdWeb(args []string) error {
 	if *monitorServer != "" {
 		monitorCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		source, err := monitor.SourceFor(monitorCtx, *monitorKind, *monitorServer, *monitorProfile)
+		source, err := monitor.SourceForLocal(monitorCtx, *monitorKind, *monitorServer, *monitorProfile)
 		if err != nil {
 			return err
 		}
@@ -2161,6 +2171,8 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, receivers []st
 		outcome scanOutcome
 	}
 	results := make(chan result, cfg.maximum)
+	dispatchTick := time.NewTicker(time.Second)
+	defer dispatchTick.Stop()
 	inFlight := 0
 	nextStation := 0
 	activeStations := map[string]bool{}
@@ -2219,6 +2231,9 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, receivers []st
 				go func(kind, host string) {
 					outcome := scanStation(stationCtx, server, kind, host, cfg.targetLimit, multimonPath, direwolfPath, scannerCaptureDir, &active, updateMetrics)
 					cancel()
+					// A visit ended by our own session deadline is not a
+					// remote refusal or timeout.
+					outcome = normalizeStationOutcome(stationCtx, ctx, outcome)
 					results <- result{host: host, outcome: outcome}
 				}(parts[0], host)
 				dispatched = true
@@ -2239,15 +2254,25 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, receivers []st
 					}
 				}
 			}
-			if earliest.IsZero() {
-				time.Sleep(time.Second)
-			} else if d := time.Until(earliest); d > 0 {
-				time.Sleep(minDuration(d, time.Second))
+			wait := time.Second
+			if !earliest.IsZero() {
+				wait = minDuration(maxDuration(time.Until(earliest), 50*time.Millisecond), time.Second)
+			}
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+			case <-timer.C:
 			}
 			continue
 		}
 		select {
 		case <-ctx.Done():
+		case <-dispatchTick.C:
+			// Re-evaluate dispatch while sessions run: backoff expiries and
+			// pause/target changes must not wait for the next finished
+			// station (visits can run for minutes).
+			updateMetrics()
 		case r := <-results:
 			if r.outcome.refused || r.outcome.timedOut {
 				reason := "receiver refused or timed out"
@@ -2256,7 +2281,15 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, receivers []st
 			inFlight--
 			delete(activeStations, r.host)
 			delete(activeCancels, r.host)
-			if r.outcome.refused || r.outcome.timedOut {
+			if r.outcome.skipped {
+				// Not attempted (local preflight backoff/budget, or our own
+				// session deadline): keep the station out of the dispatch
+				// loop briefly so a cheap skip cannot hot-spin, but do not
+				// escalate the per-host backoff or touch the blocklist.
+				if _, backingOff := backoffUntil[r.host]; !backingOff {
+					backoffUntil[r.host] = time.Now().Add(skippedStationRetry)
+				}
+			} else if r.outcome.refused || r.outcome.timedOut {
 				d := backoffFor[r.host]
 				if d == 0 {
 					d = 30 * time.Second
@@ -2329,7 +2362,50 @@ func minDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
-type scanOutcome struct{ refused, timedOut bool }
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// skippedStationRetry is how long the dispatcher leaves a skipped station
+// alone. The preflight's own cache/backoff makes a later check cheap; this
+// only stops a skip from being redispatched in a tight loop.
+const skippedStationRetry = time.Minute
+
+type scanOutcome struct {
+	refused, timedOut bool
+	// skipped means the station was not attempted at all (local preflight
+	// backoff/budget, or our own session deadline cut the visit short):
+	// neither a remote refusal nor a timeout, so it must not blocklist the
+	// station or feed the ramp's refusal/timeout rates.
+	skipped bool
+}
+
+// preflightOutcome maps a failed Kiwi preflight verdict to a scan outcome.
+// Local politeness verdicts (backoff, daily budget) are skips, not remote
+// refusals; only network evidence counts as refusal or timeout.
+func preflightOutcome(verdict string) scanOutcome {
+	switch verdict {
+	case kiwisdr.VerdictBackoff, kiwisdr.VerdictBudget:
+		return scanOutcome{skipped: true}
+	case kiwisdr.VerdictTimeout:
+		return scanOutcome{timedOut: true}
+	default:
+		return scanOutcome{refused: true}
+	}
+}
+
+// normalizeStationOutcome reclassifies a failure caused by our own
+// per-station session deadline: the remote did nothing wrong, so the visit
+// counts as a skip, not a refusal or ramp timeout.
+func normalizeStationOutcome(stationCtx, parentCtx context.Context, outcome scanOutcome) scanOutcome {
+	if errors.Is(stationCtx.Err(), context.DeadlineExceeded) && parentCtx.Err() == nil {
+		return scanOutcome{skipped: true}
+	}
+	return outcome
+}
 
 func classifyScanFailure(err error) scanOutcome {
 	if err == nil {
@@ -2444,6 +2520,10 @@ func cmdKiwiPreflight(receivers []string) error {
 
 var directoryPreflightSlots = make(chan struct{}, 16)
 
+// directoryPreflightHTTPClient builds the SSRF-guarded client for receiver
+// preflights. A var so tests pointing at loopback fixtures can replace it.
+var directoryPreflightHTTPClient = func() *http.Client { return common.PublicHTTPClient(8 * time.Second) }
+
 func preflightDirectoryStation(ctx context.Context, stationType, rawURL string) error {
 	select {
 	case directoryPreflightSlots <- struct{}{}:
@@ -2455,12 +2535,17 @@ func preflightDirectoryStation(ctx context.Context, stationType, rawURL string) 
 	if err != nil {
 		return err
 	}
+	if u, err := url.Parse(requestURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("preflight: unsupported scheme in %q (http/https only)", rawURL)
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return err
 	}
 	request.Header.Set("User-Agent", "sdrstream/1.0 receiver-preflight")
-	client := &http.Client{Timeout: 8 * time.Second}
+	// Directory entries are untrusted: dial public addresses only, and let
+	// the guarded transport re-validate every redirect hop.
+	client := directoryPreflightHTTPClient()
 	response, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("preflight HTTP: %w", err)
@@ -2491,7 +2576,11 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 	if strings.EqualFold(stationType, "KiwiSDR") || looksLikeKiwi(host) {
 		preflight := kiwiPreflight.Check(ctx, host)
 		if !preflight.Free() {
+			outcome := preflightOutcome(preflight.Verdict)
 			state := "refused/skipped"
+			if outcome.skipped {
+				state = "skipped"
+			}
 			reason := "preflight " + preflight.Verdict + ": " + preflight.Err
 			if preflight.Verdict == kiwisdr.VerdictBusy {
 				reason = fmt.Sprintf("preflight busy: users %d/%d", preflight.Users, preflight.UsersMax)
@@ -2500,7 +2589,7 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 				reason += " | " + d
 			}
 			addScan(server, web.ScanStatus{StationType: stationType, Station: host, State: state, Result: reason, UpdatedAt: time.Now()})
-			return scanOutcome{refused: preflight.Verdict != kiwisdr.VerdictTimeout, timedOut: preflight.Verdict == kiwisdr.VerdictTimeout}
+			return outcome
 		}
 		return scanKiwiStation(ctx, server, host, targetLimit, active, updateMetrics, preflight.WSPath)
 	}
@@ -2670,7 +2759,9 @@ func runDirectoryHFScan(ctx context.Context, server *web.Server, receiverList st
 			var start time.Time
 			var err error
 			if kind == "websdr" {
-				client, e := websdr.New(rx, websdr.DefaultOptions())
+				wsOpts := websdr.DefaultOptions()
+				wsOpts.AllowPrivate = true // --scan-hf-server is named explicitly by the operator
+				client, e := websdr.New(rx, wsOpts)
 				if e != nil {
 					err = e
 				} else if e = client.Connect(ctx); e != nil {
@@ -2679,6 +2770,8 @@ func runDirectoryHFScan(ctx context.Context, server *web.Server, receiverList st
 					if e = client.Tune(ctx, dial, "usb", nil); e != nil {
 						err = e
 					} else {
+						// Drop frames captured before the retune took effect.
+						client.DrainAudio()
 						setScanResult(server, key, "listening", time.Now().UTC().Format("15:04:05Z"))
 						callStart := time.Now().UTC()
 						pcm, rate, err = client.Record(ctx, listen)
@@ -2691,7 +2784,9 @@ func runDirectoryHFScan(ctx context.Context, server *web.Server, receiverList st
 					client.Close()
 				}
 			} else {
-				client, e := kiwisdr.New(rx, kiwisdr.DefaultOptions())
+				kiwiOpts := kiwisdr.DefaultOptions()
+				kiwiOpts.AllowPrivate = true // --scan-hf-server is named explicitly by the operator
+				client, e := kiwisdr.New(rx, kiwiOpts)
 				if e != nil {
 					err = e
 				} else if e = client.Connect(ctx); e != nil {
@@ -2824,22 +2919,13 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 	results, remaining, err := decode.RunHFSession(ctx, host, targets, decode.SessionOptions{Listen: 8 * time.Second, MaxTargets: targetLimit, MaxSession: 5 * time.Minute, SkipInactive: true, WSPath: wsPath})
 	active.Add(-1)
 	updateMetrics()
-	if err != nil {
-		outcome := classifyScanFailure(err)
-		state := "error"
-		if outcome.refused {
-			state = "refused/skipped"
-		}
-		if outcome.timedOut {
-			state = "timeout"
-		}
-		for _, target := range targets {
-			if key := keys[target.Name]; key != "" {
-				setScanResult(server, key, state, err.Error())
-			}
-		}
-		return outcome
-	}
+	// Our own per-station session deadline cutting the visit short is not a
+	// remote failure: the station must not be blocklisted or counted as a
+	// ramp timeout.
+	ownDeadline := errors.Is(ctx.Err(), context.DeadlineExceeded)
+	// Process whatever the session decoded first, even when it ended in an
+	// error: partial results are real decodes, and dropping them would also
+	// mark targets that succeeded as failed.
 	processed := make(map[string]bool, len(results))
 	for _, result := range results {
 		processed[result.Target.Name] = true
@@ -2862,13 +2948,42 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 		}
 		setScanResult(server, key, "decoded", result.Gate.Reason)
 	}
+	// Never advance past unprocessed targets: everything the session did not
+	// finish is deferred to the next visit, not reported as failed.
+	deferred := make(map[string]bool, len(remaining))
 	for _, target := range remaining {
+		deferred[target.Name] = true
 		if processed[target.Name] {
 			continue
 		}
 		if key := keys[target.Name]; key != "" {
 			setScanResult(server, key, "deferred", "receiver session target/time cap; will retry next station visit")
 		}
+	}
+	if err != nil {
+		outcome := classifyScanFailure(err)
+		if ownDeadline {
+			outcome = scanOutcome{skipped: true}
+		}
+		state := "error"
+		if outcome.refused {
+			state = "refused/skipped"
+		}
+		if outcome.timedOut {
+			state = "timeout"
+		}
+		if ownDeadline {
+			state = "deferred"
+		}
+		for _, target := range targets {
+			if processed[target.Name] || deferred[target.Name] {
+				continue
+			}
+			if key := keys[target.Name]; key != "" {
+				setScanResult(server, key, state, err.Error())
+			}
+		}
+		return outcome
 	}
 	return scanOutcome{}
 }

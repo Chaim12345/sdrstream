@@ -28,6 +28,28 @@ type aisConn interface {
 	Close() error
 }
 
+// aisReadIdleTimeout bounds silence on the AIS socket; aisstream.io sends
+// position reports and pings regularly, so 2 minutes means a wedged peer.
+const aisReadIdleTimeout = 2 * time.Minute
+
+// aisWSConn wraps the websocket so every read and write is deadline-bound
+// and frames are size-capped.
+type aisWSConn struct {
+	conn *websocket.Conn
+}
+
+func (c aisWSConn) WriteJSON(v any) error {
+	_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	return c.conn.WriteJSON(v)
+}
+
+func (c aisWSConn) ReadMessage() (int, []byte, error) {
+	_ = c.conn.SetReadDeadline(time.Now().Add(aisReadIdleTimeout))
+	return c.conn.ReadMessage()
+}
+
+func (c aisWSConn) Close() error { return c.conn.Close() }
+
 func (a *AIS) Name() string { return "aisstream" }
 func (a *AIS) Kind() string { return "ais" }
 
@@ -130,7 +152,11 @@ func (a *AIS) Run(ctx context.Context, emit func(Item)) error {
 	if dial == nil {
 		dial = func(ctx context.Context, url string) (aisConn, error) {
 			c, _, err := websocket.DefaultDialer.DialContext(ctx, url, nil)
-			return c, err
+			if err != nil {
+				return nil, err
+			}
+			c.SetReadLimit(1 << 20)
+			return aisWSConn{conn: c}, nil
 		}
 	}
 	conn, err := dial(ctx, a.url())
@@ -138,10 +164,14 @@ func (a *AIS) Run(ctx context.Context, emit func(Item)) error {
 		return err
 	}
 	defer conn.Close()
+	// Per-attempt context: the closer goroutine must end with this
+	// connection, not leak until the supervisor's ctx ends.
+	attemptCtx, stopAttempt := context.WithCancel(ctx)
+	defer stopAttempt()
+	go func() { <-attemptCtx.Done(); conn.Close() }()
 	if err := conn.WriteJSON(a.subscribe()); err != nil {
 		return err
 	}
-	go func() { <-ctx.Done(); conn.Close() }()
 	for {
 		_, payload, err := conn.ReadMessage()
 		if err != nil {

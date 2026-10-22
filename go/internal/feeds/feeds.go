@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -263,11 +264,12 @@ func (m *Manager) RunStream(ctx context.Context, s StreamSource, maxAge time.Dur
 	m.mu.Lock()
 	m.source(s.Name(), s.Kind(), maxAge)
 	m.mu.Unlock()
-	backoff := 5 * time.Second
+	backoff := streamBackoffBase
 	for {
 		if ctx.Err() != nil {
 			return
 		}
+		attemptStart := time.Now()
 		m.mu.Lock()
 		m.setState(s.Name(), "connecting", "")
 		m.mu.Unlock()
@@ -296,19 +298,42 @@ func (m *Manager) RunStream(ctx context.Context, s StreamSource, maxAge time.Dur
 		if ctx.Err() != nil {
 			return
 		}
-		m.logf("%s: %v; reconnecting in %s", s.Name(), err, backoff)
+		// A run that stayed up for a minute or more was healthy: the
+		// failure is a fresh drop, so restart the backoff instead of
+		// punishing the feed with the stale maximum.
+		if time.Since(attemptStart) >= healthyRunThreshold {
+			backoff = streamBackoffBase
+		}
+		// Jitter (0.75x-1.25x) keeps several feeds from reconnecting in
+		// lockstep after a shared outage.
+		delay := feedBackoffWithJitter(backoff)
+		m.logf("%s: %v; reconnecting in %s", s.Name(), err, delay)
 		m.mu.Lock()
 		m.setState(s.Name(), "error", errString(err))
 		m.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff):
+		case <-time.After(delay):
 		}
 		if backoff < 5*time.Minute {
 			backoff *= 2
 		}
 	}
+}
+
+// streamBackoffBase is the first reconnect delay; it doubles to 5m. A var
+// so tests can shorten it.
+var streamBackoffBase = 5 * time.Second
+
+// healthyRunThreshold is how long a streaming connection must stay up for
+// its eventual drop to count as a fresh failure (backoff resets) rather
+// than a continuation of connect instability. A var so tests can shorten it.
+var healthyRunThreshold = time.Minute
+
+// feedBackoffWithJitter spreads reconnects: base * U[0.75, 1.25).
+func feedBackoffWithJitter(base time.Duration) time.Duration {
+	return base*3/4 + time.Duration(rand.Float64()*float64(base)/2)
 }
 
 // RunPoller supervises one polled source on its own interval.

@@ -31,7 +31,13 @@ type openWebRXSource struct {
 // its spectrum frames. The optional profile selects a wide profile so that
 // more of the band is visible.
 func OpenWebRXSource(ctx context.Context, server, profile string) (Source, error) {
-	client, err := openwebrx.New(server, openwebrx.DefaultOptions())
+	return dialOpenWebRX(ctx, server, profile, false)
+}
+
+func dialOpenWebRX(ctx context.Context, server, profile string, allowPrivate bool) (Source, error) {
+	options := openwebrx.DefaultOptions()
+	options.AllowPrivate = allowPrivate
+	client, err := openwebrx.New(server, options)
 	if err != nil {
 		return nil, err
 	}
@@ -137,6 +143,8 @@ func (s *openWebRXSource) Listen(ctx context.Context, hz float64, mode string, d
 	}
 	// Give the server a moment to retune and settle before recording.
 	time.Sleep(400 * time.Millisecond)
+	// Drop audio buffered at the old frequency during the settle window.
+	s.client.DrainAudio()
 	samples, rate, err := s.client.RecordSamples(ctx, dur)
 	if err != nil {
 		return nil, 0, err
@@ -164,7 +172,11 @@ type webSDRSource struct {
 
 // WebSDRSource connects to a WebSDR server.
 func WebSDRSource(ctx context.Context, server string) (Source, error) {
-	client, err := websdr.New(server, websdr.Options{Reconnect: true})
+	return dialWebSDR(ctx, server, false)
+}
+
+func dialWebSDR(ctx context.Context, server string, allowPrivate bool) (Source, error) {
+	client, err := websdr.New(server, websdr.Options{Reconnect: true, AllowPrivate: allowPrivate})
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +195,8 @@ func (s *webSDRSource) Listen(ctx context.Context, hz float64, mode string, dur 
 		return nil, 0, err
 	}
 	time.Sleep(400 * time.Millisecond)
+	// Drop audio buffered at the old frequency during the settle window.
+	s.client.DrainAudio()
 	samples, rate, err := s.client.Record(ctx, dur)
 	if err != nil {
 		return nil, 0, err
@@ -209,7 +223,13 @@ type kiwiSource struct {
 
 // KiwiSource connects to a KiwiSDR server.
 func KiwiSource(ctx context.Context, server string) (Source, error) {
-	client, err := kiwisdr.New(server, kiwisdr.DefaultOptions())
+	return dialKiwi(ctx, server, false)
+}
+
+func dialKiwi(ctx context.Context, server string, allowPrivate bool) (Source, error) {
+	options := kiwisdr.DefaultOptions()
+	options.AllowPrivate = allowPrivate
+	client, err := kiwisdr.New(server, options)
 	if err != nil {
 		return nil, err
 	}
@@ -245,17 +265,29 @@ func (s *kiwiSource) Close() error {
 	return nil
 }
 
-// SourceFor builds the receiver source for a protocol name.
+// SourceFor builds the receiver source for a protocol name. The receiver
+// address is guarded against loopback/private targets; use SourceForLocal
+// when the user explicitly names a local receiver.
 func SourceFor(ctx context.Context, kind, server, profile string) (Source, error) {
+	return sourceFor(ctx, kind, server, profile, false)
+}
+
+// SourceForLocal is SourceFor without the SSRF guard, for receivers the
+// user named explicitly (a lab SDR on the LAN, a loopback instance).
+func SourceForLocal(ctx context.Context, kind, server, profile string) (Source, error) {
+	return sourceFor(ctx, kind, server, profile, true)
+}
+
+func sourceFor(ctx context.Context, kind, server, profile string, allowPrivate bool) (Source, error) {
 	switch kind {
 	case "openwebrx", "":
-		return OpenWebRXSource(ctx, server, profile)
+		return dialOpenWebRX(ctx, server, profile, allowPrivate)
 	case "websdr":
-		return WebSDRSource(ctx, server)
+		return dialWebSDR(ctx, server, allowPrivate)
 	case "icecast", "shoutcast", "nwr":
 		return icecast.NewSource(server), nil
 	case "kiwi", "kiwisdr":
-		return KiwiSource(ctx, server)
+		return dialKiwi(ctx, server, allowPrivate)
 	}
 	return nil, fmt.Errorf("monitor: unknown receiver kind %q", kind)
 }

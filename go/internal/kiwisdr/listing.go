@@ -188,6 +188,32 @@ type Loader struct {
 	page    string
 	fetched time.Time
 	Fetches int // network fetches made, for tests and logs
+
+	lastAttempt time.Time
+	failures    int
+}
+
+// RetryBase and RetryCap bound the failure backoff between network fetches.
+// Without it a down mirror plus a polling caller becomes a retry storm.
+const (
+	RetryBase = time.Minute
+	RetryCap  = 15 * time.Minute
+)
+
+// retryDelay returns how long to wait before another network attempt after
+// n consecutive failures: 1m, 2m, 4m... capped at 15m.
+func retryDelay(n int) time.Duration {
+	if n <= 0 {
+		return 0
+	}
+	d := RetryBase
+	for i := 1; i < n; i++ {
+		d *= 2
+		if d >= RetryCap {
+			return RetryCap
+		}
+	}
+	return d
 }
 
 // NewLoader returns a Loader for the public mirror caching under cacheDir.
@@ -227,8 +253,25 @@ func (l *Loader) fetch(ctx context.Context) (string, error) {
 			}
 		}
 	}
+	if wait := retryDelay(l.failures) - now.Sub(l.lastAttempt); l.failures > 0 && wait > 0 {
+		// A recent attempt already failed; serve stale data or the last
+		// error instead of hammering the mirror.
+		if l.page != "" {
+			return l.page, nil
+		}
+		if l.CachePath != "" {
+			if b, rerr := os.ReadFile(l.CachePath); rerr == nil && len(b) > 0 {
+				l.page = string(b)
+				l.fetched = now.Add(-ttl + time.Minute) // retry in a minute
+				return l.page, nil
+			}
+		}
+		return "", fmt.Errorf("kiwisdr: listing fetch backing off for %s after %d failures", wait.Truncate(time.Second), l.failures)
+	}
+	l.lastAttempt = now
 	page, err := l.download(ctx)
 	if err != nil {
+		l.failures++
 		// Serve stale data (memory first, then disk) instead of failing.
 		if l.page != "" {
 			return l.page, nil
@@ -242,6 +285,7 @@ func (l *Loader) fetch(ctx context.Context) (string, error) {
 		}
 		return "", err
 	}
+	l.failures = 0
 	l.page, l.fetched = page, now
 	if l.CachePath != "" {
 		if err := os.MkdirAll(filepath.Dir(l.CachePath), 0o755); err == nil {
