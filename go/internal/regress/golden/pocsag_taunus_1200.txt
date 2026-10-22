@@ -1,0 +1,20 @@
+33157|3|CH Hamburg:C=000/170/160/GateRt_ConOn/CON L_beck /01.06.2008/19:08:14<EOT><EOT>
+4520|3|h!M'T!UPQ!VTB!!!!2:;19BFD2!!!3:-:4!!!,1-11BJO!!!!34-34!!!.1-11BME!!!!49-56!!!,1-11
+4520|3|h"BMV!!!!37-28!!!,1-11CBD!!!!35-91!!!.1-11CDP!!!!64-35!!!.1-11DBU2!!!64-35!!!.1-11
+4520|3|h#DDD4!!!47-97!!!,1-11DND!!!!38-82!!!,1-11EVQ!!!!41-95!!!,1-11HFD!!!!2:-91!!!,1-26
+4520|3|h$HND!!!!22-11!!!.1-22IEJ!!!!28-76!!!,1-11IXQ!!!!41-42!!!.1-11JCN!!!!94-58!!!.1-11
+4520|3|h%JOM!!!!25-:8!!!,1-11KOK!!!!53-:5!!!.1-11NDD!!!!36-1:!!!.1-11NEP!!!!49-33!!!,1-11
+4520|3|h&NNN!!!!5:-:6!!!,1-11NTG!!!!29-33!!!.1-1:OZF!!!!52-25!!!,1-11QGF!!!!23-58!!!.1-11
+4520|3|h'QIN8!!!25-43!!!,1-11QSH!!!!53-58!!!,1-11TPCB!!!36-84!!!,1-11USW!!!!25-27!!!,1-11
+4520|3|h(VUD2!!!56-86!!!,1-11XEQ!!!!32-76!!!,1-11XNU!!!!48-31!!!,1-11YPOB!!!68-23!!!,1-11
+4520|3|h)Qpxfsfe!cz!!!!!!!!!!Mboh!'!Tdixbs{!!!!!!Xfsuqbqjfsiboefm!BH!xxx/mt.e/ef<EOT>
+4552|3|#!ND.Xfuufs!Xbsotubuvtg~s!Ibncvsh!!!!!!!!!Blu025i;cfx}mlu!21D!Xjoe;TX!27lo0C}!32lo
+4552|3|#"Ifvuf!ubht~cfs!!!!!!Hfxjuufssjtjlp;5&!!!Ojfestdim/;7/1nn!!!!Nbyjnbmf!C};36lo<EOT><EOT>
+4552|3|##Xfjufsf!Sjtjlfo;!!!!Tubslsfhfo)31nn*;2&!Tuvsn)Tu|slf!:*;3&
+4552|3|#$Obdiut!!!!!!!!!!!!!!Hfxjuufssjtjlp;1&!!!Ojfestdim/;4/4nn!!!!Nbyjnbmf!C};31lo<EOT><EOT>
+4552|3|#%Xfjufsf!Sjtjlfo;!!!!Tubslsfhfo)31nn*;1&!Tuvsn)Tu|slf!:*;1&
+4552|3|#&Npshfo!ubht~cfs!!!!!Hfxjuufssjtjlp;1&!!!Ojfestdim/;4/7nn!!!!Nbyjnbmf!C};37lo<EOT><EOT>
+4552|3|#'Xfjufsf!Sjtjlfo;!!!!Tubslsfhfo)31nn*;1&!Tuvsn)Tu|slf!:*;2&
+4552|3|#(+<EOT><EOT>
+4552|3|#)+<EOT><EOT>
+4552|3|#*+<EOT><EOT>
