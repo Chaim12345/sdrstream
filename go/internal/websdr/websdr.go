@@ -17,6 +17,7 @@ package websdr
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -332,16 +333,25 @@ func (c *Client) Tune(ctx context.Context, frequencyKHz float64, mode string, ba
 	c.mu.Lock()
 	c.tuning = params
 	conn := c.conn
-	c.mu.Unlock()
-	if conn != nil {
-		// Bounded write: a dead peer must not wedge the scanner slot on
-		// a TCP buffer that never drains (review H3).
-		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		err := conn.WriteMessage(websocket.TextMessage, []byte("GET /~~param?"+params))
-		c.drainTuneBuffer()
-		return err
+	if conn == nil {
+		c.mu.Unlock()
+		return nil
 	}
-	return nil
+	// Serialize this bounded write with the reconnect loop's connection
+	// swap. Otherwise Tune can snapshot the dying socket just before the
+	// reader closes it and return the incidental "websocket: close sent"
+	// error; the reconnect loop will replay the latest tuning on its socket.
+	_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	err = conn.WriteMessage(websocket.TextMessage, []byte("GET /~~param?"+params))
+	c.mu.Unlock()
+	c.drainTuneBuffer()
+	// The read loop's close handler may already have sent a close control
+	// frame on this socket. Its reconnect path replays c.tuning on the new
+	// socket, so this expected close-sent write is not a failed retune.
+	if errors.Is(err, websocket.ErrCloseSent) {
+		return nil
+	}
+	return err
 }
 
 // drainTuneBuffer drops buffered events from before the tune. The buffer
