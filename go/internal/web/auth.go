@@ -44,13 +44,17 @@ func (a *authState) init() {
 	if a.attempts == nil {
 		a.attempts = map[string]loginAttempt{}
 	}
-	if a.sessions == nil {
-		a.sessions = map[string]time.Time{}
-	}
 	if len(a.sessions) == 0 {
-		b, err := os.ReadFile(authSessionFile())
-		if err == nil {
-			_ = json.Unmarshal(b, &a.sessions)
+		if b, err := os.ReadFile(authSessionFile()); err == nil {
+			if loaded := map[string]time.Time{}; json.Unmarshal(b, &loaded) == nil {
+				// Drop sessions that expired while the process was down so a
+				// long-offline server does not reload dead entries.
+				for value, expires := range loaded {
+					if time.Now().Before(expires) {
+						a.sessions[value] = expires
+					}
+				}
+			}
 		}
 	}
 	a.mu.Unlock()
@@ -222,14 +226,35 @@ func (s *Server) wrapAuth(mux *http.ServeMux) http.Handler {
 	})
 }
 
-func authSessionFile() string { return filepath.Join(os.TempDir(), "sdrstream-auth-sessions.json") }
+// stateFile locates a small JSON state file. SDRSTREAM_STATE_DIR overrides
+// the directory (use a persistent volume to survive container rebuilds, or a
+// test temp dir to isolate runs); the default is the OS temp dir.
+func stateFile(name string) string {
+	if dir := os.Getenv("SDRSTREAM_STATE_DIR"); dir != "" {
+		return filepath.Join(dir, name)
+	}
+	return filepath.Join(os.TempDir(), name)
+}
+
+// writeStateFile atomically persists one JSON state file, creating
+// SDRSTREAM_STATE_DIR first when it does not exist yet.
+func writeStateFile(path string, b []byte) {
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return
+		}
+	}
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, b, 0o600) == nil {
+		_ = os.Rename(tmp, path)
+	}
+}
+
+func authSessionFile() string { return stateFile("sdrstream-auth-sessions.json") }
 func (s *Server) persistSessionsLocked() {
 	b, err := json.Marshal(s.auth.sessions)
 	if err != nil {
 		return
 	}
-	tmp := authSessionFile() + ".tmp"
-	if os.WriteFile(tmp, b, 0600) == nil {
-		_ = os.Rename(tmp, authSessionFile())
-	}
+	writeStateFile(authSessionFile(), b)
 }
