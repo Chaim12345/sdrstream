@@ -638,3 +638,38 @@ func TestScanControlPostBoundsAndUpdates(t *testing.T) {
 		t.Fatalf("control state=%d,%t", target, paused)
 	}
 }
+
+type liveTestSource struct{}
+
+func (liveTestSource) Spectrum() ([]float64, float64, float64, bool) {
+	return nil, 145e6, 2e6, false
+}
+func (liveTestSource) Listen(context.Context, float64, string, time.Duration) ([]float64, int, error) {
+	return nil, 8000, nil
+}
+func (liveTestSource) Close() error { return nil }
+
+func TestLiveEndpointWithoutMonitor(t *testing.T) {
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "")
+	s := &Server{}
+	r := httptest.NewRecorder()
+	s.Handler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/live.json", nil))
+	if !strings.Contains(r.Body.String(), `"available": false`) {
+		t.Fatalf("expected available:false, got %s", r.Body.String())
+	}
+}
+
+func TestLiveEndpointWithMonitor(t *testing.T) {
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "")
+	s := &Server{}
+	m := monitor.New(monitor.Options{Source: liveTestSource{}, Name: "test rx", Strategy: "sweep"})
+	s.SetMonitor(m)
+	r := httptest.NewRecorder()
+	s.Handler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/live.json", nil))
+	body := r.Body.String()
+	for _, field := range []string{`"available": true`, `"name": "test rx"`, `"spectrum_ok": false`, `"on_air": []`} {
+		if !strings.Contains(body, field) {
+			t.Errorf("live snapshot missing %s: %s", field, body)
+		}
+	}
+}

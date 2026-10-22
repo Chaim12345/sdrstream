@@ -382,6 +382,16 @@ function drawSpectrum(bins, centre, span) {
   ctx.beginPath();
   bins.forEach((v, i) => { const x = (i / (bins.length - 1)) * w, y = h - ((v - min) / range) * (h - 12) - 6; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
   ctx.stroke();
+  // Mark the peaks the monitor reports as on air right now.
+  (lastLive && lastLive.on_air || []).forEach(p => {
+    if (!span) return;
+    const x = ((p.frequency_hz - (centre - span / 2)) / span) * w;
+    if (x < 0 || x > w) return;
+    ctx.strokeStyle = 'rgba(52,211,153,.9)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    ctx.fillStyle = 'rgba(52,211,153,.9)'; ctx.font = (9 * ratio) + 'px ui-monospace, monospace';
+    ctx.fillText('ON AIR', Math.min(x + 3, w - 40 * ratio), 10 * ratio);
+  });
   el('spec-lo').textContent = mhz(centre - span / 2);
   el('spec-mid').textContent = mhz(centre);
   el('spec-hi').textContent = mhz(centre + span / 2);
@@ -494,12 +504,141 @@ function renderActivity() {
   over.textContent = '';
   if (!activityItems.length) { over.innerHTML = '<div class="empty">no traffic seen yet</div>'; }
   activityItems.slice(0, 6).forEach(a => over.appendChild(activityCard(a, false)));
+  renderDecodes();
 }
 document.querySelectorAll('[data-kind]').forEach(button => button.addEventListener('click', () => {
   document.querySelectorAll('[data-kind]').forEach(b => b.classList.toggle('on', b === button));
   activityKind = button.dataset.kind;
   renderActivity();
 }));
+
+
+/* ---------- live pulse: signal meter, on-air pill, receivers, decodes ---------- */
+let lastLive = null;
+let scansData = null;
+const FAILED_STATE = /refus|error|timeout|block|fail|skip|unreach/i;
+
+async function refreshLive() {
+  try {
+    const live = await fetchJSON('/api/live.json');
+    lastLive = live;
+    renderSignal(live);
+    renderOnAirPill(live);
+    renderReceivers(live);
+  } catch { /* endpoint older than the UI or server busy */ }
+}
+
+function renderSignal(live) {
+  const meter = el('signal-meter');
+  if (!live || !live.available) {
+    el('signal-receiver').textContent = 'no monitor running';
+    el('meter-fill').style.width = '0%';
+    meter.setAttribute('aria-valuenow', 0);
+    el('signal-level').textContent = '--';
+    el('onair-list').innerHTML = '<span class="muted">monitor offline</span>';
+    return;
+  }
+  el('signal-receiver').textContent = (live.label || live.name || 'monitored receiver') + ' · ' + (live.strategy || '');
+  const overFloor = Math.max(0, (live.peak_db || 0) - (live.noise_floor_db || 0));
+  const pct = Math.min(100, overFloor / 60 * 100);
+  const fill = el('meter-fill');
+  fill.style.width = pct + '%';
+  const hot = live.on_air && live.on_air.length > 0;
+  fill.classList.toggle('hot', hot);
+  meter.setAttribute('aria-valuenow', Math.round(overFloor));
+  el('signal-level').textContent = overFloor.toFixed(1);
+  el('signal-floor').textContent = (live.noise_floor_db || 0).toFixed(0);
+  el('signal-peak').textContent = (live.peak_db || 0).toFixed(0);
+  const thrPct = Math.min(100, (live.threshold_db || 8) / 60 * 100);
+  el('meter-threshold').style.left = thrPct + '%';
+  el('meter-threshold-label').textContent = '+' + (live.threshold_db || 8) + ' dB';
+  const list = el('onair-list');
+  list.textContent = '';
+  if (!live.spectrum_ok) {
+    list.innerHTML = '<span class="muted">this receiver sends no spectrum - listening blind</span>';
+  } else if (!hot) {
+    list.innerHTML = '<span class="muted">no signal over the threshold right now</span>';
+  } else {
+    live.on_air.slice(0, 8).forEach(p => {
+      const chip = document.createElement('span');
+      chip.className = 'onair-chip';
+      chip.textContent = mhz(p.frequency_hz) + ' · ' + p.level_db.toFixed(0) + ' dB';
+      list.appendChild(chip);
+    });
+  }
+}
+
+function renderOnAirPill(live) {
+  const pill = el('pill-onair');
+  const hot = live && live.available && live.on_air && live.on_air.length > 0;
+  pill.hidden = !hot;
+  if (hot) {
+    const strongest = live.on_air.slice().sort((a, b) => b.level_db - a.level_db)[0];
+    el('onair-text').textContent = 'ON AIR ' + mhz(strongest.frequency_hz);
+  }
+}
+
+function renderReceivers(live) {
+  const grid = el('rx-grid');
+  grid.textContent = '';
+  // The monitored receiver: a live card with a pulsing dot.
+  const card = document.createElement('div');
+  card.className = 'rx-card';
+  const hot = live && live.available && live.on_air && live.on_air.length > 0;
+  const online = live && live.available;
+  card.classList.add(hot ? 'onair' : online ? 'online' : 'offline');
+  const dot = document.createElement('span'); dot.className = 'rx-dot' + (hot ? ' pulse' : '');
+  const name = document.createElement('b');
+  name.textContent = online ? (live.label || live.name || 'monitored receiver') : 'monitored receiver';
+  const state = document.createElement('span'); state.className = 'rx-state';
+  state.textContent = !online ? 'offline' : hot ? 'ON AIR' : 'listening';
+  const meta = document.createElement('div'); meta.className = 'card-meta';
+  meta.textContent = online
+    ? (live.strategy || '') + (live.spectrum_ok ? ' · spectrum live' : ' · no spectrum') + (hot ? ' · ' + live.on_air.length + ' signal' + (live.on_air.length > 1 ? 's' : '') : '')
+    : 'no monitor attached';
+  const head = document.createElement('div'); head.className = 'card-title';
+  head.appendChild(dot); head.appendChild(name); head.appendChild(state);
+  card.appendChild(head); card.appendChild(meta);
+  grid.appendChild(card);
+  // The scanner fleet, aggregated by state, from the same data the scan view polls.
+  if (scansData) {
+    const items = scansData.stations || [];
+    const counts = {};
+    items.forEach(x => { const s = x.state || 'idle'; counts[s] = (counts[s] || 0) + 1; });
+    const scanning = items.length > 0 || (scansData.active_connections || 0) > 0;
+    const agg = document.createElement('div');
+    agg.className = 'rx-card' + (scanning ? ' online' : ' offline');
+    const adot = document.createElement('span'); adot.className = 'rx-dot' + ((scansData.active_connections || 0) > 0 ? ' pulse' : '');
+    const aname = document.createElement('b'); aname.textContent = 'scanner fleet';
+    const astate = document.createElement('span'); astate.className = 'rx-state';
+    astate.textContent = !scanning ? 'offline' : scansData.paused ? 'paused' : (scansData.active_connections || 0) + ' active';
+    const ahead = document.createElement('div'); ahead.className = 'card-title';
+    ahead.appendChild(adot); ahead.appendChild(aname); ahead.appendChild(astate);
+    agg.appendChild(ahead);
+    const ameta = document.createElement('div'); ameta.className = 'card-meta';
+    const parts = Object.keys(counts).sort().map(s => s + ' ' + counts[s]);
+    ameta.textContent = scanning ? items.length + ' stations' + (parts.length ? ' · ' + parts.join(' · ') : '') : 'no scan state reported';
+    agg.appendChild(ameta);
+    grid.appendChild(agg);
+  }
+}
+
+function renderDecodes() {
+  const box = el('decode-feed');
+  const decodes = (activityItems || []).filter(a => a.detail && a.mode);
+  box.textContent = '';
+  if (!decodes.length) { box.innerHTML = '<div class="empty">nothing decoded yet</div>'; return; }
+  decodes.slice(0, 40).forEach(a => {
+    const line = document.createElement('div');
+    line.className = 'decode-line ' + (a.kind || '');
+    const t = document.createElement('span'); t.className = 'decode-time'; t.textContent = fmtTime(a.started);
+    const m = document.createElement('span'); m.className = 'decode-mode'; m.textContent = a.mode;
+    const f = document.createElement('span'); f.className = 'decode-freq'; f.textContent = mhz(a.frequency_hz);
+    const d = document.createElement('span'); d.className = 'decode-text'; d.textContent = a.detail;
+    line.appendChild(t); line.appendChild(m); line.appendChild(f); line.appendChild(d);
+    box.appendChild(line);
+  });
+}
 
 /* ---------- scan board ---------- */
 let scanLogSince = 0;
@@ -543,16 +682,21 @@ async function refreshScans() {
   refreshScanLog();
   try {
     const data = await fetchJSON('/api/scans.json');
+    scansData = data;
     if (data.target_concurrency) { concurrencyControl.value = data.target_concurrency; el('scan-concurrency-value').textContent = data.target_concurrency; }
     el('scan-ramp-value').textContent=(data.ramp_step||0)+'/'+(data.max_connections||0);
     scanPaused = !!data.paused; el('scan-pause').textContent = scanPaused ? 'Resume' : 'Pause';
-    const items = data.stations || [];
+    // Failing, refused and blocked stations are dropped from the board: the
+    // board shows what works, the dropped section below explains the rest.
+    const items = (data.stations || []).filter(x => !FAILED_STATE.test(x.state || ''));
+    const dropped = (data.stations || []).filter(x => FAILED_STATE.test(x.state || ''));
+    (data.dropped || []).forEach(x => dropped.push({ station: x.station, state: 'blocked', result: x.reason, blocked_until: x.until }));
     const box = el('scan-board');
     box.textContent = '';
     const summary = document.createElement('div'); summary.className = 'card';
     summary.textContent = 'ramp '+(data.ramp_step||0)+'/'+(data.max_connections||0)+' · active '+(data.active_connections||0)+' · refusals '+(data.refusals||0)+' · timeouts '+(data.timeouts||0)+' · load '+Number(data.load_average||0).toFixed(2)+'/'+(data.core_count||0)+' cores · est. '+Number(data.estimated_bandwidth_mbps||0).toFixed(1)+'/'+(data.bandwidth_limit_mbps||0)+' Mbps';
     box.appendChild(summary);
-    if (!items.length) { box.appendChild(Object.assign(document.createElement('div'), {className:'empty', textContent:'no scan state reported yet'})); return; }
+    if (!items.length) { box.appendChild(Object.assign(document.createElement('div'), {className:'empty', textContent:'no healthy stations right now'})); }
     items.slice(-scanCards).forEach(x => {
       const card = document.createElement('div'); card.className = 'card';
       const title = document.createElement('div'); title.className = 'card-title';
@@ -565,10 +709,52 @@ async function refreshScans() {
       card.appendChild(meta);
       box.appendChild(card);
     });
+    renderDropped(dropped);
   } catch {
     el('scan-board').innerHTML = '<div class="empty">scanner offline</div>';
   }
 }
+
+// Dropped stations: collapsed by default with count and reasons visible;
+// the full list expands on tap. blocked_until comes from the scanner's
+// retry-after blocklist (integrator contract, feature/ui-live).
+let droppedOpen = false;
+function renderDropped(dropped) {
+  const bar = el('dropped-bar'), list = el('scan-dropped');
+  bar.hidden = dropped.length === 0;
+  el('dropped-count').textContent = dropped.length;
+  const reasons = {};
+  dropped.forEach(x => {
+    const r = String(x.state || 'failed').replace(/\/.+$/, '');
+    reasons[r] = (reasons[r] || 0) + 1;
+  });
+  el('dropped-summary').textContent = Object.keys(reasons).sort().map(r => r + ' ' + reasons[r]).join(' · ');
+  if (!droppedOpen) { list.hidden = true; return; }
+  list.hidden = false;
+  list.textContent = '';
+  dropped.slice(-80).forEach(x => {
+    const card = document.createElement('div'); card.className = 'card dropped';
+    const title = document.createElement('div'); title.className = 'card-title';
+    const b = document.createElement('b'); b.textContent = String(x.station||'').replace(/[<>\u0000-\u001f]/g,'').slice(0,200);
+    const state = document.createElement('span'); state.className = 'scan-state dropped'; state.textContent = x.state || 'failed';
+    title.appendChild(b); title.appendChild(state);
+    card.appendChild(title);
+    if (x.result) { const meta = document.createElement('div'); meta.className = 'card-meta'; meta.textContent = String(x.result).slice(0, 300); card.appendChild(meta); }
+    if (x.blocked_until) { const retry = document.createElement('div'); retry.className = 'card-meta muted'; retry.textContent = 'retry after ' + fmtDate(x.blocked_until); card.appendChild(retry); }
+    list.appendChild(card);
+  });
+}
+document.getElementById('dropped-toggle').addEventListener('click', () => {
+  droppedOpen = !droppedOpen;
+  const t = document.getElementById('dropped-toggle');
+  t.setAttribute('aria-expanded', String(droppedOpen));
+  t.innerHTML = (droppedOpen ? '&#9662; dropped stations (' : '&#9656; dropped stations (') + el('dropped-count').textContent + ')';
+  if (scansData) {
+    const dropped = (scansData.stations || []).filter(x => FAILED_STATE.test(x.state || ''));
+    (scansData.dropped || []).forEach(x => dropped.push({ station: x.station, state: 'blocked', result: x.reason, blocked_until: x.until }));
+    renderDropped(dropped);
+  }
+});
 
 /* ---------- map ---------- */
 let map = null;
@@ -800,7 +986,7 @@ async function refreshBandCond() {
 // Route the initial hash only now: the map module's state is declared below
 // the router, so an early #map route would hit the temporal dead zone.
 if (location.hash && el('view-' + location.hash.slice(1))) showView(location.hash.slice(1)); else showView('overview');
-refreshStatus(); refreshSats(); refreshGallery(); refreshStations(); refreshScans(); refreshActivity(); refreshFeeds(); refreshSources(false); refreshBandCond();
+refreshStatus(); refreshSats(); refreshGallery(); refreshStations(); refreshScans(); refreshActivity(); refreshFeeds(); refreshSources(false); refreshBandCond(); refreshLive();
 el('sources-refresh').onclick = () => refreshSources(true);
 setInterval(refreshStatus, 5000);
 setInterval(refreshActivity, 4000);
@@ -808,6 +994,7 @@ setInterval(refreshFeeds, 15000);
 setInterval(refreshScans, 2000);
 setInterval(refreshScanLog, 1500);
 setInterval(refreshSpectrum, 1000);
+setInterval(refreshLive, 1000);
 setInterval(refreshGallery, 60000);
 setInterval(refreshStations, 300000);
 setInterval(refreshBandCond, 900000);

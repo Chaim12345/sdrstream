@@ -18,6 +18,7 @@
   </div>
   <div class="status-strip" role="status" aria-label="Monitor summary">
     <span class="pill" id="pill-monitor"><span class="dot"></span><b id="monitor-state">connecting</b></span>
+    <span class="pill pill-onair" id="pill-onair" hidden><span class="dot"></span><b id="onair-text">ON AIR</b></span>
     <span class="pill">receivers <b id="receiver-count">–</b></span>
     <span class="pill">passes <b id="pass-count">–</b></span>
     <span class="pill">captures <b id="capture-count">–</b></span>
@@ -59,6 +60,32 @@
       </div>
       <div class="np-meta muted" id="np-meta"></div>
     </div>
+    <div class="panel" id="panel-signal">
+      <div class="panel-head">
+        <h2>Live signal</h2>
+        <span class="muted" id="signal-receiver"></span>
+      </div>
+      <div class="meter" role="meter" aria-label="Signal level above the noise floor" aria-valuemin="0" aria-valuemax="60" id="signal-meter">
+        <div class="meter-fill" id="meter-fill"></div>
+        <div class="meter-threshold" id="meter-threshold" title="Detection threshold"></div>
+      </div>
+      <div class="meter-scale"><span>floor</span><span id="meter-threshold-label">+8 dB</span><span>+60 dB</span></div>
+      <div class="meter-readout">
+        <span class="meter-num" id="signal-level">--</span><span class="muted">dB over floor</span>
+        <span class="muted meter-sep">·</span>
+        <span class="muted">floor <b class="mono" id="signal-floor">--</b> dB</span>
+        <span class="muted meter-sep">·</span>
+        <span class="muted">peak <b class="mono" id="signal-peak">--</b> dB</span>
+      </div>
+      <div class="onair-list" id="onair-list"><span class="muted">no signal over the threshold right now</span></div>
+    </div>
+    <div class="panel" id="panel-receivers">
+      <div class="panel-head">
+        <h2>Receivers</h2>
+        <button class="linklike" data-goto="scan">scan board</button>
+      </div>
+      <div class="rx-grid" id="rx-grid"><div class="empty">connecting&hellip;</div></div>
+    </div>
     <div class="panel">
       <h2>Spectrum</h2>
       <canvas id="spectrum" height="120" role="img" aria-label="Live spectrum of the monitored receiver"></canvas>
@@ -71,6 +98,13 @@
         <button class="linklike" data-goto="activity">view all</button>
       </div>
       <div class="feed" id="feed-overview"><div class="empty">no traffic seen yet</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Live decodes</h2>
+        <button class="linklike" data-goto="activity">activity</button>
+      </div>
+      <div class="decode-feed" id="decode-feed" role="log" aria-live="polite" aria-label="Decoded payloads"><div class="empty">nothing decoded yet</div></div>
     </div>
     <div class="panel">
       <div class="panel-head">
@@ -135,6 +169,11 @@
     <div id="scan-log" class="cards" aria-live="polite"><div class="empty">waiting for scan events</div></div>
     <h2>Station status</h2>
     <div id="scan-board" class="cards"><div class="empty">scanner offline</div></div><button id="scan-more" class="btn">Load more</button>
+    <div class="dropped-bar" id="dropped-bar" hidden>
+      <button id="dropped-toggle" class="linklike" aria-expanded="false">&#9656; dropped stations (<span id="dropped-count">0</span>)</button>
+      <span class="muted" id="dropped-summary"></span>
+    </div>
+    <div id="scan-dropped" class="cards" hidden></div>
   </section>
 
   <section id="view-stations" class="view" aria-label="Stations">

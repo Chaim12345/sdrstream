@@ -449,6 +449,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/scans/control", s.handleScanControl)
 	mux.HandleFunc("/api/activity.json", s.handleActivity)
 	mux.HandleFunc("/api/spectrum.json", s.handleSpectrum)
+	mux.HandleFunc("/api/live.json", s.handleLive)
 	mux.HandleFunc("/api/stations.json", s.handleStations)
 	mux.HandleFunc("/api/map.json", s.handleMap)
 	mux.HandleFunc("/api/tiles/", s.handleTile)
@@ -917,6 +918,23 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, instance.Activities())
+}
+
+
+// handleLive returns the monitor's point-in-time view: receiver identity,
+// noise floor, peak level and the on-air peaks above the threshold. The
+// live UI polls it every second; available:false means no monitor runs.
+func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	instance := s.monitor
+	s.mu.Unlock()
+	if instance == nil {
+		writeJSON(w, monitor.LiveInfo{Available: false, OnAir: []monitor.OnAirPeak{}, UpdatedAt: time.Now()})
+		return
+	}
+	info := instance.Live()
+	info.Available = true
+	writeJSON(w, info)
 }
 
 // handleSpectrum returns the latest spectrum frame from the monitored

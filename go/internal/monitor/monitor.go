@@ -200,6 +200,57 @@ func (m *Monitor) Spectrum() ([]float64, float64, float64, bool) {
 	return m.spectrum, m.centreHz, m.spanHz, m.spectrumOK
 }
 
+
+// OnAirPeak is a transmission currently visible in the spectrum.
+type OnAirPeak struct {
+	FrequencyHz float64 `json:"frequency_hz"`
+	BandwidthHz float64 `json:"bandwidth_hz"`
+	LevelDB     float64 `json:"level_db"`
+}
+
+// LiveInfo is a point-in-time snapshot of what the monitor sees right now:
+// the receiver identity, the noise floor and the peaks above it.
+type LiveInfo struct {
+	Available    bool        `json:"available"`
+	Name         string      `json:"name"`
+	Label        string      `json:"label,omitempty"`
+	Strategy     string      `json:"strategy"`
+	SpectrumOK   bool        `json:"spectrum_ok"`
+	CentreHz     float64     `json:"centre_hz"`
+	SpanHz       float64     `json:"span_hz"`
+	NoiseFloorDB float64     `json:"noise_floor_db"`
+	PeakDB       float64     `json:"peak_db"`
+	ThresholdDB  float64     `json:"threshold_db"`
+	OnAir        []OnAirPeak `json:"on_air"`
+	UpdatedAt    time.Time   `json:"updated_at"`
+}
+
+// Live snapshots the monitor's current view for the live UI: receiver
+// identity, noise floor, peak level and the peaks above the threshold.
+func (m *Monitor) Live() LiveInfo {
+	m.mu.Lock()
+	bins := append([]float64(nil), m.spectrum...)
+	centre, span, ok := m.centreHz, m.spanHz, m.spectrumOK
+	m.mu.Unlock()
+	info := LiveInfo{
+		Name: m.opts.Name, Label: m.opts.Label, Strategy: m.opts.Strategy,
+		SpectrumOK: ok, CentreHz: centre, SpanHz: span,
+		ThresholdDB: m.opts.ThresholdDB, UpdatedAt: time.Now(),
+		OnAir:       []OnAirPeak{},
+	}
+	if !ok || len(bins) == 0 {
+		return info
+	}
+	ordered := append([]float64(nil), bins...)
+	sort.Float64s(ordered)
+	info.NoiseFloorDB = ordered[len(ordered)/2]
+	info.PeakDB = ordered[len(ordered)-1]
+	for _, p := range m.detect(bins, centre, span) {
+		info.OnAir = append(info.OnAir, OnAirPeak{FrequencyHz: p.frequency, BandwidthHz: p.bandwidth, LevelDB: p.levelDB})
+	}
+	return info
+}
+
 // Run watches the source until the context is cancelled.
 func (m *Monitor) Run(ctx context.Context) error {
 	// Recording and decoding a transmission takes seconds, sometimes a

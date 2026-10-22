@@ -330,3 +330,84 @@ tr:hover td { background: var(--panel-2); }
 .bc-fair { color: var(--warn); }
 .bc-poor { color: var(--bad); }
 #band-conditions { font-size: 12px; margin: 4px 2px 8px; }
+/* ---------- live pulse (feature/ui-live) ---------- */
+/* On-air header pill: bright green, fast pulse while a signal is up. */
+.pill-onair { color: var(--good); border-color: #14532d; background: #06281a; }
+.pill-onair .dot { background: var(--good); animation: pulse 0.9s infinite; box-shadow: 0 0 8px rgba(52,211,153,.9); }
+.pill-onair b { color: var(--good); }
+
+/* Signal meter: level above the noise floor, threshold tick. */
+.meter {
+  position: relative; height: 22px; border-radius: 8px; overflow: hidden;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+.meter-fill {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, #14532d, var(--good) 55%, var(--warn) 82%, var(--bad));
+  transition: width 300ms ease;
+}
+.meter-fill.hot { animation: meterglow 1.2s ease-in-out infinite; }
+@keyframes meterglow { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.35); } }
+.meter-threshold {
+  position: absolute; top: 0; bottom: 0; width: 2px; background: var(--warn);
+  opacity: .9;
+}
+.meter-scale {
+  display: flex; justify-content: space-between;
+  font: 10px var(--mono); color: var(--muted); margin-top: 2px;
+}
+.meter-readout { display: flex; align-items: baseline; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.meter-num { font: 700 26px var(--mono); color: var(--accent); }
+.meter-sep { opacity: .5; }
+.meter-readout b.mono { font-family: var(--mono); color: var(--text); }
+.onair-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; min-height: 22px; align-items: center; }
+.onair-chip {
+  font: 11px var(--mono); color: var(--good);
+  border: 1px solid #14532d; background: #06281a; border-radius: 999px;
+  padding: 2px 10px; animation: pulse 0.9s infinite;
+}
+
+/* Per-receiver status cards. */
+.rx-grid { display: grid; gap: 8px; grid-template-columns: 1fr; }
+@media (min-width: 700px) { .rx-grid { grid-template-columns: 1fr 1fr; } }
+.rx-card {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 12px;
+}
+.rx-card .card-title { display: flex; align-items: center; gap: 8px; }
+.rx-card .rx-state { margin-left: auto; font: 11px var(--mono); color: var(--muted); }
+.rx-card.online { border-color: #14532d; }
+.rx-card.online .rx-state { color: var(--good); }
+.rx-card.onair { border-color: var(--good); box-shadow: 0 0 12px rgba(52,211,153,.25); }
+.rx-card.onair .rx-state { color: var(--good); font-weight: 700; animation: pulse 0.9s infinite; }
+.rx-card.offline .rx-state { color: var(--bad); }
+.rx-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.rx-card.online .rx-dot { background: var(--good); }
+.rx-card.onair .rx-dot, .rx-dot.pulse { background: var(--good); animation: pulse 0.9s infinite; box-shadow: 0 0 8px rgba(52,211,153,.9); }
+.rx-card.offline .rx-dot { background: var(--bad); }
+
+/* Live decode feed: terminal-style stream of decoded payloads. */
+.decode-feed {
+  font: 12px/1.6 var(--mono); max-height: 320px; overflow-y: auto;
+  background: #05080e; border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px;
+}
+.decode-line { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; padding: 2px 0; border-bottom: 1px solid rgba(30,38,55,.5); animation: slidein 250ms ease; }
+.decode-line:last-child { border-bottom: 0; }
+.decode-time { color: var(--muted); flex: none; }
+.decode-mode { flex: none; font-weight: 700; color: var(--accent); }
+.decode-line.data .decode-mode { color: var(--data); }
+.decode-line.voice .decode-mode { color: var(--voice); }
+.decode-line.cw .decode-mode { color: var(--warn); }
+.decode-freq { color: var(--muted); flex: none; }
+.decode-text { color: var(--text); word-break: break-word; white-space: pre-wrap; }
+
+/* Dropped stations section in the scan view. */
+.dropped-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.scan-state.dropped { background: #3a1420; color: var(--bad); border: 1px solid #5b2233; }
+.card.dropped { opacity: .75; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pill-onair .dot, .onair-chip, .rx-dot.pulse, .rx-card.onair .rx-state, .meter-fill.hot { animation: none; }
+  .meter-fill { transition: none; }
+}
