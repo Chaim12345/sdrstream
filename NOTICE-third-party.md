@@ -21,12 +21,19 @@ license. See `LICENSE` for the GNU Affero General Public License.
   GPL-2.0-or-later. This is explicitly GPL-2.0-or-later, not GPL-2.0-only.
   Source: https://github.com/EliasOenal/multimon-ng .
 
-## LGPL-derived component
+## Protocol specifications and independently implemented ACARS
 
-- `go/internal/decode/acars.go`: adapted from sdr-acars by jasonherald,
-  which reimplemented ACARS demodulation by Thierry Leconte, LGPL-2.0.
-  Source: https://github.com/jasonherald/sdr-acars . No ACARS recording is
-  included in this repository.
+- `go/internal/decode/acars.go`: the MSK demodulator was rewritten as an
+  independent coherent receiver. Its framing and field extraction follow the
+  publicly documented ARINC 618 / ACARS protocol; protocol facts were checked
+  against https://gophertrunk.org/acars.html and J.-M. Friedt, “ACARS: Aircraft
+  Communications Addressing and Reporting System,”
+  https://jmfriedt.free.fr/sdra_acars.pdf . The retained utility/wrapper pieces
+  are `ACARSDecode` field extraction, `ReadWAVChannels`, `acarsLabel`,
+  `acarsAck`, `acarsCRCUpdate`, and the protocol doc comment. These cover
+  sample input, decoding orchestration, message field mapping, and the
+  specified CRC calculation; no LGPL-only MSK demodulator or copied ACARS
+  implementation is included. No ACARS recording is distributed in this tree.
 
 ## MIT and Apache-2.0 components
 
