@@ -713,7 +713,7 @@ go run ./cmd/sdrstream web --host 127.0.0.1 --port 8000 \
   --captures-dir ../captures \
   --scan-start-connections 12 --scan-max-connections 12 --scan-ramp 12 \
   --scan-open-directory --scan-kiwi-directory \
-  --scan-hf-server https://websdr.ewi.utwente.nl:8901 --scan-wspr \
+  --scan-hf-server http://websdr.fi:8080 --scan-wspr \
   --feeds-lat 31.8 --feeds-lon 35
 ```
 
