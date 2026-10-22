@@ -237,6 +237,16 @@ go run ./cmd/sdrstream decode -mode aprs capture.wav   # one mode
 | `pocsag` | pager pages (numeric and alphanumeric) | 1200/2400 baud FSK, BCH |
 | `eas` | US Emergency Alert System headers | 520.83 baud AFSK, 8N1 |
 | `navtex` | maritime navigational warnings | SITOR-B FEC, CCIR 476 |
+| `hfdl` | HF datalink: aircraft logons, position reports, ACARS text | 1800 baud BPSK/QPSK/8PSK, rate 1/2 or 1/4 Viterbi, FCS |
+
+HFDL (`go/internal/hfdl`) is ported from dumphfdl and libacars, see
+`NOTICE-third-party.md`. Input is USB audio with the channel centred at
+1440 Hz. Only frames whose frame check sequence verifies are printed. It is
+verified on three real public recordings (300, 600 and 1200 bps, from
+signals.taunus.de, run the tests with `HFDL_SAMPLES=<dir>`). Not verified: 1800
+bps 8PSK (no public sample found). Not ported: the LMS equalizer (weak or
+multipath signals decode worse than dumphfdl), ACARS multi-block reassembly,
+system table reassembly, and ADS-C/CPDLC/MIAM application decoding.
 
 Each decoder has a reference test built from a generated fixture, so the suite
 catches regressions in the bit-level work. The EAS decoder uses the sixteen
