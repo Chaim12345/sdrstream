@@ -1530,9 +1530,11 @@ func cmdWeb(args []string) error {
 		guard := newLoadGuard(*scanGuardWindow, *scanGuardDropFor, *scanGuardRestoreFor, *scanGuardDropRatio, *scanGuardRestoreRatio, *scanGuardMaxRSS<<20, *scanGuardMaxFDs, *scanGuardMaxGoroutines)
 		scannerCaptureDir = *capturesDir
 		go runParallelScan(ctx, server, strings.Split(*scanStations, ","), *monitorMultimon, *monitorDirewolf, config, guard)
-		if *scanHFServer != "" {
-			go runDirectoryHFScan(ctx, server, *scanHFServer, *scanWSPR, *capturesDir)
-		}
+	}
+	// The dedicated HF capture schedule is independent of directory scanning;
+	// an explicit --scan-hf-server must work even when scan-stations is empty.
+	if *scanHFServer != "" {
+		go runDirectoryHFScan(ctx, server, *scanHFServer, *scanWSPR, *capturesDir)
 	}
 	if *monitorServer != "" {
 		monitorCtx, cancel := context.WithCancel(ctx)
