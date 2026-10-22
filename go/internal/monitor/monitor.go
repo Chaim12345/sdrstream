@@ -52,6 +52,10 @@ type Activity struct {
 	Source             string     `json:"source"`
 	DurationSec        float64    `json:"duration_sec"`
 	AudioPath          string     `json:"audio_path,omitempty"`
+	Confidence         float64    `json:"confidence,omitempty"`
+	Language           string     `json:"language,omitempty"`
+	ASRModel           string     `json:"asr_model,omitempty"`
+	ASRFallback        bool       `json:"asr_fallback,omitempty"`
 }
 
 // Options configures a monitor.
@@ -761,15 +765,12 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 			}
 			continue
 		}
-		kind, modeName, detail := m.classify(ctx, samples, rate, work.bandwidth)
+		kind, modeName, detail, asr := m.classify(ctx, samples, rate, work.bandwidth)
 		var imageData []byte
 		if kind == "sstv" && bestImage == nil {
-			// The decode is expensive; one frame per activity is enough.
 			imageData, _ = decode.SSTVImage(samples, rate)
-			if len(imageData) > 0 {
-				if err := verify.Live("sstv", "sstv", "", imageData); err != nil {
-					imageData = nil
-				}
+			if len(imageData) > 0 && verify.Live("sstv", "sstv", "", imageData) != nil {
+				imageData = nil
 			}
 		}
 		// Mode is the modulation or decoder, never a verdict; when no
@@ -783,6 +784,7 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 			FrequencyHz: work.frequency, BandwidthHz: work.bandwidth, LevelDB: work.levelDB,
 			Kind: kind, Mode: modeName, Detail: detail, Source: m.opts.Name, Label: m.opts.Label,
 			DurationSec: float64(len(samples)) / float64(rate),
+			Confidence:  asr.Confidence, Language: asr.Language, ASRModel: asr.Model, ASRFallback: asr.Fallback, VerificationAnchor: activity.VerificationAnchor,
 		}
 		if kind == "noise" || kind == "silence" || kind == "unknown" {
 			continue
@@ -836,7 +838,7 @@ func (m *Monitor) publish(activity Activity) {
 // The data decoders run first: a successful AX.25, PSK31 or paging decode
 // is proof that the signal was data, while a "voice" verdict from the
 // spectrum alone is only a guess.
-func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, bandwidthHz float64) (kind, mode, detail string) {
+func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, bandwidthHz float64) (kind, mode, detail string, asr voice.Result) {
 	// The sweep path never measures the channel width, so the narrow
 	// decoders would otherwise fire on every loud signal. Measure the
 	// signal itself instead of trusting a zero that means "unknown".
@@ -852,55 +854,59 @@ func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, ban
 	concentrated := hit.Kind == "data" || hit.Kind == "cw"
 	if !modulated && !concentrated {
 		if hit.Kind == "silence" {
-			return "silence", "", ""
+			return "silence", "", "", asr
 		}
-		return "noise", "", "no signal above the noise floor"
+		return "noise", "", "no signal above the noise floor", asr
 	}
 	if m.opts.Strategy != "broadcast" {
 		if mode, detail, ok := m.decodeData(ctx, samples, rate, bandwidthHz); ok {
 			if mode == "morse" {
-				return "cw", "cw", detail
+				return "cw", "cw", detail, asr
 			}
-			return "data", mode, detail
+			return "data", mode, detail, asr
 		}
 	}
 	if !modulated {
-		return "carrier", "", "steady signal, no modulation"
+		return "carrier", "", "steady signal, no modulation", asr
 	}
 	// A very narrow signal is a carrier or a keyed tone, not a voice.
 	if bandwidthHz > 0 && bandwidthHz < 2500 && hit.Kind != "silence" {
-		return "carrier", "", fmt.Sprintf("%.0f kHz wide", bandwidthHz/1e3)
+		return "carrier", "", fmt.Sprintf("%.0f kHz wide", bandwidthHz/1e3), asr
 	}
 	switch hit.Kind {
 	case "voice", "data", "cw":
-		segments := voice.SpeechActivity(samples, rate)
+		segments := voice.DetectSpeech(samples, rate, voice.VADOptions{})
 		if len(segments) == 0 {
 			m.opts.Logf("voice: signal present but no speech detected")
-			return hit.Kind, "", ""
+			return hit.Kind, "", "no speech detected", asr
 		}
-		if m.opts.Voice && (voice.Available(m.opts.VoiceOptions) || voice.NIMAvailable(m.opts.VoiceNIMOptions)) {
-			transcript, err := voice.TranscribeBest(ctx, samples, rate, m.opts.VoiceOptions, m.opts.VoiceNIMOptions)
+		if m.opts.Voice {
+			var transcript voice.Transcript
+			var err error
+			if voice.NIMAvailable(m.opts.VoiceNIMOptions) || voice.Available(m.opts.VoiceOptions) {
+				transcript, err = voice.TranscribeBest(ctx, samples, rate, m.opts.VoiceOptions, m.opts.VoiceNIMOptions)
+			}
 			if err == nil && transcript.Text != "" {
 				verdict := voice.GuardTranscript(samples, rate, transcript.Text)
 				if verdict.Rejected {
 					m.opts.Logf("voice: transcript dropped: %s", verdict.Reason)
-					return "voice", "speech", ""
+					return "voice", "speech", "", asr
 				}
-				return "voice", "speech", verdict.Text
+				return "voice", "speech", verdict.Text, asr
 			}
 		}
 		m.opts.Logf("voice: no backend or empty transcript; %d speech segment(s), %.1f s", len(segments), segments[0].End-segments[0].Start)
-		return "voice", "speech", ""
+		return "voice", "speech", "", asr
 	case "silence":
-		return "silence", "", ""
+		return "silence", "", "", asr
 	default:
-		return hit.Kind, "", ""
+		return hit.Kind, "", "", asr
 	}
 }
 
 // ClassifyForScan exposes the monitor's existing receive-only classifiers to the bounded multi-station scanner.
 func (m *Monitor) ClassifyForScan(ctx context.Context, samples []float64, rate int, bandwidthHz float64) (kind, mode, detail string, ok bool) {
-	kind, mode, detail = m.classify(ctx, samples, rate, bandwidthHz)
+	kind, mode, detail, _ = m.classify(ctx, samples, rate, bandwidthHz)
 	return kind, mode, detail, detail != "" || kind == "voice" || kind == "sstv"
 }
 

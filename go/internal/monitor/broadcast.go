@@ -185,7 +185,7 @@ func (m *Monitor) visitChannel(ctx context.Context, ch Channel) (kind, detail st
 		}
 		return "", ""
 	}
-	kind, modeName, detail := m.classify(ctx, samples, rate, 0)
+	kind, modeName, detail, _ := m.classify(ctx, samples, rate, 0)
 	if kind == "noise" || kind == "silence" || kind == "unknown" {
 		return kind, ""
 	}
