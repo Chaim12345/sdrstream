@@ -1720,6 +1720,16 @@ func cmdDecode(args []string) error {
 				} else {
 					for _, p := range packets {
 						fmt.Printf("   packet: %s\n", p.String())
+						if a := p.APRS(); a.HasPos {
+							fmt.Printf("           aprs %s: %.5f, %.5f", a.Kind, a.Lat, a.Lon)
+							if a.HasAlt {
+								fmt.Printf(" alt %.0f m", a.Altitude)
+							}
+							if a.Speed > 0 {
+								fmt.Printf(" %.0f km/h @ %d", a.Speed, a.Course)
+							}
+							fmt.Println()
+						}
 					}
 				}
 			}

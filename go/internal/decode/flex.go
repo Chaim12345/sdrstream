@@ -24,7 +24,7 @@ type FlexMessage struct {
 	Capcode  int64
 	Cycle    int
 	Frame    int
-	Type     int // vector type, 5 = alphanumeric
+	Type     int  // vector type, 5 = alphanumeric
 	Fragment byte // 'K' complete, 'F' first/continued, 'C' final fragment
 	Text     string
 }

@@ -232,7 +232,8 @@ type AX25 struct {
 	Repeaters   []string
 	Control     byte
 	PID         byte
-	Info        string
+	Info        string // printable rendering of the payload
+	Payload     []byte // raw information field, needed for Mic-E
 }
 
 // Address renders one AX.25 callsign with its SSID.
@@ -288,6 +289,7 @@ func parseAX25(frame []byte) (AX25, bool) {
 		info = info[:len(info)-2]
 	}
 	out.Info = printable(info)
+	out.Payload = append([]byte(nil), info...)
 	return out, true
 }
 
@@ -445,4 +447,13 @@ func ensembleFrames(samples []float64, rate int) [][]byte {
 		}
 	}
 	return out
+}
+
+// APRS parses the packet's information field as APRS.
+func (f AX25) APRS() APRSInfo {
+	raw := string(f.Payload)
+	if raw == "" {
+		raw = f.Info
+	}
+	return ParseAPRS(f.Destination, raw)
 }
