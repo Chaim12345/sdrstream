@@ -142,4 +142,3 @@ func TestHealthAllKindFilter(t *testing.T) {
 		t.Fatalf("kind filter returned %+v", results)
 	}
 }
-
