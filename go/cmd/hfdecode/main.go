@@ -43,14 +43,18 @@ func main() {
 			fmt.Printf("station=%s subject=%s serial=%s\n%s\n---\n", m.Station, m.Subject, m.Serial, m.Text)
 		}
 	case "wefax":
-		pngData, err := decode.WEFAXImage(samples, rate, 120, 576)
+		pngData, rep, err := decode.WEFAXImageDetailed(samples, rate, 120, 576)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("wefax: %v (report %+v)", err, rep)
 		}
 		out := path + ".png"
 		if err := os.WriteFile(out, pngData, 0o644); err != nil {
 			log.Fatal(err)
 		}
+		fmt.Printf("tones %.0f/%.0f Hz, pair %.2f, anticorr %.2f, wedge %.2f at %.1fs\n",
+			rep.BlackHz, rep.WhiteHz, rep.PairConfidence, rep.AntiCorrelation, rep.WedgeContrast, rep.PhasingStartSec)
+		fmt.Printf("clock %.1f samples/line (drift %+.0f ppm), %d lines (%d phasing), %dx%d\n",
+			rep.SamplesPerLine, rep.DriftPPM, rep.Lines, rep.PhasingLines, rep.Width, rep.Height)
 		fmt.Printf("wrote %s (%d bytes)\n", out, len(pngData))
 	case "sstv":
 		png, err := decode.SSTVImage(samples, rate)

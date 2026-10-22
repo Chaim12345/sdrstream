@@ -99,6 +99,14 @@ func TestSSTVImageScottieS1(t *testing.T) {
 	checkPattern(t, decodeFixture(t, "sstv_scottie_s1"), 320, 256, 32)
 }
 
+func TestSSTVImageScottieS2(t *testing.T) {
+	checkPattern(t, decodeFixture(t, "sstv_scottie_s2"), 320, 256, 32)
+}
+
+func TestSSTVImageScottieDX(t *testing.T) {
+	checkPattern(t, decodeFixture(t, "sstv_scottie_dx"), 320, 256, 32)
+}
+
 func TestSSTVImageRobot36(t *testing.T) {
 	checkPattern(t, decodeFixture(t, "sstv_robot36"), 320, 240, 32)
 }
@@ -125,6 +133,8 @@ func TestSSTVDetectFixtures(t *testing.T) {
 		{"sstv_martin_m2", 0x28, "Martin M2"},
 		{"sstv_martin_m2_impaired", 0x28, "Martin M2"},
 		{"sstv_scottie_s1", 0x3C, "Scottie S1"},
+		{"sstv_scottie_s2", 0x38, "Scottie S2"},
+		{"sstv_scottie_dx", 0x4C, "Scottie DX"},
 		{"sstv_robot36", 0x08, "Robot 36"},
 		{"sstv_robot36_impaired", 0x08, "Robot 36"},
 	} {
