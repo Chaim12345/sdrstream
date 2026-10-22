@@ -71,3 +71,34 @@ recordings under `go/internal/decode/testdata` are third-party material. Their
 sources and open licence questions are in `tests/data/NOTICE`; `ft8_lib.LICENSE`
 covers the ft8_lib port only. The test harness fetches
 recordings when explicitly requested.
+
+## Open licence decisions (pending owner, 2026-10-22)
+
+QA-prepared summary of the three licence questions that need an owner
+decision. Nothing in this section changes shipped text; it only records the
+options so the decision can be applied in one commit each.
+
+1. **WebSDR companding table** (`go/internal/vocoder/table.go`,
+   `sdrstream/_websdr_table.py`). The 256-entry table is copied from the
+   WebSDR HTML5 client, copyright 2013-2025 PA3FWM, all rights reserved;
+   redistribution permission has NOT been obtained.
+   Options: (a) email PA3FWM asking for permission and cite it here;
+   (b) replace the table with a computed ITU G.711 A-law table and handle
+   the 32 differing entries as a documented compatibility delta;
+   (c) clean-room re-measure the curve from a live WebSDR stream.
+   Until decided, the table stays with its warning notice.
+
+2. **Two off-air WAV fixtures** (`tests/data/real_aprs_wa8lmf_30s.wav` from
+   the WA8LMF TNC Test CD, and `tests/data/real_pocsag_1200_taunus.wav` from
+   signals.taunus.de). Neither source states a redistribution licence (see
+   `tests/data/NOTICE` TODOs).
+   Options per file: (a) ask the author/site owner for explicit
+   redistribution permission; (b) replace with a self-recorded or synthetic
+   clip; (c) drop the fixture and fetch it in the test harness instead of
+   committing it.
+
+3. **Project copyright line.** The only project-level line today is
+   `README.md`: "Copyright (C) 2026 Chaim12345 and sdrstream contributors."
+   Decide whether that exact form is the canonical one; once confirmed it
+   should also head this NOTICE file and any source headers, replacing the
+   handle with a legal name if the owner prefers.
