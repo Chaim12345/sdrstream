@@ -91,6 +91,7 @@ type Info struct {
 // Client is one live KiwiSDR connection.
 type Client struct {
 	base    string // host[:port]
+	secure  bool   // listing URL was https, so dial wss
 	opts    Options
 	ws      *websocket.Conn
 	adpcm   adpcmState
@@ -98,17 +99,20 @@ type Client struct {
 	info    Info
 	curFreq int64
 	curMode string
+	refused error // set by handleText when the server refuses the session
 }
 
 // New parses "host:port" or any http(s)/ws(s) URL the directory lists.
 func New(server string, opts Options) (*Client, error) {
 	base := server
+	secure := false
 	if strings.Contains(server, "://") {
 		u, err := url.Parse(server)
 		if err != nil {
 			return nil, err
 		}
 		base = u.Host
+		secure = u.Scheme == "https" || u.Scheme == "wss"
 	}
 	if base == "" {
 		return nil, fmt.Errorf("kiwisdr: empty host")
@@ -116,7 +120,7 @@ func New(server string, opts Options) (*Client, error) {
 	if opts.IdleTimeout == 0 {
 		opts.IdleTimeout = 30 * time.Second
 	}
-	return &Client{base: base, opts: opts, rate: 12000}, nil
+	return &Client{base: base, secure: secure, opts: opts, rate: 12000}, nil
 }
 
 // Connect opens the stream and starts audio flowing. It does not tune; call
@@ -127,7 +131,11 @@ func (c *Client) Connect(ctx context.Context) error {
 	if c.opts.WSPath == "/ws/kiwi" {
 		path = "/ws/kiwi"
 	}
-	uri := fmt.Sprintf("ws://%s%s/%d/SND", c.base, path, timestamp)
+	scheme := "ws"
+	if c.secure {
+		scheme = "wss"
+	}
+	uri := fmt.Sprintf("%s://%s%s/%d/SND", scheme, c.base, path, timestamp)
 	dialer := websocket.Dialer{HandshakeTimeout: c.opts.OpenTimeout}
 	ws, response, err := dialer.DialContext(ctx, uri, nil)
 	if err != nil {
@@ -214,6 +222,11 @@ func (c *Client) Record(ctx context.Context, duration time.Duration) ([]int16, i
 	var out []int16
 	rate := 12000
 	for {
+		if c.refused != nil {
+			err := c.refused
+			c.refused = nil
+			return out, rate, err
+		}
 		select {
 		case <-ctx.Done():
 			return out, rate, ctx.Err()
@@ -299,6 +312,16 @@ func (c *Client) handleText(text string) {
 			}
 		case "version_maj", "version_min":
 			// version messages land as separate pairs; keep both and join later.
+		case "too_busy":
+			// "too_busy=N": all N receiver slots are taken.
+			c.refused = &BusyError{Host: c.base, Slots: atoiOr(value, 0)}
+		case "badp":
+			// badp=0 means the password was accepted; only 1 is a refusal.
+			if value == "1" {
+				c.refused = fmt.Errorf("%w: %s", ErrBadPassword, c.base)
+			}
+		case "down":
+			c.refused = fmt.Errorf("%w: %s", ErrDown, c.base)
 		case "rx_chans":
 			if n, err := strconv.Atoi(value); err == nil {
 				c.info.RXChannels = n
