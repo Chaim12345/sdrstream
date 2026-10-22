@@ -1676,6 +1676,8 @@ func cmdWeb(args []string) error {
 			log.Printf("scan: health pool on, holding %d rotating receiver connection(s)", pool.size)
 		}
 		go runParallelScan(ctx, server, roster, *monitorMultimon, *monitorDirewolf, config, guard)
+	} else if strings.TrimSpace(*scanStations) != "" {
+		log.Printf("scan: ROSTER EMPTY: --scan-stations produced no usable entries (each needs a Kind| prefix, e.g. KiwiSDR|host:8073); scanner not started")
 	}
 	// The dedicated HF capture schedule is independent of directory scanning.
 	if *scanHFServer != "" {
@@ -2236,6 +2238,10 @@ func appendUsableKiwiStations(existing []string, candidates []kiwisdr.Receiver) 
 	return existing
 }
 
+// scanEmptyRoster makes an empty scan roster loud; the scan loop re-enters
+// every 20 s, so without throttling the lines would drown the log.
+var scanEmptyRoster = newEmptyRosterAlerter(log.Printf)
+
 func runParallelScan(ctx context.Context, server *web.Server, roster *scanRoster, multimonPath, direwolfPath string, cfg scanConfig, guard *loadGuard) {
 	for ctx.Err() == nil {
 		runParallelScanOnce(ctx, server, roster, multimonPath, direwolfPath, cfg, guard)
@@ -2277,6 +2283,7 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 		unique = append(unique, kind+"|"+host)
 	}
 	if len(unique) == 0 {
+		scanEmptyRoster.empty("no stations", fmt.Sprintf("roster snapshot yielded 0 usable Kind|host entries from %d raw entries; check --scan-stations kinds and the directory refresh", len(receivers)))
 		return
 	}
 	blockMu.Lock()
@@ -2293,17 +2300,21 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 		}
 		activeUnique = append(activeUnique, entry)
 	}
+	dropped := len(unique) - len(activeUnique)
 	unique = activeUnique
 	if len(unique) == 0 {
+		scanEmptyRoster.empty("all stations blocklisted", fmt.Sprintf("all %d roster stations are on the blocklist", dropped))
 		return
 	}
 	rosterAll := unique
 	if scanHealth != nil {
 		unique = scanHealth.pickStations(unique)
 		if len(unique) == 0 {
+			scanEmptyRoster.empty("health pool picked nothing", fmt.Sprintf("0 of %d roster stations eligible; every receiver may be in failure cooldown", len(rosterAll)))
 			return
 		}
 	}
+	scanEmptyRoster.populated(len(unique))
 	steps := cfg.ramp
 	var current atomic.Int64
 	current.Store(int64(min(cfg.maximum, cfg.start)))
@@ -2384,6 +2395,11 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 				}
 				host := parts[1]
 				if activeStations[host] || time.Now().Before(backoffUntil[host]) {
+					continue
+				}
+				// A host reserved for a beacon measurement stays idle: the
+				// prober must never be a second connection during a capture.
+				if scanHealth != nil && !scanHealth.tryStartVisit(host) {
 					continue
 				}
 				activeStations[host] = true

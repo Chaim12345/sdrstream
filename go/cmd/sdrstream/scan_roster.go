@@ -305,3 +305,49 @@ func resetKiwiRotation(host string) {
 	kiwiCursorMu.Unlock()
 	persistRotation()
 }
+
+// emptyRosterAlerter makes an empty scan roster loud without flooding the
+// log: the scan loop re-enters every 20 s, so the empty state is logged at
+// most once per emptyRosterLogInterval, plus once when the roster recovers.
+type emptyRosterAlerter struct {
+	mu       sync.Mutex
+	logf     func(string, ...interface{})
+	now      func() time.Time
+	lastLog  time.Time
+	wasEmpty bool
+}
+
+const emptyRosterLogInterval = 10 * time.Minute
+
+func newEmptyRosterAlerter(logf func(string, ...interface{})) *emptyRosterAlerter {
+	if logf == nil {
+		logf = func(string, ...interface{}) {}
+	}
+	return &emptyRosterAlerter{logf: logf, now: time.Now}
+}
+
+// empty reports one roster-empty pass. reason names where the roster ran
+// dry; detail says what each stage saw.
+func (a *emptyRosterAlerter) empty(reason, detail string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := a.now()
+	if a.wasEmpty && now.Sub(a.lastLog) < emptyRosterLogInterval {
+		return
+	}
+	a.wasEmpty = true
+	a.lastLog = now
+	a.logf("scan: ROSTER EMPTY (%s): %s; nothing will scan until this changes", reason, detail)
+}
+
+// populated reports a pass with stations; after an empty stretch it logs
+// the recovery once.
+func (a *emptyRosterAlerter) populated(n int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.wasEmpty {
+		return
+	}
+	a.wasEmpty = false
+	a.logf("scan: roster populated again: %d station(s) to scan", n)
+}

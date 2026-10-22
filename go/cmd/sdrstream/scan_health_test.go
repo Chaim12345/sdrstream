@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,7 +179,7 @@ func TestPickBeaconCandidatesPrefersIdleThenPickedIdle(t *testing.T) {
 		"KiwiSDR|b.example:8073",
 		"WebSDR|http://c.example:8901/", // wrong kind: never a beacon candidate
 	}
-	got := p.pickBeaconCandidates(entries, map[string]time.Time{}, time.Now())
+	got := p.pickBeaconCandidates(entries, map[string]time.Time{}, time.Now()).candidates
 	if len(got) != 2 {
 		t.Fatalf("candidates = %v, want a (idle) and b (picked, no visit)", got)
 	}
@@ -198,7 +201,7 @@ func TestPickBeaconCandidatesCoversPickedOnlyRoster(t *testing.T) {
 	p.picks = map[string]bool{"a.example:8073": true, "b.example:8073": true}
 	p.mu.Unlock()
 	entries := []string{"KiwiSDR|a.example:8073", "KiwiSDR|b.example:8073"}
-	got := p.pickBeaconCandidates(entries, map[string]time.Time{}, time.Now())
+	got := p.pickBeaconCandidates(entries, map[string]time.Time{}, time.Now()).candidates
 	if len(got) != 2 {
 		t.Fatalf("picked-only roster must still be measurable, got %v", got)
 	}
@@ -206,17 +209,25 @@ func TestPickBeaconCandidatesCoversPickedOnlyRoster(t *testing.T) {
 	p.mu.Lock()
 	p.visits["a.example:8073"] = true
 	p.mu.Unlock()
-	got = p.pickBeaconCandidates(entries, map[string]time.Time{}, time.Now())
+	plan := p.pickBeaconCandidates(entries, map[string]time.Time{}, time.Now())
+	got = plan.candidates
 	if len(got) != 1 || got[0].host != "b.example:8073" {
-		t.Fatalf("in-visit member must be skipped, got %v", got)
+		t.Fatalf("in-visit member must not be a candidate, got %v", got)
+	}
+	if len(plan.inVisit) != 1 || plan.inVisit[0].host != "a.example:8073" {
+		t.Fatalf("in-visit member must be reported for reservation, got %v", plan.inVisit)
 	}
 	// A fresh reading makes a host due-never for beaconSNRStale.
 	fresh := map[string]time.Time{"b.example:8073": time.Now()}
 	p.mu.Lock()
 	delete(p.visits, "a.example:8073")
 	p.mu.Unlock()
-	if got = p.pickBeaconCandidates(entries, fresh, time.Now()); len(got) != 1 || got[0].host != "a.example:8073" {
+	plan = p.pickBeaconCandidates(entries, fresh, time.Now())
+	if got = plan.candidates; len(got) != 1 || got[0].host != "a.example:8073" {
 		t.Fatalf("fresh reading must be skipped, got %v", got)
+	}
+	if plan.fresh != 1 {
+		t.Fatalf("fresh count = %d, want 1", plan.fresh)
 	}
 }
 
@@ -236,5 +247,137 @@ func TestObserveHooksTrackVisits(t *testing.T) {
 	p.mu.Unlock()
 	if marked {
 		t.Fatal("observeOutcome must clear the visit mark")
+	}
+}
+
+// stubBeaconNetwork swaps the prober's network calls for fakes.
+func stubBeaconNetwork(t *testing.T, preflight func(host string) kiwisdr.Status, measure func(host string) (float64, error)) {
+	t.Helper()
+	oldPre, oldMeas := beaconPreflight, beaconMeasure
+	t.Cleanup(func() { beaconPreflight, beaconMeasure = oldPre, oldMeas })
+	beaconPreflight = func(_ context.Context, host string) kiwisdr.Status { return preflight(host) }
+	beaconMeasure = func(_ context.Context, host string, _ kiwisdr.BeaconTarget, _ time.Duration, _ kiwisdr.Options) (float64, error) {
+		return measure(host)
+	}
+}
+
+func TestProbePassReservesMidVisitHostThenMeasures(t *testing.T) {
+	p := testPool(t, 1)
+	var logs []string
+	p.logf = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+	var measured []string
+	stubBeaconNetwork(t,
+		func(host string) kiwisdr.Status {
+			return kiwisdr.Status{Verdict: kiwisdr.VerdictOK, Latency: 100 * time.Millisecond}
+		},
+		func(host string) (float64, error) { measured = append(measured, host); return 17.5, nil })
+	roster := newScanRoster(nil)
+	roster.AddManual("KiwiSDR|a.example:8073")
+	// The pool covers the whole roster and the one host is mid-visit: QA's
+	// steady state, in which no measurement ever landed.
+	p.mu.Lock()
+	p.picks = map[string]bool{"a.example:8073": true}
+	p.visits["a.example:8073"] = true
+	p.mu.Unlock()
+	if retry := p.probeOneIdleBeacon(context.Background(), roster); !retry {
+		t.Fatal("a due mid-visit host must schedule a retry")
+	}
+	if len(measured) != 0 {
+		t.Fatal("must never measure during a visit")
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "reserved a.example:8073") {
+		t.Fatalf("pass must log the reservation, got:\n%s", joined)
+	}
+	// While reserved, the dispatcher refuses to start a new visit.
+	if p.tryStartVisit("a.example:8073") {
+		t.Fatal("reserved host must not be dispatched")
+	}
+	// The visit ends; the next pass measures in the quiet window.
+	p.mu.Lock()
+	delete(p.visits, "a.example:8073")
+	p.mu.Unlock()
+	if retry := p.probeOneIdleBeacon(context.Background(), roster); retry {
+		t.Fatal("the measurement should complete without another retry")
+	}
+	if len(measured) != 1 || measured[0] != "a.example:8073" {
+		t.Fatalf("measured = %v, want the reserved host", measured)
+	}
+	rec := p.table.Snapshot()[0]
+	if rec.BeaconMeasuredAt.IsZero() || rec.BeaconSNRdB != 17.5 {
+		t.Fatalf("beacon reading did not land: %+v", rec)
+	}
+	// The reservation is released so scanning resumes.
+	if !p.tryStartVisit("a.example:8073") {
+		t.Fatal("reservation must be released after the measurement")
+	}
+}
+
+func TestProbePassLogsFreshAndEmptyRoster(t *testing.T) {
+	p := testPool(t, 3)
+	var logs []string
+	p.logf = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+	p.table.ObserveBeaconSNR("a.example:8073", "WWV/BPM/RWM 10 MHz", 20)
+	roster := newScanRoster(nil)
+	roster.AddManual("KiwiSDR|a.example:8073")
+	if retry := p.probeOneIdleBeacon(context.Background(), roster); retry {
+		t.Fatal("a fresh roster needs no retry")
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "beacon probe pass: 1 KiwiSDR roster entries: 1 fresh, none due") {
+		t.Fatalf("pass summary missing, got:\n%s", joined)
+	}
+	logs = nil
+	p.probeOneIdleBeacon(context.Background(), nil)
+	if !strings.Contains(strings.Join(logs, "\n"), "no roster") {
+		t.Fatalf("nil roster must be logged, got %v", logs)
+	}
+}
+
+func TestProbePassPreflightSkipIsLoggedAndNextTried(t *testing.T) {
+	p := testPool(t, 3)
+	var logs []string
+	p.logf = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+	var measured []string
+	stubBeaconNetwork(t,
+		func(host string) kiwisdr.Status {
+			if strings.HasPrefix(host, "busy.") {
+				return kiwisdr.Status{Verdict: kiwisdr.VerdictBusy, Err: "users 4/4"}
+			}
+			return kiwisdr.Status{Verdict: kiwisdr.VerdictOK}
+		},
+		func(host string) (float64, error) { measured = append(measured, host); return 9, nil })
+	roster := newScanRoster(nil)
+	roster.AddManual("KiwiSDR|busy.example:8073", "KiwiSDR|free.example:8073")
+	p.probeOneIdleBeacon(context.Background(), roster)
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "beacon busy.example:8073 skipped: preflight verdict busy: users 4/4") {
+		t.Fatalf("preflight skip must be logged, got:\n%s", joined)
+	}
+	if len(measured) != 1 || measured[0] != "free.example:8073" {
+		t.Fatalf("the free candidate should be measured, got %v", measured)
+	}
+}
+
+func TestTryStartVisitHonoursReservation(t *testing.T) {
+	p := testPool(t, 1)
+	if !p.tryStartVisit("http://a.example:8073/") {
+		t.Fatal("unreserved host must dispatch")
+	}
+	p.observeOutcome("a.example:8073", scanOutcome{})
+	p.reserveForBeacon("a.example:8073", time.Now())
+	if p.tryStartVisit("a.example:8073") {
+		t.Fatal("reserved host must not dispatch")
+	}
+	// An expired reservation no longer blocks.
+	p.reserveForBeacon("a.example:8073", time.Now().Add(-2*beaconReserveWindow))
+	if !p.tryStartVisit("a.example:8073") {
+		t.Fatal("expired reservation must not dispatch-block")
+	}
+	p.observeOutcome("a.example:8073", scanOutcome{})
+	p.reserveForBeacon("a.example:8073", time.Now())
+	p.releaseBeacon("a.example:8073")
+	if !p.tryStartVisit("a.example:8073") {
+		t.Fatal("released reservation must not dispatch-block")
 	}
 }

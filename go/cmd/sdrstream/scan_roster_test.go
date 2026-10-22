@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/decode"
 )
@@ -153,5 +154,31 @@ func TestAddManualRejectsEmptyHostLoudly(t *testing.T) {
 	}
 	if len(logs) != 2 {
 		t.Fatalf("want 2 log lines (empty host drop, empty kind guess), got %v", logs)
+	}
+}
+
+func TestEmptyRosterAlerterRateLimits(t *testing.T) {
+	var logs []string
+	a := newEmptyRosterAlerter(func(f string, args ...interface{}) { logs = append(logs, fmt.Sprintf(f, args...)) })
+	base := time.Now()
+	a.now = func() time.Time { return base }
+	a.empty("no stations", "detail one")
+	a.empty("no stations", "detail two") // same stretch: suppressed
+	if len(logs) != 1 || !strings.Contains(logs[0], "ROSTER EMPTY (no stations): detail one") {
+		t.Fatalf("first empty pass must log once, got %v", logs)
+	}
+	a.populated(3)
+	a.populated(3) // recovery logs once
+	if len(logs) != 2 || !strings.Contains(logs[1], "roster populated again: 3") {
+		t.Fatalf("recovery must log once, got %v", logs)
+	}
+	a.empty("no stations", "detail three") // new stretch logs immediately
+	if len(logs) != 3 {
+		t.Fatalf("a new empty stretch must log, got %v", logs)
+	}
+	a.now = func() time.Time { return base.Add(emptyRosterLogInterval + time.Minute) }
+	a.empty("no stations", "detail four") // long-empty reminder
+	if len(logs) != 4 {
+		t.Fatalf("the reminder after the interval must log, got %v", logs)
 	}
 }
