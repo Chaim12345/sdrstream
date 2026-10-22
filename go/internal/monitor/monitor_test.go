@@ -449,3 +449,50 @@ func TestDecodeDataHonoursCancellation(t *testing.T) {
 		t.Fatalf("decodeData took %v with a cancelled context; the external decoder ran to completion", elapsed)
 	}
 }
+
+func TestLiveSnapshot(t *testing.T) {
+	frame := make([]float64, 512)
+	for i := range frame {
+		frame[i] = -90
+	}
+	// Off-centre on purpose: detect() guards the demodulator's own
+	// channel at the middle of the profile.
+	for i := 100; i < 112; i++ {
+		frame[i] = -40
+	}
+	src := &fakeSource{spectra: [][]float64{frame}}
+	m := New(Options{Source: src, Strategy: "spectrum", Name: "test rx"})
+	m.updateSpectrum()
+	info := m.Live()
+	if info.Name != "test rx" || info.Strategy != "spectrum" {
+		t.Fatalf("identity lost: %+v", info)
+	}
+	if !info.SpectrumOK {
+		t.Fatal("spectrum should be ok")
+	}
+	if info.NoiseFloorDB != -90 {
+		t.Fatalf("noise floor = %v, want -90", info.NoiseFloorDB)
+	}
+	if info.PeakDB != -40 {
+		t.Fatalf("peak = %v, want -40", info.PeakDB)
+	}
+	if len(info.OnAir) == 0 {
+		t.Fatal("expected an on-air peak above the threshold")
+	}
+	peak := info.OnAir[0]
+	// Bins 100-111 over a 2 MHz span centred on 145 MHz: about 144.41 MHz.
+	if peak.FrequencyHz < 144.3e6 || peak.FrequencyHz > 144.5e6 {
+		t.Fatalf("on-air frequency = %v, want near 144.41 MHz", peak.FrequencyHz)
+	}
+	if peak.LevelDB < -45 {
+		t.Fatalf("on-air level = %v, want near -40", peak.LevelDB)
+	}
+}
+
+func TestLiveSnapshotWithoutSpectrum(t *testing.T) {
+	m := New(Options{Source: &fakeSource{}, Strategy: "sweep"})
+	info := m.Live()
+	if info.SpectrumOK || len(info.OnAir) != 0 {
+		t.Fatalf("no-spectrum source must report no peaks: %+v", info)
+	}
+}
