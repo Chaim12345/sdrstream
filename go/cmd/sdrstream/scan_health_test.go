@@ -313,6 +313,98 @@ func TestProbePassReservesMidVisitHostThenMeasures(t *testing.T) {
 	}
 }
 
+func TestProbePassUnmeasurableCandidateStillReservesInVisitHost(t *testing.T) {
+	// Regression for QA's hole: a dead canary (10.255.255.1:8073) stays
+	// due forever, so plan.candidates was never empty and the mid-visit
+	// reserve branch at the top of the pass never fired. Every pass
+	// logged "1 due candidate(s), none measurable" and the in-visit good
+	// host never got a quiet window. The pass must reserve the in-visit
+	// host even when the due candidates cannot be measured.
+	p := testPool(t, 1)
+	var logs []string
+	p.logf = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+	var measured []string
+	stubBeaconNetwork(t,
+		func(host string) kiwisdr.Status {
+			if strings.HasPrefix(host, "10.255.255.1") {
+				return kiwisdr.Status{Verdict: kiwisdr.VerdictTimeout, Err: "dial tcp 10.255.255.1:8073: i/o timeout"}
+			}
+			return kiwisdr.Status{Verdict: kiwisdr.VerdictOK, Latency: 100 * time.Millisecond}
+		},
+		func(host string) (float64, error) { measured = append(measured, host); return 21, nil })
+	roster := newScanRoster(nil)
+	roster.AddManual("KiwiSDR|10.255.255.1:8073", "KiwiSDR|a.example:8073")
+	// The good host is a pool member mid-visit; the canary is the only
+	// idle candidate and it is permanently unmeasurable.
+	p.mu.Lock()
+	p.picks = map[string]bool{"a.example:8073": true}
+	p.visits["a.example:8073"] = true
+	p.mu.Unlock()
+	if retry := p.probeOneIdleBeacon(context.Background(), roster); !retry {
+		t.Fatal("an in-visit host behind an unmeasurable candidate must schedule a retry")
+	}
+	if len(measured) != 0 {
+		t.Fatal("must never measure during a visit")
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "reserved a.example:8073") {
+		t.Fatalf("pass must reserve the in-visit host, got:\n%s", joined)
+	}
+	// While reserved, the dispatcher refuses to start a new visit.
+	if p.tryStartVisit("a.example:8073") {
+		t.Fatal("reserved host must not be dispatched")
+	}
+	// The visit ends; the next pass skips the canary and measures the
+	// good host in its quiet window.
+	p.mu.Lock()
+	delete(p.visits, "a.example:8073")
+	p.mu.Unlock()
+	logs = nil
+	if retry := p.probeOneIdleBeacon(context.Background(), roster); retry {
+		t.Fatal("the measurement should complete without another retry")
+	}
+	if len(measured) != 1 || measured[0] != "a.example:8073" {
+		t.Fatalf("measured = %v, want the good host behind the canary", measured)
+	}
+	rec := p.table.Snapshot()[0]
+	if rec.Host != "a.example:8073" || rec.BeaconMeasuredAt.IsZero() || rec.BeaconSNRdB != 21 {
+		t.Fatalf("beacon reading did not land on the good host: %+v", rec)
+	}
+}
+
+func TestProbePassMeasureErrorStillReservesInVisitHost(t *testing.T) {
+	// The measurement itself can fail after a clean preflight (the
+	// receiver drops the second connection). That pass must also reserve
+	// the in-visit host and retry, not return quietly.
+	p := testPool(t, 1)
+	var logs []string
+	p.logf = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+	stubBeaconNetwork(t,
+		func(host string) kiwisdr.Status { return kiwisdr.Status{Verdict: kiwisdr.VerdictOK} },
+		func(host string) (float64, error) {
+			if strings.HasPrefix(host, "flaky.") {
+				return 0, fmt.Errorf("connection lost")
+			}
+			return 12, nil
+		})
+	roster := newScanRoster(nil)
+	roster.AddManual("KiwiSDR|flaky.example:8073", "KiwiSDR|a.example:8073")
+	p.mu.Lock()
+	p.picks = map[string]bool{"a.example:8073": true}
+	p.visits["a.example:8073"] = true
+	p.mu.Unlock()
+	if retry := p.probeOneIdleBeacon(context.Background(), roster); !retry {
+		t.Fatal("a failed measurement must still reserve the in-visit host and retry")
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "reserved a.example:8073") {
+		t.Fatalf("pass must reserve the in-visit host, got:\n%s", joined)
+	}
+	if p.tryStartVisit("a.example:8073") {
+		t.Fatal("reserved host must not be dispatched")
+	}
+}
+
 func TestProbePassLogsFreshAndEmptyRoster(t *testing.T) {
 	p := testPool(t, 3)
 	var logs []string

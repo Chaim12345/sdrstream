@@ -291,12 +291,27 @@ func (p *healthPool) probeOneIdleBeacon(ctx context.Context, roster *scanRoster)
 		}
 		if err != nil {
 			p.logf("scan health: %s beacon %s: %v", cand.host, beacon.Name, err)
-			return false
+			break
 		}
 		p.table.ObserveBeaconSNR(cand.key, beacon.Name, snr)
 		p.logf("scan health: %s beacon %s SNR %.1f dB (tone vs neighbouring floor)", cand.host, beacon.Name, snr)
 		p.save()
 		return false
+	}
+	// No measurement landed this pass. A permanently-unmeasurable
+	// candidate (dead, busy, budget-spent) stays due forever, so
+	// plan.candidates is never empty and the mid-visit reserve branch at
+	// the top would never fire: every pass ended here, and the in-visit
+	// good host never got its quiet window (QA: canary 10.255.255.1:8073
+	// in the roster, "1 due candidate(s), none measurable" on every pass).
+	// Reserve the first in-visit host here as well, so the retry measures
+	// it once its visit ends.
+	if len(plan.inVisit) > 0 {
+		cand := plan.inVisit[0]
+		p.reserveForBeacon(cand.key, now)
+		p.logf("scan health: beacon probe pass: %d due candidate(s), none measurable; reserved %s for a measurement when its visit ends (retry in %s)",
+			len(plan.candidates), cand.host, beaconReserveRetry)
+		return true
 	}
 	p.logf("scan health: beacon probe pass: %d due candidate(s), none measurable (preflight skips above)", len(plan.candidates))
 	return false
