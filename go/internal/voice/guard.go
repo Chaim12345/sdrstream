@@ -317,15 +317,17 @@ func Guard(text string) Verdict {
 }
 
 // SpeechCoverage reports the fraction of a clip that carries speech-like
-// energy, using the same activity detector as the monitor. A long
-// transcript over a mostly-silent clip is a hallucination even when the
-// words look plausible.
+// energy, using the same hysteresis detector as transcription. The older
+// fixed multiple-of-floor test declared a continuous SSB VOLMET recording
+// speechless because the carrier kept its own floor high. A long transcript
+// over a mostly-silent clip is still a hallucination even when the words
+// look plausible.
 func SpeechCoverage(samples []float64, rate int) float64 {
 	if len(samples) == 0 || rate <= 0 {
 		return 0
 	}
 	var covered float64
-	for _, segment := range SpeechActivity(samples, rate) {
+	for _, segment := range DetectSpeech(samples, rate, VADOptions{}) {
 		covered += segment.End - segment.Start
 	}
 	coverage := covered / (float64(len(samples)) / float64(rate))

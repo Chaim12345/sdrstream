@@ -92,6 +92,10 @@ type Options struct {
 	DirewolfBinary string
 	// OutDir saves a WAV of every transmission.
 	OutDir string
+	// SaveAudio, when set with OutDir, decides which kinds are written to
+	// disk. Nil saves every kind. Fleet scans use it to keep voice (and
+	// image-bearing SSTV) audio without archiving every data burst.
+	SaveAudio func(kind string) bool
 	// Channels, when set with the broadcast strategy, is the rotation of
 	// fixed voice channels to visit (see DefaultVoiceChannels).
 	Channels []Channel
@@ -527,10 +531,17 @@ func (m *Monitor) handleHit(ctx context.Context, frequency float64, hit decode.B
 	m.mu.Unlock()
 
 	// A wideband signal is FM voice, a narrow one is a sideband or a
-	// beacon; try both and keep whichever gives the better answer.
+	// beacon; try both and keep whichever gives the better answer. On the
+	// airbands the answer is AM, and on HF a second FM pass only wastes
+	// time.
 	modes := []string{"usb", "fm"}
-	if m.listenMode() != "auto" && m.listenMode() != "" {
+	switch {
+	case m.listenMode() != "auto" && m.listenMode() != "":
 		modes = []string{m.listenMode()}
+	case Airband(frequency):
+		modes = []string{"am"}
+	case frequency < 30e6:
+		modes = []string{"usb"}
 	}
 	select {
 	case m.jobs <- job{
@@ -755,13 +766,29 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 // ChooseMode picks a modulation for a transmission: a wide signal is
 // almost always FM voice, a narrow one is a sideband or a data burst.
 func ChooseMode(mode string, bandwidthHz float64) string {
+	return ChooseModeAt(mode, bandwidthHz, 0)
+}
+
+// ChooseModeAt picks a modulation with the frequency as a hint. The civil
+// airband and the military airband are amplitude modulated, so a narrow AM
+// controller call must not be handed to the USB demodulator; above 30 MHz
+// the wide signals are FM.
+func ChooseModeAt(mode string, bandwidthHz, frequencyHz float64) string {
 	if mode != "auto" && mode != "" {
 		return mode
+	}
+	if Airband(frequencyHz) {
+		return "am"
 	}
 	if bandwidthHz > 12000 {
 		return "fm"
 	}
 	return "usb"
+}
+
+// Airband reports whether hz falls in a band that uses AM voice.
+func Airband(hz float64) bool {
+	return hz >= 108e6 && hz <= 137e6 || hz >= 225e6 && hz <= 400e6
 }
 
 // surveyMode is the modulation used while sweeping. The sweep does not
@@ -820,7 +847,7 @@ func (m *Monitor) report(ctx context.Context, candidate *candidate) {
 		frequency:  candidate.frequency,
 		bandwidth:  candidate.bandwidth,
 		levelDB:    candidate.levelDB,
-		modes:      []string{ChooseMode(m.listenMode(), candidate.bandwidth)},
+		modes:      []string{ChooseModeAt(m.listenMode(), candidate.bandwidth, candidate.frequency)},
 		activityID: activity.ID,
 	}:
 	default:
@@ -881,7 +908,7 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 		if kind == "noise" || kind == "silence" || kind == "unknown" {
 			continue
 		}
-		if m.opts.OutDir != "" {
+		if m.opts.OutDir != "" && (m.opts.SaveAudio == nil || m.opts.SaveAudio(kind)) {
 			path := filepath.Join(m.opts.OutDir, fmt.Sprintf("activity-%03d-%d-%s.wav",
 				activity.ID, int(work.frequency), modeName))
 			if err := voice.WriteWAV(path, samples, rate); err == nil {
@@ -961,13 +988,30 @@ func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, ban
 	if !modulated {
 		return "carrier", "", "steady signal, no modulation", asr
 	}
-	// A very narrow signal is a carrier or a keyed tone, not a voice.
-	if bandwidthHz > 0 && bandwidthHz < 2500 && hit.Kind != "silence" {
+	segments := voice.DetectSpeech(samples, rate, voice.VADOptions{})
+	// Spectral flatness calls some real single-sideband voice "noise": the
+	// passband is narrow and the AGC holds the floor up. A speech envelope
+	// that occupies a real part of the clip is stronger evidence than the
+	// spectrum shape, so promote the verdict before the speech path runs.
+	if hit.Kind == "noise" && rate > 0 {
+		speechSeconds := 0.0
+		for _, segment := range segments {
+			speechSeconds += segment.End - segment.Start
+		}
+		duration := float64(len(samples)) / float64(rate)
+		if speechSeconds >= 1.0 && duration > 0 && speechSeconds/duration >= 0.10 {
+			hit.Kind = "voice"
+		}
+	}
+	// A very narrow signal is usually a carrier or a keyed tone, but not
+	// always: single-sideband voice can measure only a few hundred Hz of
+	// occupied bandwidth. The speech detector, not the bandwidth, decides.
+	// Without this the Shannon VOLMET recording became a "0 kHz carrier".
+	if bandwidthHz > 0 && bandwidthHz < 2500 && len(segments) == 0 && hit.Kind != "silence" {
 		return "carrier", "", fmt.Sprintf("%.0f kHz wide", bandwidthHz/1e3), asr
 	}
 	switch hit.Kind {
 	case "voice", "data", "cw":
-		segments := voice.DetectSpeech(samples, rate, voice.VADOptions{})
 		if len(segments) == 0 {
 			m.opts.Logf("voice: signal present but no speech detected")
 			return hit.Kind, "", "no speech detected", asr
@@ -1048,14 +1092,16 @@ func (m *Monitor) decodeData(ctx context.Context, samples []float64, rate int, b
 		}
 		if narrowChannel {
 			if result, err := decode.MorseDecode(path); err == nil && result.Text != "" {
-				return "morse", result.Text, true
+				if plausibleNarrowbandText(result.Text) {
+					return "morse", result.Text, true
+				}
 			}
 			if m.opts.MultimonBinary != "" && ctx.Err() == nil {
 				lines, err := decode.MultimonDecodeWithBinary(ctx, m.opts.MultimonBinary, path, "MORSE_CW")
 				if err == nil {
 					for _, line := range lines {
 						text := strings.TrimSpace(line)
-						if validExternalCW(text) {
+						if validExternalCW(text) && plausibleNarrowbandText(text) {
 							return "morse", text, true
 						}
 					}
@@ -1074,9 +1120,19 @@ func (m *Monitor) decodeData(ctx context.Context, samples []float64, rate int, b
 				if text == "" {
 					text = page.Numeric
 				}
+				// A page with no payload is not a page: on a real
+				// aviation voice channel the POCSAG decoder happily
+				// returns a list of addresses with empty text, and
+				// accepting that turned a controller's call into a
+				// burst of pager traffic.
+				if strings.TrimSpace(text) == "" {
+					continue
+				}
 				lines = append(lines, fmt.Sprintf("%d: %s", page.Address, text))
 			}
-			return "pocsag", strings.Join(lines, " | "), true
+			if len(lines) > 0 {
+				return "pocsag", strings.Join(lines, " | "), true
+			}
 		}
 	}
 	if alerts := decode.EASDecode(samples, rate); len(alerts) > 0 {
@@ -1095,15 +1151,78 @@ func (m *Monitor) decodeData(ctx context.Context, samples []float64, rate int, b
 			return "navtex", strings.Join(lines, " | "), true
 		}
 		if text := decode.PSK31Decode(samples, rate, 0); text != "" {
-			return "psk31", text, true
+			if plausibleNarrowbandText(text) {
+				return "psk31", text, true
+			}
 		}
 		if text := decode.RTTYDecode(samples, rate, 0, 0, 0); text != "" {
-			return "rtty", text, true
+			if plausibleNarrowbandText(text) {
+				return "rtty", text, true
+			}
 		}
 		// SSTV is intentionally disabled in live classification until the
 		// independent per-line sync decoder passes real-frame review.
 	}
 	return "", "", false
+}
+
+// plausibleNarrowbandText filters the text decoders' output. Morse, RTTY and
+// PSK31 will happily turn a heterodyne or a voice sideband into letters; a
+// real teleprinter, beacon or data burst carries an identifier (CQ, a
+// callsign with a digit, or NAVTEX framing). The live aviation PoC decoded a
+// controller's call as "GZORKYTIQERNEXE SA ..." and this gate is what stops
+// that from being reported as data.
+func plausibleNarrowbandText(text string) bool {
+	upper := strings.ToUpper(text)
+	tokens := strings.FieldsFunc(upper, func(r rune) bool {
+		return !(r >= 'A' && r <= 'Z' || r >= '0' && r <= '9')
+	})
+	for _, token := range tokens {
+		switch token {
+		case "CQ", "ZCZC", "NNNN":
+			return true
+		}
+		if callsignLikeToken(token) {
+			return true
+		}
+	}
+	for _, word := range []string{"TEST", "MESSAGE", "WEATHER", "FORECAST", "WARNING", "REPORT", "CONTEST"} {
+		for _, token := range tokens {
+			if token == word {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// callsignLikeToken recognises the identifiers that real narrowband text
+// carries: an amateur callsign such as M0XXX, GB3RS or 9A1A. Random decoded
+// letters occasionally end in a digit, so "has a digit" alone is not enough;
+// the shape of the token is.
+func callsignLikeToken(token string) bool {
+	if len(token) < 3 || len(token) > 8 {
+		return false
+	}
+	digits, letters := 0, 0
+	for i := 0; i < len(token); i++ {
+		switch {
+		case token[i] >= '0' && token[i] <= '9':
+			digits++
+		case token[i] >= 'A' && token[i] <= 'Z':
+			letters++
+		default:
+			return false
+		}
+	}
+	if digits == 0 || letters < 2 {
+		return false
+	}
+	// Amateur callsigns end in letters (M0XXX, GB3RS, 9A1A). A random
+	// teleprinter decode can produce a token with a digit, but the
+	// trailing-digit shape is also what test ids look like ("RS44") and
+	// would let noise such as "KQ47" through.
+	return token[len(token)-1] >= 'A' && token[len(token)-1] <= 'Z'
 }
 
 // writeTempWAV stores samples in a temporary WAV file.

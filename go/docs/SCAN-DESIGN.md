@@ -148,3 +148,25 @@ OPENWEBR_LIVE / WEBSDR_LIVE gates so a real survey pass, a real retune-in-stream
 backoff-on-refusal can be verified against a public receiver when the operator opts in. Note
 HANDOFF: `go test -race` cannot run here (sandbox TSan unsupported) — concurrency is reviewed by
 hand and covered by the fake-Source tests, not -race.
+
+## 7. Current status (2026-10-22)
+
+Slices (a)–(g) landed in PR #4. Two integration changes followed:
+
+* **OpenWebRX stations now survey their own profile span.** `scanStation`
+  dispatches OpenWebRX to `scanOpenWebRXSpectrum`, which runs one monitor in
+  `spectrum` strategy, reports each peak that survives a 2 s dwell, and saves
+  audio only for voice/SSTV. A 10 s watchdog falls back to the fixed target
+  list when the server sends no FFT.
+* **Verified captures feed Rdio Scanner.** `internal/rdio` uploads the audio
+  plus frequency/talkgroup metadata to `POST /api/call-upload`, so the archive
+  and its UI come from an existing product instead of a second frontend.
+  See `go/docs/RDIO.md`.
+
+Remaining:
+
+* WebSDR and KiwiSDR have no spectrum in this client, so they still use fixed
+  targets; a `decode.BandScanner` sweep over the advertised band is next.
+* The fleet scanner connects to OpenWebRX without choosing a profile, so the
+  span is the server default. A per-station profile hint would make the
+  survey deliberate rather than incidental.

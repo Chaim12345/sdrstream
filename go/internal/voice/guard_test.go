@@ -4,6 +4,8 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"github.com/chaim12345/sdrstream/go/internal/decode"
 )
 
 // The junk inputs here are real whisper.cpp outputs captured from a
@@ -159,5 +161,19 @@ func TestSmallQuantisedPreferredOverPlainSmall(t *testing.T) {
 	sortByPreference(p)
 	if p[0] != "ggml-base.en.bin" || p[1] != "ggml-small.en-q5_1.bin" {
 		t.Errorf("order %v", p)
+	}
+}
+
+// TestSpeechCoverageRealSSB pins the live VOLMET failure: a real USB voice
+// recording whose carrier keeps the lower-quartile RMS high was measured as
+// 0% speech by the old activity detector, so GuardTranscript rejected the
+// correct transcript as "coverage".
+func TestSpeechCoverageRealSSB(t *testing.T) {
+	samples, rate, err := decode.ReadWAV("../../../tests/data/real_volmet_shannon_5505_usb.wav")
+	if err != nil {
+		t.Fatalf("read VOLMET recording: %v", err)
+	}
+	if got := SpeechCoverage(samples, rate); got < 0.05 {
+		t.Fatalf("coverage of real SSB voice = %.3f, want at least 0.05", got)
 	}
 }

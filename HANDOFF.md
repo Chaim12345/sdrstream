@@ -21,11 +21,25 @@ session added:
   3 GB large-v3 processes. Tested with a fake binary.
 * **Voice CLI flags** — `--voice-lang/threads/beam/prompt` (and `monitor-*`
   variants) with a built-in radio phraseology prompt.
+* **OpenWebRX surveys its whole profile** — the web fleet scanner now uses
+  each OpenWebRX receiver's own FFT (`scanOpenWebRXSpectrum`) instead of 20
+  blind frequencies, with a 10 s FFT watchdog and a fallback to the fixed
+  target list for old servers/profiles. Audio is archived only for voice and
+  SSTV (`monitor.Options.SaveAudio`), so a wide survey does not fill the disk.
+* **Live false-positive fixes** — the aviation PoC decoded a controller as
+  RTTY, and Shannon VOLMET was called a 0 kHz carrier. POCSAG pages with no
+  text are ignored; Morse/RTTY/PSK31 output must contain an identifier
+  (CQ, a callsign, NAVTEX framing); speech detection now runs before the
+  narrow-signal carrier rule; and `SpeechCoverage` uses the hysteresis VAD
+  so continuous SSB voice passes the hallucination guard.
 * `AGENTS.md` records the standing directives (personal use: licensing is not
   a gate; prefer NIM over local).
 
 Build and tests pass for the touched packages (`voice`, `rdio`, `web`,
-`monitor`, `decode`, `cmd`).
+`monitor`, `decode`, `cmd`). Live-verified: Shannon VOLMET on 5505 kHz USB
+(`websdr.ewi.utwente.nl`) transcribes through NIM to "G-point 16, QMH 1025…
+Wind 200 degrees, 7 knots…"; the OpenWebRX spectrum survey at
+`sdr.ladar.club` detects and classifies peaks with no invented RTTY.
 
 ## What the tool does
 
@@ -76,12 +90,11 @@ go run ./cmd/sdrstream monitor \
 
 ## Known problems / next work
 
-* **Fleet scanning still uses a fixed target list per station.** The next
-  real improvement is to drive OpenWebRX stations from their own FFT (the
-  monitor's `spectrum` strategy) so one connection surveys the whole 1–2 MHz
-  profile instead of 20 blind frequencies. WebSDR/Kiwi have no spectrum in
-  this client, so they need a band sweep (`decode.BandScanner`) over their
-  advertised band.
+* **OpenWebRX no longer uses the fixed target list**; WebSDR/Kiwi still do
+  (they send no spectrum in this client). The next improvement there is a
+  band sweep (`decode.BandScanner`) over each station's advertised band, and
+  a per-station profile choice for OpenWebRX (the fleet scanner connects
+  without selecting a profile, so it surveys whatever the server defaults to).
 * **SSTV image decode covers Martin M1/M2, Robot36 and Scottie S1**; the
   other VIS modes fall back to header-only detection.
 * **The hosted ASR is fluent but can hallucinate on weak audio** (a real ATC

@@ -924,7 +924,11 @@ func cmdMonitor(args []string) error {
 				fmt.Printf("    %s\n", activity.Detail)
 			}
 			if activity.AudioPath != "" && activity.Kind != "noise" && activity.Kind != "silence" {
-				rdioQueue.Enqueue(rdioCallFor(activity, *rdioSystem))
+				if err := verify.Live(activity.Kind, activity.Mode, activity.Detail, nil, activity.VerificationAnchor); err != nil {
+					fmt.Printf("    rdio: skipped unverified capture: %v\n", err)
+				} else {
+					rdioQueue.Enqueue(rdioCallFor(activity, *rdioSystem))
+				}
 			}
 		},
 	})
@@ -2575,6 +2579,125 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		return outcome
 	}
 	defer func() { source.Close(); active.Add(-1); updateMetrics() }()
+	if strings.EqualFold(stationType, "OpenWebRX") {
+		return scanOpenWebRXSpectrum(ctx, server, source, stationType, host, targetLimit, multimonPath, direwolfPath, capturesDir)
+	}
+	return scanFixedTargets(ctx, server, source, stationType, host, targetLimit, multimonPath, direwolfPath, capturesDir)
+}
+
+// scanOpenWebRXSpectrum surveys the receiver's whole profile span from the
+// server's own FFT instead of tuning a fixed list of frequencies. One
+// connection sees every peak in a 1-2 MHz profile; each peak that persists
+// is recorded, classified and decoded. If the server never sends an FFT, the
+// same connection falls back to the fixed target list.
+func scanOpenWebRXSpectrum(ctx context.Context, server *web.Server, source monitor.Source, stationType, host string, targetLimit int, multimonPath, direwolfPath, capturesDir string) scanOutcome {
+	key := addScan(server, web.ScanStatus{StationType: stationType, Station: host, Mode: "spectrum", State: "connecting", UpdatedAt: time.Now()})
+	setScanResult(server, key, "listening", "waiting for the receiver FFT")
+
+	var sawSpectrum atomic.Bool
+	var findings atomic.Int32
+	var mu sync.Mutex
+	var lastText string
+
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
+	instance := monitor.New(monitor.Options{
+		Source:          source,
+		Strategy:        "spectrum",
+		ThresholdDB:     10,
+		DwellTime:       2 * time.Second,
+		Cooldown:        30 * time.Minute,
+		Listen:          8 * time.Second,
+		Mode:            "auto",
+		Voice:           true,
+		VoiceOptions:    monitorVoiceOptions("auto", 2, 1, ""),
+		VoiceNIMOptions: monitorNIMOptions(),
+		MultimonBinary:  multimonPath,
+		DirewolfBinary:  direwolfPath,
+		OutDir:          capturesDir,
+		SaveAudio:       func(kind string) bool { return kind == "voice" || kind == "sstv" },
+		Name:            host,
+		Logf:            func(format string, args ...interface{}) { log.Printf("scan "+host+": "+format, args...) },
+		OnActivity: func(activity monitor.Activity) {
+			if activity.Kind == "noise" || activity.Kind == "silence" || activity.Kind == "unknown" {
+				return
+			}
+			// SSTV is an image: OnImage carries the PNG and publishes it.
+			if activity.Kind == "sstv" {
+				return
+			}
+			freqKey := addScan(server, web.ScanStatus{StationType: stationType, Station: host, FrequencyHz: activity.FrequencyHz, Mode: activity.Mode, State: "decoding", UpdatedAt: time.Now()})
+			if err := verify.Live(activity.Kind, activity.Mode, activity.Detail, nil, activity.VerificationAnchor); err != nil {
+				setScanResult(server, freqKey, "unverified decode", err.Error())
+				return
+			}
+			if err := server.AddLiveArtifact(activity, nil); err != nil {
+				setScanResult(server, freqKey, "error", err.Error())
+				return
+			}
+			findings.Add(1)
+			mu.Lock()
+			lastText = activity.Detail
+			mu.Unlock()
+			setScanResult(server, freqKey, "decoded", activity.Detail)
+		},
+		OnImage: func(activity monitor.Activity, png []byte) {
+			if err := verify.Live(activity.Kind, activity.Mode, "", png); err != nil {
+				return
+			}
+			if err := server.AddLiveArtifact(activity, png); err != nil {
+				return
+			}
+			findings.Add(1)
+			addScan(server, web.ScanStatus{StationType: stationType, Station: host, FrequencyHz: activity.FrequencyHz, Mode: activity.Mode, State: "decoded image", Result: fmt.Sprintf("%d bytes", len(png)), UpdatedAt: time.Now()})
+		},
+	})
+
+	// Wait up to 10 s for the FFT. A station that never sends one gets the
+	// fixed targets instead of an idle connection.
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		deadline := time.NewTimer(10 * time.Second)
+		defer deadline.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				if _, _, _, ok := source.Spectrum(); ok {
+					sawSpectrum.Store(true)
+					return
+				}
+			case <-deadline.C:
+				cancelRun()
+				return
+			}
+		}
+	}()
+
+	err := instance.Run(runCtx)
+	cancelRun()
+	if sawSpectrum.Load() {
+		mu.Lock()
+		text := lastText
+		mu.Unlock()
+		result := fmt.Sprintf("%d verified finding(s)", findings.Load())
+		if text != "" {
+			result += ": " + text
+		}
+		setScanResult(server, key, "session complete", result)
+		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("scan %s: spectrum session: %v", host, err)
+		}
+		return scanOutcome{}
+	}
+	setScanResult(server, key, "no spectrum", "falling back to fixed frequencies")
+	return scanFixedTargets(ctx, server, source, stationType, host, targetLimit, multimonPath, direwolfPath, capturesDir)
+}
+
+func scanFixedTargets(ctx context.Context, server *web.Server, source monitor.Source, stationType, host string, targetLimit int, multimonPath, direwolfPath, capturesDir string) scanOutcome {
 	targets := []scanTarget{
 		{server: host, frequency: 144800e3, mode: "fm"}, {server: host, frequency: 145500e3, mode: "fm"}, {server: host, frequency: 145800e3, mode: "fm"}, {server: host, frequency: 145825e3, mode: "fm"},
 		{server: host, frequency: 146520e3, mode: "fm"}, {server: host, frequency: 433500e3, mode: "fm"}, {server: host, frequency: 434650e3, mode: "fm"}, {server: host, frequency: 446006250, mode: "fm"},

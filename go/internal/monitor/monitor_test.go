@@ -528,3 +528,130 @@ func TestRequestListenWithoutRecordingStillTunes(t *testing.T) {
 		t.Fatalf("tuned_hz = %v, want 50 MHz", got)
 	}
 }
+
+// TestSaveAudioFiltersWhatIsArchived pins the fleet-scan rule: a spectrum
+// survey sees every data burst in the profile, and archiving all of them
+// would fill the disk. SaveAudio must be consulted, and a false verdict must
+// leave no file behind while a true verdict still writes one.
+func TestSaveAudioFiltersWhatIsArchived(t *testing.T) {
+	run := func(save func(string) bool) (Activity, string) {
+		dir := t.TempDir()
+		instance := New(Options{
+			Source:    newWAVSource(t, "../../../tests/data/ref_dtmf.wav"),
+			Listen:    10 * time.Second,
+			Name:      "test",
+			OutDir:    dir,
+			SaveAudio: save,
+		})
+		var published Activity
+		instance.opts.OnActivity = func(activity Activity) { published = activity }
+		instance.mu.Lock()
+		instance.nextID = 1
+		instance.activities = []Activity{{ID: 1}}
+		instance.mu.Unlock()
+		instance.handleJob(context.Background(), job{
+			frequency: 145_500_000, levelDB: 20, modes: []string{"usb"}, activityID: 1,
+		})
+		return published, dir
+	}
+
+	var asked []string
+	published, dir := run(func(kind string) bool {
+		asked = append(asked, kind)
+		return false
+	})
+	if len(asked) == 0 {
+		t.Fatal("SaveAudio was never consulted")
+	}
+	if published.AudioPath != "" {
+		t.Errorf("audio path %q written despite SaveAudio=false", published.AudioPath)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Errorf("capture dir = %v (err %v), want empty", entries, err)
+	}
+
+	published, _ = run(func(string) bool { return true })
+	if published.AudioPath == "" {
+		t.Fatal("SaveAudio=true produced no audio path")
+	}
+	if _, err := os.Stat(published.AudioPath); err != nil {
+		t.Errorf("archived WAV missing: %v", err)
+	}
+}
+
+// TestPlausibleNarrowbandTextRejectsVoiceGibberish pins the fix for a live
+// aviation failure: the RTTY decoder turned a controller's AM call into
+// pages of letters, and the monitor reported it as data. A real text mode
+// carries an identifier (CQ, a callsign with a digit, or service framing).
+func TestPlausibleNarrowbandTextRejectsVoiceGibberish(t *testing.T) {
+	reject := []string{
+		"GZORKYTIQERNEXE SA \nNGVSI\nOY\nFD\nGFC\nDB\nXYFCUZEVH TI\nI NLMXS\rREHWM",
+		"PHIELQCUYIGWUXTOAHUPGFKNLHXASYCJDKY",
+		"UHSRJAZOZAUPLSAU)? &93 .:!$#0E SXT HLZ VAPNFJNZMX YOGSBBJU",
+		"JJEOBWYCCJBEQGJXNPZPMELOWTTXWGDFIUMPBSSNCFAEIDMQ RLADEGDOEXFWDHZHNKNEHNCSOOJGEWCZEZEDIJGPEF6.)13",
+		"DJUJ IBRH YQ BG VSZZF NUCEC86-R BTWIILGUUHPWS",
+		"QUQJ NHCQBSTWIPLAZUYPYAZN\"0$(8?$784.?# ,539",
+		"DWLGL\nRAJQIZ YJNJCEOGGROI#?'SKEUDSJKS \nJPWNYZMDEJADLA \rKQ47)DAFGK  KRO",
+	}
+	for _, text := range reject {
+		if plausibleNarrowbandText(text) {
+			t.Errorf("voice/noise gibberish accepted as data: %q", text)
+		}
+	}
+	accept := []string{
+		"CQ DE RS44 RTTY TEST 599",
+		"CQ DE RS44 SAT",
+		"CQ DE RS44 PSK31 TESTI",
+		"1234567: HELLO PAGER TEST 123",
+		"ZCZC 12 METAREA WARNING NNNN",
+		"WEATHER FORECAST FOR THE COAST",
+	}
+	for _, text := range accept {
+		if !plausibleNarrowbandText(text) {
+			t.Errorf("real text payload rejected: %q", text)
+		}
+	}
+}
+
+// TestVolmetVoiceIsNotACarrier pins the live failure that kept real SSB
+// voice out of the feed: the Shannon VOLMET recording measures only a few
+// hundred Hz of occupied bandwidth, so the old narrow-signal rule called it
+// a "0 kHz carrier" before the speech detector ever ran. With the detector
+// first, the same clip is voice.
+func TestVolmetVoiceIsNotACarrier(t *testing.T) {
+	samples, rate, err := decode.ReadWAV("../../../tests/data/real_volmet_shannon_5505_usb.wav")
+	if err != nil {
+		t.Fatalf("read VOLMET recording: %v", err)
+	}
+	instance := New(Options{})
+	bandwidth := decode.OccupiedBandwidth(samples, rate)
+	kind, mode, _, _ := instance.classify(context.Background(), samples, rate, bandwidth)
+	if kind != "voice" || mode != "speech" {
+		t.Fatalf("classify = %q/%q, want voice/speech (bandwidth %.0f Hz)", kind, mode, bandwidth)
+	}
+}
+
+func TestChooseModeUsesTheBand(t *testing.T) {
+	cases := []struct {
+		frequency float64
+		bandwidth float64
+		want      string
+	}{
+		{119_500_000, 3000, "am"},  // civil airband voice
+		{127_000_000, 8000, "am"},  // airband, wider AM
+		{300_000_000, 8000, "am"},  // military airband
+		{145_500_000, 12500, "fm"}, // narrowband repeater
+		{145_500_000, 2000, "usb"}, // narrow data on 2 m
+		{7_100_000, 2400, "usb"},   // HF sideband
+		{100_000_000, 200_000, "fm"},
+	}
+	for _, test := range cases {
+		if got := ChooseModeAt("auto", test.bandwidth, test.frequency); got != test.want {
+			t.Errorf("ChooseModeAt(%.3f MHz, %.0f Hz) = %q, want %q",
+				test.frequency/1e6, test.bandwidth, got, test.want)
+		}
+	}
+	if got := ChooseModeAt("lsb", 2400, 7_100_000); got != "lsb" {
+		t.Errorf("explicit mode overridden: %q", got)
+	}
+}
