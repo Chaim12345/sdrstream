@@ -260,6 +260,20 @@ func segment(ctx context.Context, plan ChasePlan, frequencyHz float64,
 			return nil, 0, err
 		}
 		defer client.Close()
+		// Tuning only works on a profile whose span covers the target
+		// frequency; servers often default to an HF profile. The receiver's
+		// band names carry the profile display names recorded when the
+		// receiver was verified, so select the matching one first.
+		if band, ok := plan.Receiver.BandFor(frequencyHz); ok && band.Name != "" {
+			for _, profile := range client.ProfileList() {
+				if strings.Contains(strings.ToLower(profile.Name), strings.ToLower(band.Name)) {
+					if err := client.SelectProfile(ctx, profile.Key); err != nil {
+						return nil, 0, err
+					}
+					break
+				}
+			}
+		}
 		freq := int64(frequencyHz)
 		if err := client.Tune(ctx, &freq, mode, nil); err != nil {
 			return nil, 0, err
