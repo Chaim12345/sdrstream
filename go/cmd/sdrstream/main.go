@@ -1502,6 +1502,8 @@ func cmdWeb(args []string) error {
 	scanGuardMaxRSS := fs.Uint64("scan-guard-max-rss-mib", 512, "hard RSS cap in MiB: reaching it forces an immediate step down")
 	scanGuardMaxFDs := fs.Int("scan-guard-max-fds", 400000, "hard open file descriptor cap: reaching it forces an immediate step down")
 	scanGuardMaxGoroutines := fs.Int("scan-guard-max-goroutines", 256000, "hard goroutine cap: reaching it forces an immediate step down")
+	scanPoolMode := fs.String("scan-pool", "health", "scanner receiver pool: 'health' = rotating 1-3 receivers chosen by the receiver health table; 'wide' = legacy ramp over the whole roster")
+	scanPoolSize := fs.Int("scan-pool-size", 3, "health-pool receiver connections (1-3)")
 	monitorServer := fs.String("monitor-server", "", "receiver to monitor for live traffic (empty = no monitoring)")
 	monitorLabel := fs.String("monitor-label", "", "programme or station label for monitor activities and gallery entries")
 	monitorKind := fs.String("monitor-kind", "openwebrx", "monitor receiver protocol: openwebrx, websdr or kiwi")
@@ -1537,6 +1539,12 @@ func cmdWeb(args []string) error {
 	fs.Parse(args)
 	if *capturesMaxGB < 0 || *capturesRetain < 0 || *scanDirectoryRefresh < 0 {
 		return fmt.Errorf("--captures-max-gb, --captures-retain and --scan-directory-refresh cannot be negative")
+	}
+	if *scanPoolMode != "health" && *scanPoolMode != "wide" {
+		return fmt.Errorf("--scan-pool must be 'health' or 'wide'")
+	}
+	if *scanPoolSize < 1 || *scanPoolSize > 3 {
+		return fmt.Errorf("--scan-pool-size must be 1..3")
 	}
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
@@ -1656,6 +1664,17 @@ func cmdWeb(args []string) error {
 		config.recordAll = *scanRecordAll
 		guard := newLoadGuard(*scanGuardWindow, *scanGuardDropFor, *scanGuardRestoreFor, *scanGuardDropRatio, *scanGuardRestoreRatio, *scanGuardMaxRSS<<20, *scanGuardMaxFDs, *scanGuardMaxGoroutines)
 		scannerCaptureDir = *capturesDir
+		if *scanPoolMode == "health" {
+			pool, err := newHealthPool(*scanPoolSize, healthTablePath(), log.Printf)
+			if err != nil {
+				return err
+			}
+			scanHealth = pool
+			defer pool.save()
+			go pool.saveLoop(ctx)
+			go pool.beaconProber(ctx, roster)
+			log.Printf("scan: health pool on, holding %d rotating receiver connection(s)", pool.size)
+		}
 		go runParallelScan(ctx, server, roster, *monitorMultimon, *monitorDirewolf, config, guard)
 	}
 	// The dedicated HF capture schedule is independent of directory scanning.
@@ -2274,6 +2293,13 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 	if len(unique) == 0 {
 		return
 	}
+	rosterAll := unique
+	if scanHealth != nil {
+		unique = scanHealth.pickStations(unique)
+		if len(unique) == 0 {
+			return
+		}
+	}
 	steps := cfg.ramp
 	var current atomic.Int64
 	current.Store(int64(min(cfg.maximum, cfg.start)))
@@ -2340,6 +2366,9 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 		if !server.ScanControlManual() {
 			limit = min(limit, int(current.Load()))
 		}
+		if scanHealth != nil {
+			limit = min(limit, scanHealth.size)
+		}
 		for inFlight < limit && ctx.Err() == nil {
 			dispatched := false
 			for checked := 0; checked < len(unique); checked++ {
@@ -2402,7 +2431,14 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 			// pause/target changes must not wait for the next finished
 			// station (visits can run for minutes).
 			updateMetrics()
+			if scanHealth != nil && scanHealth.repickDue() {
+				unique = scanHealth.pickStations(rosterAll)
+				nextStation = 0
+			}
 		case r := <-results:
+			if scanHealth != nil {
+				scanHealth.observeOutcome(r.host, r.outcome)
+			}
 			receiverAtFault := (r.outcome.refused || r.outcome.timedOut) && !r.outcome.localResource
 			if receiverAtFault {
 				reason := "receiver refused or timed out"
@@ -2706,6 +2742,9 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 	// "refused". Only guess from the name when the caller gave no type.
 	if strings.EqualFold(stationType, "KiwiSDR") || (stationType == "" && looksLikeKiwi(host)) {
 		preflight := kiwiPreflight.Check(ctx, host)
+		if scanHealth != nil {
+			scanHealth.observeProbe(host, preflight)
+		}
 		if !preflight.Free() {
 			outcome := preflightOutcome(preflight.Verdict)
 			state := "refused/skipped"
