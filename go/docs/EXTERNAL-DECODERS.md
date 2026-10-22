@@ -63,3 +63,20 @@ The verdict is encoded in `decode.refPreferred` (engine.go):
 `FTXDecodeAuto` / `WSPRDecodeAuto` run the reference tool when it resolves
 and fall back to the Go decoder on any failure or missing binary.
 `SDRSTREAM_DECODE_ENGINE=go|ref` forces an engine.
+
+## Live capture/scan wiring (2026-10-23)
+
+The live HF paths decode FT8/FT4/WSPR through the engine-selection wrappers,
+not the Go decoders directly: `decodeHF` (hfrun.go, used by RunHFTarget,
+RunHFSession and HFDecodeForScan/hfschedule) and the WebSDR scan loop in
+cmd/sdrstream call `FTXDecodeStreamAuto` / `WSPRWindowsAuto`. Every decode
+line carries `engine=<name>` (`jt9`, `wsprd`, or `go` when the reference
+binary is missing or fails), and `FTXMessage.Engine` / `WSPRMessage.Engine`
+are always set on the Auto paths. The pure Go `FTXDecode` / `WSPRDecode`
+stay in place for the decoderegress regression corpus and as the fallback.
+
+`scripts/refdec.sh` installs jt9/wsprd without root (apt-get download +
+dpkg-deb -x into `$SDR_TOOLCHAIN/refdec`, following missing-library
+mappings) and exports `SDRSTREAM_REFDEC_DIR`; `scripts/run.sh` and CI
+source it. `go run ./cmd/engineproof <wav> ft8|wspr <name> <startUnix>`
+replays a capture through HFDecodeForScan to show the live engine labels.
