@@ -315,3 +315,4 @@ tr:hover td { background: var(--panel-2); }
 .scan-log-url,.scan-log .card-meta{overflow-wrap:anywhere;word-break:break-word}pre{white-space:pre-wrap;overflow-wrap:anywhere}
 
 @media(max-width:899px){.mobile-scroll-cue{display:block;font-size:12px}.mainnav button:not([hidden]){flex:1 1 20%}}@media(min-width:900px){.mobile-scroll-cue{display:none}}
+.mainnav button[hidden] { display: none; }
