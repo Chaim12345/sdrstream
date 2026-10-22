@@ -202,13 +202,14 @@ func main() {
 						fmt.Printf("  saved %s\n", p)
 					}
 				}
-				msgs, engine, derr := decode.FTXDecodeAuto(ctx, toF64(samples), rate, "FT8")
+				slot16, slotStart := alignedCut(samples, rate, start, 15)
+				msgs, engine, derr := decode.FTXDecodeAuto(ctx, toF64(slot16), rate, "FT8")
 				if derr != nil {
 					log.Printf("ft8 decode: %v", derr)
 				}
 				for _, m := range msgs {
 					fmt.Printf("  %s %s %+5.1f dB %+4.1f s %4.0f Hz  %s\n",
-						start.UTC().Format("150405"), m.Protocol, m.SNR, m.DT, m.FreqHz, m.Text)
+						slotStart.UTC().Format("150405"), m.Protocol, m.SNR, m.DT, m.FreqHz, m.Text)
 				}
 				fmt.Printf("  FT8: %d messages decoded from live audio (engine: %s)\n", len(msgs), engine)
 				if *crosscheck || *ledger != "" {
@@ -248,10 +249,10 @@ func main() {
 						fmt.Printf("    [%s] %s\n", verified, m.Text)
 						ledgerItems = append(ledgerItems, ledgerItem{
 							Source: "sdrstream-hfprove", Kind: "digimode",
-							ID:        fmt.Sprintf("hfprove|ft8|%d|%s", start.Unix(), m.Text),
+							ID:        fmt.Sprintf("hfprove|ft8|%d|%s", slotStart.Unix(), m.Text),
 							Label:     m.Text,
 							Detail:    fmt.Sprintf("FT8 %.3f MHz %+.1f dB %+.1f s %.0f Hz via %s", *ft8Freq/1000, m.SNR, m.DT, m.FreqHz, *server),
-							ProviderT: start.UTC().Format(time.RFC3339),
+							ProviderT: slotStart.UTC().Format(time.RFC3339),
 							FetchedAt: time.Now().UTC().Format(time.RFC3339),
 							DecodedBy: "sdrstream/" + engine,
 							Ref:       ref, Verified: verified, Audio: audio,
@@ -278,13 +279,14 @@ func main() {
 						fmt.Printf("  saved %s\n", p)
 					}
 				}
-				wmsgs, wengine, derr := decode.WSPRDecodeAuto(ctx, toF64(samples), rate)
+				win, winStart := alignedCut(samples, rate, start, 120)
+				wmsgs, wengine, derr := decode.WSPRDecodeAuto(ctx, toF64(win), rate)
 				if derr != nil {
 					log.Printf("wspr decode: %v", derr)
 				}
 				for _, m := range wmsgs {
 					fmt.Printf("  %s %+4.0f dB %+4.1f  %4.0f Hz  %s\n",
-						start.UTC().Format("1504"), m.SNR, m.DT, m.FreqHz, m.Text)
+						winStart.UTC().Format("1504"), m.SNR, m.DT, m.FreqHz, m.Text)
 				}
 				fmt.Printf("  WSPR: %d messages decoded from live audio (engine: %s)\n", len(wmsgs), wengine)
 				if *crosscheck || *ledger != "" {
@@ -307,7 +309,7 @@ func main() {
 							}
 						}
 						var err error
-						if spots, err = wsprLiveSpots(ctx, httpClient, calls, start.Add(-30*time.Second)); err != nil {
+						if spots, err = wsprLiveSpots(ctx, httpClient, calls, winStart.Add(-30*time.Second)); err != nil {
 							log.Printf("wspr.live: %v", err)
 						}
 					}
@@ -321,10 +323,10 @@ func main() {
 						fmt.Printf("    [%s] %s\n", verified, m.Text)
 						ledgerItems = append(ledgerItems, ledgerItem{
 							Source: "sdrstream-hfprove", Kind: "digimode",
-							ID:        fmt.Sprintf("hfprove|wspr|%d|%s", start.Unix(), m.Text),
+							ID:        fmt.Sprintf("hfprove|wspr|%d|%s", winStart.Unix(), m.Text),
 							Label:     m.Text,
 							Detail:    fmt.Sprintf("WSPR %.4f MHz %+.0f dB %+.1f s %.0f Hz via %s", *wsprFreq/1000, m.SNR, m.DT, m.FreqHz, *server),
-							ProviderT: start.UTC().Format(time.RFC3339),
+							ProviderT: winStart.UTC().Format(time.RFC3339),
 							FetchedAt: time.Now().UTC().Format(time.RFC3339),
 							DecodedBy: "sdrstream/" + wengine,
 							Ref:       ref, Verified: verified, Audio: audio,
@@ -400,6 +402,26 @@ func main() {
 		}
 	}
 	fmt.Println("\ndone - all decodes above are from live over-the-air audio")
+}
+
+// alignedCut extracts the first full slotSecs window that starts on a UTC
+// slot boundary inside the capture, which is what the reference decoders
+// expect. WebSDR returns buffered audio that can start before the boundary.
+func alignedCut(samples []int16, rate int, start time.Time, slotSecs int64) ([]int16, time.Time) {
+	dur := time.Duration(float64(len(samples)) / float64(rate) * float64(time.Second))
+	end := start.Add(dur)
+	slot := start.Truncate(time.Duration(slotSecs) * time.Second)
+	for slot.Add(time.Duration(slotSecs)*time.Second).Before(end) || slot.Add(time.Duration(slotSecs)*time.Second).Equal(end) {
+		if !slot.Before(start) {
+			off := int(slot.Sub(start).Seconds() * float64(rate))
+			n := int(slotSecs) * rate
+			if off >= 0 && off+n <= len(samples) {
+				return samples[off : off+n], slot
+			}
+		}
+		slot = slot.Add(time.Duration(slotSecs) * time.Second)
+	}
+	return samples, start
 }
 
 func toF64(in []int16) []float64 {

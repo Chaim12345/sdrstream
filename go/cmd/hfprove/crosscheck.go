@@ -79,6 +79,19 @@ func pskrSpots(ctx context.Context, client *http.Client, callsign string, window
 	if err != nil {
 		return nil, err
 	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		// The retrieval API rate-limits aggressively (and some egress IPs
+		// are throttled wholesale). One polite retry, then give up.
+		resp.Body.Close()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+		if resp, err = client.Do(req); err != nil {
+			return nil, err
+		}
+	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
@@ -116,6 +129,19 @@ func wsprLiveSpots(ctx context.Context, client *http.Client, calls []string, sin
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		// The retrieval API rate-limits aggressively (and some egress IPs
+		// are throttled wholesale). One polite retry, then give up.
+		resp.Body.Close()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+		if resp, err = client.Do(req); err != nil {
+			return nil, err
+		}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))

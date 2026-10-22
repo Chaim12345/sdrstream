@@ -76,11 +76,16 @@ func refFor(family, forced string) RefDecoder {
 	return nil
 }
 
-// wavForRef writes samples to a temporary WAV for a reference tool.
+// wavForRef writes samples to a temporary WAV for a reference tool. The
+// WSJT-X tools read 12000 Hz only, so other rates are resampled first.
 func wavForRef(samples []float64, rate int) (string, func(), error) {
 	dir, err := os.MkdirTemp("", "sdrstream-eng-")
 	if err != nil {
 		return "", nil, err
+	}
+	if rate != 12000 {
+		samples = resampleLinear(samples, rate, 12000)
+		rate = 12000
 	}
 	p := filepath.Join(dir, "in.wav")
 	if err := os.WriteFile(p, WriteWAV16(floatTo16(samples), rate), 0o644); err != nil {
