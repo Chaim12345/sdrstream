@@ -24,6 +24,12 @@ import (
 type recorder interface {
 	Tune(freqHz int64, mode string) error
 	Record(dur time.Duration) ([]int16, int, error)
+	// StartOf reports the UTC time of the first returned sample, given the
+	// wall-clock times around Record and the captured duration. KiwiSDR
+	// audio is read straight off the socket, so the first sample is the
+	// call time; WebSDR buffers audio in a background read loop, so the
+	// first sample is (end of Record) minus (captured duration).
+	StartOf(callStart, callEnd time.Time, captured time.Duration) time.Time
 }
 
 type kiwiRec struct{ c *kiwisdr.Client }
@@ -31,6 +37,9 @@ type kiwiRec struct{ c *kiwisdr.Client }
 func (k kiwiRec) Tune(f int64, m string) error { return k.c.Tune(context.Background(), f, m) }
 func (k kiwiRec) Record(d time.Duration) ([]int16, int, error) {
 	return k.c.Record(context.Background(), d)
+}
+func (k kiwiRec) StartOf(callStart, callEnd time.Time, captured time.Duration) time.Time {
+	return callStart
 }
 
 type webRec struct{ c *websdr.Client }
@@ -40,6 +49,9 @@ func (w webRec) Tune(f int64, m string) error {
 }
 func (w webRec) Record(d time.Duration) ([]int16, int, error) {
 	return w.c.Record(context.Background(), d)
+}
+func (w webRec) StartOf(callStart, callEnd time.Time, captured time.Duration) time.Time {
+	return callEnd.Add(-captured)
 }
 
 func writeWAV(path string, samples []int16, rate int) error {
@@ -79,8 +91,13 @@ func recordAligned(ctx context.Context, c recorder, slotSecs int64, lead time.Du
 		case <-time.After(wait):
 		}
 	}
-	start := time.Now().UTC()
+	callStart := time.Now().UTC()
 	samples, rate, err := c.Record(dur)
+	callEnd := time.Now().UTC()
+	if err != nil {
+		return samples, rate, callStart, err
+	}
+	start := c.StartOf(callStart, callEnd, time.Duration(float64(len(samples))/float64(rate)*float64(time.Second)))
 	return samples, rate, start, err
 }
 
@@ -281,7 +298,7 @@ func main() {
 func toF64(in []int16) []float64 {
 	out := make([]float64, len(in))
 	for i, s := range in {
-		out[i] = float64(s)
+		out[i] = float64(s) / 32768.0 // decoders expect ReadWAV-style +/-1 audio
 	}
 	return out
 }
