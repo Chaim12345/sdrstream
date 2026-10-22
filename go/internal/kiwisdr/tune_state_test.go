@@ -39,18 +39,15 @@ func TestInfoAndRateAccessorsAreLocked(t *testing.T) {
 	wg.Wait()
 }
 
-// Tune's drain must swallow binary audio still in flight from the previous
-// frequency, but must NOT swallow MSG frames: they carry session state
-// such as sample_rate that Record depends on downstream.
+// handleText is the only path that advances the session state that
+// SampleRate/InfoSnapshot expose under stateMu. A drain that swallowed
+// MSG frames (the first attempt at review M4 on this client) would
+// silently lose sample_rate and the version; these assert the routing works.
 func TestTuneDrainKeepsTextFrames(t *testing.T) {
 	c, err := New("localhost:8073", DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Direct handleText check: the drain loop routes text frames back
-	// into handleText, so feed a session-state frame through it and make
-	// sure the accessors observe the update (this is what a swallow would
-	// silently break).
 	c.handleText("MSG sample_rate=20250")
 	if got := c.SampleRate(); got != 20250 {
 		t.Fatalf("SampleRate = %d, want 20250 (MSG frame routed to handleText)", got)

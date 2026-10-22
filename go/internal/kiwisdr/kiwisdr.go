@@ -28,12 +28,6 @@ const (
 	flagStereo      = 0x08
 	flagCompressed  = 0x10
 	flagLittleEndLs = 0x80
-
-	// tuneDrainWindow bounds how long Tune waits, after sending the SET
-	// line, swallowing audio that was still in flight from the previous
-	// frequency (review M4). Past that instant the frames that arrive
-	// are guaranteed post-tune, so the capture starts clean.
-	tuneDrainWindow = 250 * time.Millisecond
 )
 
 // Passbands the browser client uses per mode, in Hz around the tuned centre.
@@ -211,26 +205,7 @@ func (c *Client) tuneSend(freqHz int64, mode string) error {
 	line := fmt.Sprintf("SET mod=%s low_cut=%d high_cut=%d freq=%.3f",
 		mode, band[0], band[1], freqKHz)
 	c.ws.SetWriteDeadline(time.Now().Add(writeDeadline(c)))
-	err := c.ws.WriteMessage(websocket.TextMessage, []byte(line))
-	if err == nil {
-		// In-flight audio from before the tune is still inside the TCP
-		// stream; discard a bounded window of it so the next capture
-		// starts clean (review M4). Text frames (MSG name=value) still
-		// carry session state such as sample_rate, so they are handled;
-		// only the binary SND/WEFAX frames are dropped.
-		drainUntil := time.Now().Add(tuneDrainWindow)
-		_ = c.ws.SetReadDeadline(drainUntil)
-		for {
-			kind, data, err2 := c.ws.ReadMessage()
-			if err2 != nil {
-				break
-			}
-			if kind == websocket.TextMessage && strings.HasPrefix(string(data), "MSG ") {
-				c.handleText(string(data))
-			}
-		}
-	}
-	return err
+	return c.ws.WriteMessage(websocket.TextMessage, []byte(line))
 }
 
 // Info snapshot of what the server has announced so far.

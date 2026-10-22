@@ -1,6 +1,7 @@
 package decode
 
 import (
+	"fmt"
 	"math"
 	"sync"
 	"testing"
@@ -134,4 +135,68 @@ func TestAISConcurrentFeed(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// M16: incomplete assemblies must not accumulate forever. Fragment one of
+// a two-part message from many different sequence ids and the map must
+// stay bounded and drop the stragglers.
+// nmeaWithChecksum builds a valid-checksum sentence from the body.
+func nmeaWithChecksum(body string) string {
+	sum := 0
+	for i := 1; i < len(body); i++ {
+		sum ^= int(body[i])
+	}
+	return fmt.Sprintf("%s*%02X", body, sum)
+}
+
+func TestAISAssemblerEvictsOrphanedFragments(t *testing.T) {
+	a := NewAISAssembler()
+	// Drive far more distinct in-flight keys than the cap. Each sentence
+	// is fragment 1 of a 2-part burst that never completes.
+	for i := 0; i < aisMaxInFlight*4; i++ {
+		body := fmt.Sprintf("!AIVDM,2,1,%d,A,15NSAu42CqpGD8<CL01@u8n04h,0", i)
+		sentence := nmeaWithChecksum(body)
+		if _, _, err := a.Feed(sentence); err != nil {
+			t.Fatalf("feed %d: %v", i, err)
+		}
+	}
+	a.mu.Lock()
+	tracked := len(a.parts)
+	a.mu.Unlock()
+	if tracked > aisMaxInFlight {
+		t.Fatalf("assembler now tracks %d in-flight messages, cap is %d", tracked, aisMaxInFlight)
+	}
+}
+
+// A corrupted payload must not produce an out-of-range position; the
+// existing sentinel record (181/91 deg) must still decode to no position.
+func TestAISPositionClampedOnGarbage(t *testing.T) {
+	// Exercise the guard directly with a wrapped-signed field, since
+	// crafting a real NMEA payload that decodes out of range is brittle.
+	// Sign bit 0 and every other bit 1 in the 28-bit lon / 27-bit lat
+	// fields decodes as 134217727/67108863, i.e. lon 223.7 deg / lat
+	// 111.8 deg - plainly impossible, exactly what a corrupted payload
+	// can produce.
+	m := &AISMessage{}
+	// The reader is 6-bit-armoured: bit p lives at byte p/6, bit 5-p%6.
+	bits := make([]byte, 16)
+	setBits := func(from, width int) {
+		for i := 0; i < width; i++ {
+			p := from + i
+			bits[p/6] |= 1 << uint(5-p%6)
+		}
+		// The reader accumulates MSB-first, so the sign bit is the FIRST
+		// bit of the field, not the last.
+		sign := from
+		bits[sign/6] &^= 1 << uint(5-sign%6)
+	}
+	setBits(0, 28)  // lon
+	setBits(28, 27) // lat
+	m.decodeLatLon(&bitReader{data: bits, nbits: len(bits) * 6}, 0)
+	if m.HasPos {
+		t.Fatalf("out-of-range lat=%f lon=%f published; the guard must drop wrapped values", m.Lat, m.Lon)
+	}
+	if !latInRange(89) {
+		t.Fatal("latInRange rejected a legal latitude")
+	}
 }

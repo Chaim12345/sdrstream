@@ -78,3 +78,13 @@ func TestWSPRLiveMoreWindows(t *testing.T) {
 		}
 	}
 }
+
+// M15: a perfectly flat symbol-magnitude window (digital silence) makes
+// fac==0, and the un-guarded division produced NaN that failed both clamp
+// comparisons and poisoned the Fano input. Pure silence must decode nothing.
+func TestWSPRSilenceDecodesNothing(t *testing.T) {
+	zeros := make([]float64, 120*12000)
+	if got := WSPRDecode(zeros, 12000); len(got) != 0 {
+		t.Fatalf("decoded %v from digital silence", got)
+	}
+}

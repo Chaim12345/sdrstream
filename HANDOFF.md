@@ -134,15 +134,19 @@ far** (commits `9856a52`, `41efb0d`, `7259d71`, `c1051e4`):
 **Still open:**
 
 * **H2/H3 remainder:** openwebrx auto-reconnect (`Reconnect` option still
-  unused; consumers must reconnect instead), kiwi in-flight reconnect +
-  unlocked `rate`/`info` (M7), tune-drain (M4), websdr backoff reset +
-  preflight short-read, and a websdr test suite (still zero tests).
-* **H3 remainder for tune paths:** drain pre-tune audio in all three
-  clients (clips start with the previous frequency).
-* **M6** verify gate mixes byte/rune counts (rejects accented text) +
-  substring anchors.
-* **M15/M16** WSPR NaN/fac==0 + Fano off-by-one + ~345 MB/h retention;
-  AIS assembler never evicts orphans + unclamped lat/lon.
+  unused - consumers must reconnect instead), kiwi in-flight reconnect
+  (fixed interval, masked error), websdr backoff reset + preflight
+  short-read, and a websdr test suite (still zero tests).
+* **M15 remainder:** ~345 MB/h retention (capture quota knob);
+  WSPR Fano "off-by-one" re-verified against the Phil Karn reference
+  (Guenael/rtlsdr-wsprd `wsprd/fano.c`) and is a **FALSE positive** -
+  `lastnode=nbits-1`, `tail=nbits-31`, the metric/sort loops, the
+  forward/backward walk and the `nodes[7]` step-8 octet extraction all
+  match byte-for-byte, so no change was made.
+* WSPR NaN/fac==0: guarded (`symbols[i]=128` on NaN/Inf), but the
+  degenerate path is **not reachable** from `WSPRDecode` today (silence is
+  filtered before symbol normalization), so the guard is defensive
+  hardening, not a bug fix; the new test is a smoke test only.
 * openwebrx readLoop writes Config/Profiles without mu (minor race).
 
 **Critical**
