@@ -15,7 +15,7 @@ app is running is a deployment fact, not something this file can state.
   - append-only record of every first sighting: provider time, our fetch
   time, who decoded it (`provider` for every current feed) and a link to the
   provider. It is sdrstream's normalised view, not the raw upstream bytes.
-  File: `sdrstream-ledger.jsonl` in the state dir, rotated at 16 MiB.
+  File: `sdrstream-ledger.jsonl` in the state dir, rotated at 64 MiB per file (SDRSTREAM_LEDGER_MAX_MB, 1-1024).
 * Each feed card in the UI has a "proof" toggle with the same fields.
 
 ## What the tool does

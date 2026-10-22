@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,9 @@ type LedgerEntry struct {
 
 // Ledger is an append-only JSONL file of first sightings. It rotates to
 // path+".1" at maxBytes so disk use stays bounded (about 2*maxBytes).
+// The default is 64 MiB per file (about 128 MiB total, roughly 14 hours
+// at the ~9 MB/hour measured with all feeds on); set SDRSTREAM_LEDGER_MAX_MB
+// to change it.
 type Ledger struct {
 	path     string
 	maxBytes int64
@@ -43,10 +47,10 @@ type Ledger struct {
 }
 
 // NewLedger opens (creating) the ledger and starts its writer. Close it
-// to flush. maxBytes <= 0 means 16 MiB.
+// to flush. maxBytes <= 0 means DefaultLedgerBytes.
 func NewLedger(path string, maxBytes int64) *Ledger {
 	if maxBytes <= 0 {
-		maxBytes = 16 << 20
+		maxBytes = DefaultLedgerBytes
 	}
 	l := &Ledger{path: path, maxBytes: maxBytes, ch: make(chan LedgerEntry, 4096), done: make(chan struct{})}
 	go l.run()
@@ -153,3 +157,25 @@ func (m *Manager) SetLedger(l *Ledger) { m.mu.Lock(); m.ledger = l; m.mu.Unlock(
 
 // Ledger returns the attached ledger or nil.
 func (m *Manager) Ledger() *Ledger { m.mu.Lock(); defer m.mu.Unlock(); return m.ledger }
+
+// DefaultLedgerBytes is the per-file rotation size.
+const DefaultLedgerBytes int64 = 64 << 20
+
+// MaxLedgerMB caps the configurable size (1 GiB per file) so a typo cannot
+// fill the disk.
+const MaxLedgerMB = 1024
+
+// LedgerBytesFromEnv reads SDRSTREAM_LEDGER_MAX_MB (per-file size in MiB).
+// Unset, invalid or out-of-range (<1 or >MaxLedgerMB) values give the
+// default; ok reports whether the value was valid or unset.
+func LedgerBytesFromEnv(getenv func(string) string) (bytes int64, ok bool) {
+	raw := strings.TrimSpace(getenv("SDRSTREAM_LEDGER_MAX_MB"))
+	if raw == "" {
+		return DefaultLedgerBytes, true
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 || n > MaxLedgerMB {
+		return DefaultLedgerBytes, false
+	}
+	return int64(n) << 20, true
+}

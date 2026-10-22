@@ -59,3 +59,38 @@ func TestLedgerSkipsTornLine(t *testing.T) {
 		t.Fatalf("got %d, want 1", len(got))
 	}
 }
+
+func TestLedgerBytesFromEnv(t *testing.T) {
+	env := func(v string) func(string) string { return func(string) string { return v } }
+	cases := []struct {
+		in    string
+		want  int64
+		valid bool
+	}{
+		{"", DefaultLedgerBytes, true},
+		{"128", 128 << 20, true},
+		{" 1 ", 1 << 20, true},
+		{"1024", 1024 << 20, true},
+		{"0", DefaultLedgerBytes, false},
+		{"-5", DefaultLedgerBytes, false},
+		{"1025", DefaultLedgerBytes, false},
+		{"lots", DefaultLedgerBytes, false},
+	}
+	for _, c := range cases {
+		got, ok := LedgerBytesFromEnv(env(c.in))
+		if got != c.want || ok != c.valid {
+			t.Errorf("%q: got %d,%v want %d,%v", c.in, got, ok, c.want, c.valid)
+		}
+	}
+	if DefaultLedgerBytes != 64<<20 {
+		t.Errorf("default = %d, want 64 MiB", DefaultLedgerBytes)
+	}
+}
+
+func TestNewLedgerZeroUsesDefault(t *testing.T) {
+	l := NewLedger(filepath.Join(t.TempDir(), "l.jsonl"), 0)
+	defer l.Close()
+	if l.maxBytes != DefaultLedgerBytes {
+		t.Fatalf("maxBytes = %d", l.maxBytes)
+	}
+}
