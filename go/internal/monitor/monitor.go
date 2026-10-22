@@ -1106,7 +1106,12 @@ func (m *Monitor) decodeData(ctx context.Context, samples []float64, rate int, b
 		if text := decode.PSK31Decode(samples, rate, 0); text != "" {
 			return "psk31", text, true
 		}
-		if text := decode.RTTYDecode(samples, rate, 0, 0, 0); text != "" {
+		// HF services disagree on mark/space polarity (amateur mark-high
+		// vs DWD F1B mark-low), so try both and keep the readable one.
+		if text, inverted := decode.RTTYDecodeAuto(samples, rate, 0, 0, 0); text != "" {
+			if inverted {
+				return "rtty", text + " [inverted mark/space]", true
+			}
 			return "rtty", text, true
 		}
 		// SSTV is intentionally disabled in live classification until the

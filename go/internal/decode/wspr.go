@@ -208,6 +208,12 @@ func wsprSyncDemod(id, qd []float64, np int, f1 *float64, ifmin, ifmax int, fste
 		f2sum += bestSym[i] * bestSym[i] / 162
 	}
 	fac := math.Sqrt(f2sum - fsum*fsum)
+	if math.IsNaN(fac) || fac <= 0 {
+		// Constant (or empty) symbol powers give a zero or negative
+		// variance; dividing by it would spread NaN through the soft
+		// symbols. Fall back to unscaled symbols instead.
+		fac = 1
+	}
 	for i := 0; i < 162; i++ {
 		v := symfac * bestSym[i] / fac
 		if v > 127 {

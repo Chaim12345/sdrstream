@@ -33,48 +33,17 @@ const (
 // then one or more stop bits (mark). Characters are accumulated with ITA2
 // letters/figures shifting.
 func RTTYDecode(samples []float64, rate int, markHz, spaceHz, baud float64) string {
-	if rate < 4000 || len(samples) < rate/10 {
-		return ""
-	}
-	if markHz == 0 {
-		markHz = 2125
-	}
-	if spaceHz == 0 {
-		spaceHz = markHz - 170
-	}
-	if baud <= 0 {
-		baud = 45.45
-	}
-	spb := float64(rate) / baud
-	win := int(math.Round(spb * 0.8))
-	if win < 8 {
-		win = 8
-	}
-	// Build an oversampled mark/space decision stream. For each 1/8-bit step
-	// compare the windowed energy of the mark and space tones; the sign is
-	// the instantaneous bit value. Oversampling lets the framer lock onto
-	// each start edge instead of relying on a free-running bit clock.
-	const over = 8
-	step := spb / over
-	var level []byte
-	for pos := 0.0; pos+float64(win) <= float64(len(samples)); pos += step {
-		start := int(pos)
-		seg := samples[start : start+win]
-		markMag := goertzel(seg, rate, markHz)
-		spaceMag := goertzel(seg, rate, spaceHz)
-		b := byte(0)
-		if markMag >= spaceMag {
-			b = 1
-		}
-		level = append(level, b)
-	}
-	return ita2Frame(level, over)
+	text, _ := rttyDecodeFramed(samples, rate, markHz, spaceHz, baud)
+	return text
 }
 
 // ita2Frame locks onto start bits in an oversampled mark/space stream
 // (samplesPerBit = over entries per bit) and decodes ITA2 characters.
-func ita2Frame(level []byte, over int) string {
+// It also reports how many characters framed cleanly, which separates the
+// right mark/space polarity from a mislocked wrong-polarity reading.
+func ita2Frame(level []byte, over int) (string, int) {
 	var out strings.Builder
+	framed := 0
 	figures := false
 	i := 1
 	for i+7*over < len(level) {
@@ -110,6 +79,7 @@ func ita2Frame(level []byte, over int) string {
 			if ch != 0 {
 				out.WriteByte(ch)
 			}
+			framed++
 		}
 		i += 7 * over
 	}
@@ -127,12 +97,12 @@ func ita2Frame(level []byte, over int) string {
 		}
 	}
 	if printable < 6 {
-		return ""
+		return "", 0
 	}
 	if letters*2 < printable {
-		return ""
+		return "", 0
 	}
-	return text
+	return text, framed
 }
 
 // RTTYDecodeAuto tries both mark/space polarities and returns the text of
@@ -141,12 +111,64 @@ func ita2Frame(level []byte, over int) string {
 // F1B with mark as the lower tone, so a fixed convention silently decodes
 // inverted garbage on one of them.
 func RTTYDecodeAuto(samples []float64, rate int, markHz, spaceHz, baud float64) (text string, inverted bool) {
-	direct := RTTYDecode(samples, rate, markHz, spaceHz, baud)
-	swapped := RTTYDecode(samples, rate, spaceHz, markHz, baud)
-	if RTTYQuality(swapped) > RTTYQuality(direct) {
+	// Resolve the defaults before swapping: with zero tones both attempts
+	// would otherwise re-default to the same assignment and never swap.
+	if markHz == 0 {
+		markHz = 2125
+	}
+	if spaceHz == 0 {
+		spaceHz = markHz - 170
+	}
+	if baud <= 0 {
+		baud = 45.45
+	}
+	direct, directN := rttyDecodeFramed(samples, rate, markHz, spaceHz, baud)
+	swapped, swappedN := rttyDecodeFramed(samples, rate, spaceHz, markHz, baud)
+	dq, sq := RTTYQuality(direct), RTTYQuality(swapped)
+	// Quality first; on a tie prefer the polarity that framed more
+	// characters. A wrong-polarity reading mislocks onto data bits and
+	// skips most frames, but its text is all letters, so quality alone
+	// cannot tell it apart.
+	if sq > dq || sq == dq && swappedN > directN {
 		return swapped, true
 	}
 	return direct, false
+}
+
+// rttyDecodeFramed is RTTYDecode plus the cleanly framed character count.
+func rttyDecodeFramed(samples []float64, rate int, markHz, spaceHz, baud float64) (string, int) {
+	if rate < 4000 || len(samples) < rate/10 {
+		return "", 0
+	}
+	if markHz == 0 {
+		markHz = 2125
+	}
+	if spaceHz == 0 {
+		spaceHz = markHz - 170
+	}
+	if baud <= 0 {
+		baud = 45.45
+	}
+	spb := float64(rate) / baud
+	win := int(math.Round(spb * 0.8))
+	if win < 8 {
+		win = 8
+	}
+	const over = 8
+	step := spb / over
+	var level []byte
+	for pos := 0.0; pos+float64(win) <= float64(len(samples)); pos += step {
+		start := int(pos)
+		seg := samples[start : start+win]
+		markMag := goertzel(seg, rate, markHz)
+		spaceMag := goertzel(seg, rate, spaceHz)
+		b := byte(0)
+		if markMag >= spaceMag {
+			b = 1
+		}
+		level = append(level, b)
+	}
+	return ita2Frame(level, over)
 }
 
 // RTTYQuality scores decoded RTTY text for readability. Real teleprinter

@@ -509,6 +509,11 @@ func resampleTo12k(x []float64, rate int) []float64 {
 	if rate == ftxRate {
 		return append([]float64(nil), x...)
 	}
+	if rate <= 0 {
+		// Without a real source rate there is no resampling ratio;
+		// dividing by it would panic on a negative or unbounded length.
+		return append([]float64(nil), x...)
+	}
 	ratio := float64(rate) / ftxRate
 	n := int(float64(len(x)) / ratio)
 	out := make([]float64, n)
