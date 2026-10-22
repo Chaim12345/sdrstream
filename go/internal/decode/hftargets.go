@@ -7,18 +7,19 @@ import "time"
 // audio should be demodulated, and which decoder turns it back into text
 // or images.
 type HFTarget struct {
-	Name        string  // human-readable service name
-	Kind        string  // rtty, cw, navtex, wefax, ft8, wspr
-	CarrierKHz  float64 // published carrier/centre frequency
-	DialKHz     float64 // receiver dial frequency (sideband offset applied)
-	Mode        string  // receiver demodulation mode (usb, lsb, am, cw, cwn)
-	Baud        float64 // symbol rate for RTTY/NAVTEX
-	MarkHz      float64 // expected mark tone in the audio passband
-	SpaceHz     float64 // expected space tone in the audio passband
-	Inverted    bool    // mark is the lower RF tone (DWD F1B convention)
-	LinesPerMin float64 // fax drum speed
-	IOC         int     // fax index of cooperation
-	Expect      string  // quality-gate anchor: callsign or phrase a real decode must contain
+	Name        string        // human-readable service name
+	Kind        string        // rtty, cw, navtex, wefax, ft8, wspr
+	CarrierKHz  float64       // published carrier/centre frequency
+	DialKHz     float64       // receiver dial frequency (sideband offset applied)
+	Mode        string        // receiver demodulation mode (usb, lsb, am, cw, cwn)
+	Baud        float64       // symbol rate for RTTY/NAVTEX
+	MarkHz      float64       // expected mark tone in the audio passband
+	SpaceHz     float64       // expected space tone in the audio passband
+	Inverted    bool          // mark is the lower RF tone (DWD F1B convention)
+	LinesPerMin float64       // fax drum speed
+	IOC         int           // fax index of cooperation
+	Listen      time.Duration // capture length this decoder needs; 0 = session default
+	Expect      string        // quality-gate anchor: callsign or phrase a real decode must contain
 }
 
 // HFBroadcasts lists the services monitored for live HF decoding.
@@ -93,19 +94,19 @@ var HFBroadcasts = []HFTarget{
 		CarrierKHz: 7070.0, DialKHz: 7070.0, Mode: "usb",
 	},
 	{
-		Name: "FT4 40m", Kind: "ft8",
+		Name: "FT4 40m", Kind: "ft8", Listen: 40 * time.Second,
 		CarrierKHz: 7047.5, DialKHz: 7047.5, Mode: "usb",
 	},
 	{
-		Name: "FT8 40m", Kind: "ft8",
+		Name: "FT8 40m", Kind: "ft8", Listen: 40 * time.Second,
 		CarrierKHz: 7074.0, DialKHz: 7074.0, Mode: "usb",
 	},
 	{
-		Name: "FT8 80m (late)", Kind: "ft8",
+		Name: "FT8 80m (late)", Kind: "ft8", Listen: 40 * time.Second,
 		CarrierKHz: 3573.0, DialKHz: 3573.0, Mode: "usb",
 	},
 	{
-		Name: "WSPR 40m", Kind: "wspr",
+		Name: "WSPR 40m", Kind: "wspr", Listen: 250 * time.Second,
 		CarrierKHz: 7038.6, DialKHz: 7038.6, Mode: "usb",
 	},
 	{
@@ -223,11 +224,11 @@ var HFBroadcasts = []HFTarget{
 		CarrierKHz: 14070.0, DialKHz: 14070.0, Mode: "usb",
 	},
 	{
-		Name: "FT8 20m", Kind: "ft8",
+		Name: "FT8 20m", Kind: "ft8", Listen: 40 * time.Second,
 		CarrierKHz: 14074.0, DialKHz: 14074.0, Mode: "usb",
 	},
 	{
-		Name: "WSPR 20m", Kind: "wspr",
+		Name: "WSPR 20m", Kind: "wspr", Listen: 250 * time.Second,
 		CarrierKHz: 14095.6, DialKHz: 14095.6, Mode: "usb",
 	},
 }
@@ -251,4 +252,13 @@ func (t HFTarget) ActiveNow(now time.Time) bool {
 		return false
 	}
 	return true
+}
+
+// ListenFor returns the capture length for t: its own need when set,
+// otherwise the session default.
+func (t HFTarget) ListenFor(def time.Duration) time.Duration {
+	if t.Listen > 0 {
+		return t.Listen
+	}
+	return def
 }

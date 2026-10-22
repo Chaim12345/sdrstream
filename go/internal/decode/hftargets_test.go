@@ -106,3 +106,18 @@ func TestDecodeHFNoBackendKindsNeverLive(t *testing.T) {
 		}
 	}
 }
+
+func TestDigitalTargetsRequestLongEnoughListens(t *testing.T) {
+	for _, tg := range HFBroadcasts {
+		switch tg.Kind {
+		case "wspr":
+			if tg.ListenFor(12*time.Second) < 240*time.Second {
+				t.Errorf("%s listens %v, WSPR needs a full window", tg.Name, tg.ListenFor(12*time.Second))
+			}
+		case "ft8":
+			if tg.ListenFor(12*time.Second) < 35*time.Second {
+				t.Errorf("%s listens %v, FT8/FT4 need two slot boundaries", tg.Name, tg.ListenFor(12*time.Second))
+			}
+		}
+	}
+}
