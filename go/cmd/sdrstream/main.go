@@ -1674,6 +1674,15 @@ func cmdDecode(args []string) error {
 				fmt.Printf("   pocsag: %s\n", m.String())
 			}
 		}
+		if *mode == "flex" || wantAll {
+			msgs := decode.FlexDecode(samples, rate)
+			if len(msgs) == 0 && *mode == "flex" {
+				fmt.Println("   flex:   no pages")
+			}
+			for _, m := range msgs {
+				fmt.Printf("   flex:   %s\n", m.String())
+			}
+		}
 		if *mode == "eas" || wantAll {
 			alerts := decode.EASDecode(samples, rate)
 			if len(alerts) == 0 && *mode == "eas" {
