@@ -150,6 +150,7 @@ async function refreshStatus() {
     renderNextPass(status);
     renderPasses(status);
     renderCaptures(status);
+    renderHealth();
   } catch (err) { el('msg').textContent = 'status unavailable: ' + err; }
 }
 
@@ -181,10 +182,151 @@ function renderPasses(status) {
 }
 
 /* ---------- captures ---------- */
+/* Per-item proof for one archived receiver capture (PR #5 record-all
+   archive): the saved audio, decode text, receiver ID and UTC time, read
+   from the capture sidecar the scanner writes next to every clip. */
+function captureProof(c) {
+  const wrap = document.createElement('div');
+  const pb = document.createElement('button');
+  pb.className = 'chip proof-toggle'; pb.type = 'button'; pb.textContent = 'proof';
+  const pf = document.createElement('div');
+  pf.className = 'capture-proof'; pf.hidden = true;
+  const row = (label, valueNode) => {
+    const r = document.createElement('div'); r.className = 'proof-row';
+    const l = document.createElement('span'); l.className = 'proof-label'; l.textContent = label;
+    const v = document.createElement('span'); v.className = 'proof-value';
+    if (typeof valueNode === 'string') v.textContent = valueNode; else v.appendChild(valueNode);
+    r.append(l, v); pf.appendChild(r);
+  };
+  row('saved audio', c.url ? link(c.url, c.path) : c.path);
+  row('receiver', c.receiver || 'unknown');
+  const started = new Date(c.start);
+  row('recorded (UTC)', isNaN(started) ? String(c.start || 'unknown') : started.toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z'));
+  if (c.frequency_hz) row('frequency', mhz(c.frequency_hz) + (c.mode ? ' ' + c.mode : ''));
+  row('decode text', c.decode || 'no decode text saved for this clip');
+  row('verified', c.verified ? 'yes - live quality gate passed' : 'no' + (c.gate ? ' - ' + c.gate : ''));
+  row('origin', c.target ? 'scheduled target "' + c.target + '"' : 'blind scan (no named target)');
+  row('archive', c.samples + ' samples at ' + c.rate + ' Hz');
+  pb.onclick = () => { pf.hidden = !pf.hidden; };
+  wrap.append(pb, pf);
+  return wrap;
+}
+
+/* ---------- receiver health & capture success ----------
+   Summarises /api/metrics.json (uptime, scan outcomes, feed sources), the
+   proof ledger (/api/ledger.json) and the archived captures from
+   status.json: verified vs unverified, scheduled target vs blind scan. */
+const SCAN_OK_STATES = new Set(['decoded', 'listening', 'recording', 'decoding', 'tuned', 'connecting', 'idle', 'waiting', 'ok']);
+let healthSnapshot = { metrics: null, ledger: null, atMs: 0 };
+
+const fmtUptime = total => {
+  let s = Math.max(0, Math.round(total));
+  const d = Math.floor(s / 86400); s -= d * 86400;
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60);
+  return (d ? d + 'd ' : '') + (d || h ? h + 'h ' : '') + m + 'm';
+};
+
+function hbar(box, segs) {
+  box.textContent = '';
+  const total = segs.reduce((n, x) => n + x.count, 0);
+  if (!total) { const e = document.createElement('div'); e.className = 'hbar-empty'; box.appendChild(e); return; }
+  segs.forEach(x => {
+    if (!x.count) return;
+    const seg = document.createElement('div');
+    seg.className = 'hbar-seg ' + x.tone;
+    seg.style.width = Math.max(1.5, x.count / total * 100) + '%';
+    seg.title = x.label + ': ' + x.count;
+    box.appendChild(seg);
+  });
+}
+function hlegend(box, segs, emptyText) {
+  box.textContent = '';
+  const total = segs.reduce((n, x) => n + x.count, 0);
+  if (!total) { box.textContent = emptyText; return; }
+  segs.forEach((x, i) => {
+    if (!x.count) return;
+    if (i) box.appendChild(document.createTextNode(' · '));
+    const dot = document.createElement('span'); dot.className = 'hbar-dot ' + x.tone;
+    const t = document.createElement('span'); t.textContent = x.label + ' ' + x.count;
+    box.append(dot, t);
+  });
+}
+
+async function refreshHealth() {
+  try {
+    const [metrics, ledger] = await Promise.all([
+      fetchJSON('/api/metrics.json'),
+      fetchJSON('/api/ledger.json?limit=5000'),
+    ]);
+    healthSnapshot = { metrics, ledger, atMs: Date.now() };
+    renderHealth();
+  } catch {
+    el('health-updated').textContent = 'health data unavailable';
+  }
+}
+
+function renderHealth() {
+  const m = healthSnapshot.metrics;
+  if (!m) return;
+  el('health-updated').textContent = 'updated ' + relTime(new Date(healthSnapshot.atMs).toISOString());
+  el('health-uptime').textContent = fmtUptime(m.uptime_seconds || 0);
+  el('health-stations').textContent = m.scan_stations != null ? m.scan_stations : '–';
+  el('health-captures').textContent = m.captures != null ? m.captures : '–';
+
+  const outcomes = m.scan_outcomes || {};
+  const scanSegs = Object.keys(outcomes).sort().map(k => ({
+    label: k, count: outcomes[k], tone: SCAN_OK_STATES.has(k) ? 'good' : 'bad',
+  }));
+  hbar(el('health-scan-bar'), scanSegs);
+  hlegend(el('health-scan-legend'), scanSegs, 'no scan outcomes recorded since boot');
+  el('health-scan-note').textContent = m.scan_stations ? '' : 'scanner not running since boot';
+
+  const caps = (latestStatus && latestStatus.captures) || [];
+  const verified = caps.filter(c => c.verified).length;
+  const unverified = caps.length - verified;
+  el('health-success').textContent = caps.length ? Math.round(verified / caps.length * 100) + '%' : '–';
+  hbar(el('health-success-bar'), [
+    { label: 'verified live', count: verified, tone: 'good' },
+    { label: 'unverified', count: unverified, tone: 'warn' },
+  ]);
+  const gates = {};
+  caps.forEach(c => { if (!c.verified && c.gate) gates[c.gate] = (gates[c.gate] || 0) + 1; });
+  const gateText = Object.keys(gates).sort((a, b) => gates[b] - gates[a]).slice(0, 3).map(g => g + ' ×' + gates[g]).join(', ');
+  hlegend(el('health-success-legend'), [
+    { label: 'verified live', count: verified, tone: 'good' },
+    { label: 'unverified', count: unverified, tone: 'warn' },
+  ], 'no archived captures yet');
+  if (gateText) el('health-success-legend').appendChild(document.createTextNode(' · gates: ' + gateText));
+
+  const scheduled = caps.filter(c => c.target).length;
+  const blind = caps.length - scheduled;
+  hbar(el('health-origin-bar'), [
+    { label: 'scheduled target', count: scheduled, tone: 'accent' },
+    { label: 'blind scan', count: blind, tone: 'dim' },
+  ]);
+  hlegend(el('health-origin-legend'), [
+    { label: 'scheduled target', count: scheduled, tone: 'accent' },
+    { label: 'blind scan', count: blind, tone: 'dim' },
+  ], 'no archived captures yet');
+
+  const entries = (healthSnapshot.ledger && healthSnapshot.ledger.entries) || [];
+  const ours = entries.filter(e => e.decoded_by === 'sdrstream').length;
+  const feeds = m.feeds || {};
+  let text = 'proof ledger: ' + (entries.length
+    ? entries.length + (entries.length >= 5000 ? '+' : '') + ' first sightings (' + ours + ' decoded by sdrstream, ' + (entries.length - ours) + ' relayed from providers)'
+    : 'no entries yet');
+  if (feeds.sources && feeds.sources.length) text += ' · feeds: ' + (feeds.sources_live || 0) + '/' + feeds.sources.length + ' sources live';
+  el('health-ledger').textContent = text + ' · ';
+  const feedsLink = document.createElement('button');
+  feedsLink.className = 'linklike'; feedsLink.textContent = 'open live data'; feedsLink.onclick = () => showView('feeds');
+  el('health-ledger').appendChild(feedsLink);
+}
+
 function renderCaptures(status) {
   const captures = (status.captures || []).slice().reverse();
   const box = el('captures-list');
-  const key = captures.map(c => c.path + '|' + c.url + '|' + c.decode).join(',');
+  const key = captures.map(c => c.path + '|' + c.url + '|' + c.decode + '|' + c.verified + '|' + c.target + '|' + c.gate).join(',');
   if (box.dataset.key !== key) {
     box.dataset.key = key;
     box.textContent = '';
@@ -199,6 +341,17 @@ function renderCaptures(status) {
       const meta = document.createElement('div'); meta.className = 'card-meta';
       meta.textContent = shortURL(c.receiver) + ' · ' + c.samples + ' samples · ' + c.rate + ' Hz' + (c.frequency_hz ? ' · ' + mhz(c.frequency_hz) : '') + (c.mode ? ' · ' + c.mode : '');
       card.appendChild(meta);
+      const badges = document.createElement('div'); badges.className = 'badge-row';
+      const vb = document.createElement('span');
+      vb.className = 'badge ' + (c.verified ? 'verified' : 'unverified');
+      vb.textContent = c.verified ? 'verified live' : 'unverified';
+      if (!c.verified && c.gate) vb.title = 'quality gate: ' + c.gate;
+      badges.appendChild(vb);
+      const ob = document.createElement('span');
+      ob.className = 'badge ' + (c.target ? 'scheduled' : 'blind');
+      ob.textContent = c.target ? 'scheduled: ' + c.target : 'blind scan';
+      badges.appendChild(ob);
+      card.appendChild(badges);
       if (c.decode) { const d=document.createElement('div'); d.className='detail'; d.textContent=c.decode; card.appendChild(d); }
       if (c.url) {
         const audio = document.createElement('audio');
@@ -213,6 +366,7 @@ function renderCaptures(status) {
         const p = document.createElement('div'); p.className = 'card-meta'; p.textContent = c.path;
         card.appendChild(p);
       }
+      card.appendChild(captureProof(c));
       box.appendChild(card);
     });
     if (!captures.length) box.innerHTML = '<div class="empty">none yet — run a capture</div>';
@@ -1589,11 +1743,12 @@ if (location.hash && el('view-' + location.hash.slice(1))) showView(location.has
 refreshReceiverPanel(); renderMsglog();
 setInterval(refreshReceiverPanel, 3000);
 setInterval(renderMsglog, 4000);
-refreshStatus(); refreshSats(); refreshGallery(); refreshStations(); refreshScans(); refreshActivity(); refreshFeeds(); refreshSources(false); refreshBandCond(); refreshLive();
+refreshStatus(); refreshSats(); refreshGallery(); refreshStations(); refreshScans(); refreshActivity(); refreshFeeds(); refreshSources(false); refreshBandCond(); refreshLive(); refreshHealth();
 el('sources-refresh').onclick = () => refreshSources(true);
 setInterval(refreshStatus, 5000);
 applyTimers();
 setInterval(refreshFeeds, 15000);
+setInterval(refreshHealth, 30000);
 setInterval(refreshScans, 2000);
 setInterval(refreshScanLog, 1500);
 setInterval(refreshLive, 1000);
