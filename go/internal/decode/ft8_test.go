@@ -35,6 +35,9 @@ func TestFT8RealRecordings(t *testing.T) {
 	}
 	totalRef, totalHit, totalExtra := 0, 0, 0
 	for _, f := range files {
+		if _, err := os.Stat(strings.TrimSuffix(f, ".wav") + ".txt"); err != nil {
+			continue // live captures have no WSJT-X reference list
+		}
 		samples, rate, err := ReadWAV(f)
 		if err != nil {
 			t.Fatal(err)
