@@ -1,6 +1,7 @@
 package decode
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -104,7 +105,7 @@ func TestActiveNowDWDSchedule(t *testing.T) {
 func TestDecodeHFNoBackendKindsNeverLive(t *testing.T) {
 	silence := make([]int16, 2400)
 	for _, kind := range []string{"voice", "dsc", "hfdl", "ft8", "wspr", "psk31"} {
-		r := decodeHF(HFTarget{Name: "t", Kind: kind}, "test", silence, 12000)
+		r := decodeHF(context.Background(), HFTarget{Name: "t", Kind: kind}, "test", silence, 12000)
 		if r.Gate.Live {
 			t.Errorf("kind %s passed the gate without a decoder", kind)
 		}

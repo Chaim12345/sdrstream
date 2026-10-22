@@ -67,7 +67,7 @@ func Record(ctx context.Context, r Receiver, t decode.HFTarget, d time.Duration)
 	if err != nil {
 		return decode.HFResult{}, err
 	}
-	result := decode.HFDecodeForScan(t, r.URL, s, rate)
+	result := decode.HFDecodeForScan(ctx, t, r.URL, s, rate)
 	result.Started = started
 	result.AudioWAV = decode.WriteWAV16(s, rate)
 	return result, nil
