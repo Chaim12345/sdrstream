@@ -115,7 +115,7 @@ func RunHFSession(ctx context.Context, server string, targets []HFTarget, opts S
 	defer client.Close()
 	sessionStart := time.Now()
 	for i, target := range targets {
-		if time.Since(sessionStart)+opts.Listen > opts.MaxSession {
+		if time.Since(sessionStart)+target.ListenFor(opts.Listen) > opts.MaxSession {
 			remaining = append(remaining, targets[i:]...)
 			break
 		}
@@ -123,7 +123,7 @@ func RunHFSession(ctx context.Context, server string, targets []HFTarget, opts S
 			remaining = append(remaining, targets[i:]...)
 			return results, remaining, fmt.Errorf("tune: %w", err)
 		}
-		samples16, rate, rerr := client.Record(ctx, opts.Listen)
+		samples16, rate, rerr := client.Record(ctx, target.ListenFor(opts.Listen))
 		if rerr != nil {
 			remaining = append(remaining, targets[i:]...)
 			return results, remaining, fmt.Errorf("record: %w", rerr)
