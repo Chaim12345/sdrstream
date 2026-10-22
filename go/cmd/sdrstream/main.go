@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"github.com/chaim12345/sdrstream/go/internal/hfdl"
 	"log"
 	"net"
 	"net/http"
@@ -1547,7 +1548,7 @@ func cmdFeeds(args []string) error {
 // maritime broadcasts.
 func cmdDecode(args []string) error {
 	fs := flag.NewFlagSet("decode", flag.ExitOnError)
-	mode := fs.String("mode", "auto", "auto | aprs | morse | dtmf | rtty | psk31 | sstv | pocsag | eas | navtex | voice | all (every data mode, no speech)")
+	mode := fs.String("mode", "auto", "auto | aprs | morse | dtmf | rtty | psk31 | sstv | pocsag | eas | navtex | hfdl | voice | all (every data mode, no speech)")
 	offset := fs.Float64("offset", 0, "audio centre frequency in Hz for psk31/rtty (0 = auto)")
 	imageOut := fs.String("sstv-image", "", "write decoded Martin M2 SSTV image as PNG")
 	aptOut := fs.String("apt-image", "", "write decoded NOAA APT picture as PNG (with -mode apt)")
@@ -1654,6 +1655,17 @@ func cmdDecode(args []string) error {
 			}
 			for _, a := range alerts {
 				fmt.Printf("   eas:    %s\n", a.String())
+			}
+		}
+		if *mode == "hfdl" || wantAll {
+			frames := hfdl.DecodeAudio(samples, float64(rate), hfdl.SSBCarrierOffsetHz, 0)
+			if len(frames) == 0 && *mode == "hfdl" {
+				fmt.Println("   hfdl:   no frame with a valid FCS")
+			}
+			for _, f := range frames {
+				for _, line := range hfdl.Describe(f) {
+					fmt.Printf("   hfdl:   %s\n", line)
+				}
 			}
 		}
 		if *mode == "navtex" || wantAll {
