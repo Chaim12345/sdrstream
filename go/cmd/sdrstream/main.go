@@ -70,6 +70,7 @@ commands:
   fetch        download SatNOGS captures for a satellite
   observations show real SatNOGS receptions of a satellite
   gallery      collect real payload images/text from SatNOGS observations
+  satdecode    fetch SatNOGS audio/frames and decode telemetry, APT, SSTV
   decode       demodulate recorded WAV files (AFSK/APRS, Morse)
   scan         scan a WAV for transmissions (voice, data, CW)
   bands        sweep receiver bands and report live traffic
@@ -117,6 +118,8 @@ func main() {
 		err = cmdObservations(args)
 	case "gallery":
 		err = cmdGallery(args)
+	case "satdecode":
+		err = cmdSatdecode(args)
 	case "web":
 		err = cmdWeb(args)
 	case "feeds":

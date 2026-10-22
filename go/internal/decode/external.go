@@ -169,3 +169,44 @@ func DirewolfDecode(ctx context.Context, binaryPath string, samples []float64, r
 }
 
 func isDir(path string) bool { st, err := os.Stat(path); return err == nil && st.IsDir() }
+
+// FFmpegBinary resolves an ffmpeg executable on PATH.
+func FFmpegBinary(path string) string {
+	if path != "" {
+		if p, err := exec.LookPath(path); err == nil {
+			return p
+		}
+		if st, err := os.Stat(path); err == nil && !st.IsDir() {
+			return path
+		}
+		return ""
+	}
+	p, _ := exec.LookPath("ffmpeg")
+	return p
+}
+
+// FFmpegAvailable reports whether ffmpeg is on PATH.
+func FFmpegAvailable() bool { return FFmpegBinary("") != "" }
+
+// ConvertToWAV converts any audio ffmpeg understands (SatNOGS publishes
+// Ogg Vorbis) into a mono PCM WAV the decoders read. The native sample
+// rate is kept; the decoders resample internally where it matters.
+func ConvertToWAV(ctx context.Context, binaryPath, src, dst string) error {
+	binaryPath = FFmpegBinary(binaryPath)
+	if binaryPath == "" {
+		return fmt.Errorf("ffmpeg not installed: cannot decode %s (install ffmpeg or supply a WAV)", filepath.Base(src))
+	}
+	if strings.EqualFold(filepath.Ext(src), ".wav") {
+		data, err := os.ReadFile(src)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(dst, data, 0o644)
+	}
+	cmd := exec.CommandContext(ctx, binaryPath, "-y", "-v", "error", "-i", src, "-ac", "1", dst)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ffmpeg %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
