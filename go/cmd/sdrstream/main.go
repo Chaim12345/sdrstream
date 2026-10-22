@@ -1482,15 +1482,17 @@ func cmdDecode(args []string) error {
 		// recordings would spend all its time transcribing noise. Asking
 		// for voice is explicit.
 		if *mode == "voice" || *mode == "speech" {
-			segments := voice.SpeechActivity(samples, rate)
+			segments := voice.DetectSpeech(samples, rate, voice.VADOptions{})
 			if len(segments) == 0 {
 				fmt.Println("   voice: no speech detected")
 			} else {
-				transcript, err := voice.Transcribe(context.Background(), samples, rate, voice.DefaultOptions())
+				result, err := voice.TranscribeASR(context.Background(), samples, rate, voice.DefaultASROptions())
 				if err != nil {
 					fmt.Printf("   voice: %v\n", err)
 				} else {
-					fmt.Printf("   voice: %s\n", transcript.Text)
+					fmt.Printf("   voice: %s\n", result.Text)
+					fmt.Printf("          confidence %.0f%%, language %s, %d chunk(s), %.1f s of speech, model %s, fallback=%v\n",
+						100*result.Confidence, result.Language, result.Chunks, result.SpeechSec, result.Model, result.Fallback)
 				}
 			}
 		}

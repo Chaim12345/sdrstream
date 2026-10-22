@@ -49,6 +49,11 @@ type Activity struct {
 	Source      string     `json:"source"`
 	DurationSec float64    `json:"duration_sec"`
 	AudioPath   string     `json:"audio_path,omitempty"`
+	// Speech recognition quality, set only for transcribed voice.
+	Confidence  float64 `json:"confidence,omitempty"` // 0..1, mean token probability
+	Language    string  `json:"language,omitempty"`   // language whisper identified
+	ASRModel    string  `json:"asr_model,omitempty"`  // model file that produced the text
+	ASRFallback bool    `json:"asr_fallback,omitempty"`
 }
 
 // Options configures a monitor.
@@ -683,7 +688,7 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 			}
 			continue
 		}
-		kind, modeName, detail := m.classify(ctx, samples, rate, work.bandwidth)
+		kind, modeName, detail, asr := m.classify(ctx, samples, rate, work.bandwidth)
 		// Mode is the modulation or decoder, never a verdict; when no
 		// decoder produced a name, the modulation that was listened to
 		// is the honest answer.
@@ -695,6 +700,7 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 			FrequencyHz: work.frequency, BandwidthHz: work.bandwidth, LevelDB: work.levelDB,
 			Kind: kind, Mode: modeName, Detail: detail, Source: m.opts.Name,
 			DurationSec: float64(len(samples)) / float64(rate),
+			Confidence:  asr.Confidence, Language: asr.Language, ASRModel: asr.Model, ASRFallback: asr.Fallback,
 		}
 		if m.opts.OutDir != "" {
 			path := filepath.Join(m.opts.OutDir, fmt.Sprintf("activity-%03d-%d-%s.wav",
@@ -733,7 +739,7 @@ func (m *Monitor) publish(activity Activity) {
 // The data decoders run first: a successful AX.25, PSK31 or paging decode
 // is proof that the signal was data, while a "voice" verdict from the
 // spectrum alone is only a guess.
-func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, bandwidthHz float64) (kind, mode, detail string) {
+func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, bandwidthHz float64) (kind, mode, detail string, asr voice.Result) {
 	// The sweep path never measures the channel width, so the narrow
 	// decoders would otherwise fire on every loud signal. Measure the
 	// signal itself instead of trusting a zero that means "unknown".
@@ -749,42 +755,48 @@ func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, ban
 	concentrated := hit.Kind == "data" || hit.Kind == "cw"
 	if !modulated && !concentrated {
 		if hit.Kind == "silence" {
-			return "silence", "", ""
+			return "silence", "", "", asr
 		}
-		return "noise", "", "no signal above the noise floor"
+		return "noise", "", "no signal above the noise floor", asr
 	}
 	if mode, detail, ok := m.decodeData(samples, rate, bandwidthHz); ok {
 		if mode == "morse" {
-			return "cw", mode, detail
+			return "cw", mode, detail, asr
 		}
-		return "data", mode, detail
+		return "data", mode, detail, asr
 	}
 	if !modulated {
-		return "carrier", "", "steady signal, no modulation"
+		return "carrier", "", "steady signal, no modulation", asr
 	}
 	// A very narrow signal is a carrier or a keyed tone, not a voice.
 	if bandwidthHz > 0 && bandwidthHz < 2500 && hit.Kind != "silence" {
-		return "carrier", "", fmt.Sprintf("%.0f kHz wide", bandwidthHz/1e3)
+		return "carrier", "", fmt.Sprintf("%.0f kHz wide", bandwidthHz/1e3), asr
 	}
 	switch hit.Kind {
 	case "voice", "data", "cw":
-		segments := voice.SpeechActivity(samples, rate)
+		segments := voice.DetectSpeech(samples, rate, voice.VADOptions{})
 		if len(segments) == 0 {
 			// No speech: transcribing would only make whisper guess.
-			return hit.Kind, "", "no speech detected"
+			return hit.Kind, "", "no speech detected", asr
 		}
 		if m.opts.Voice && voice.Available(m.opts.VoiceOptions) {
-			transcript, err := voice.Transcribe(ctx, samples, rate, m.opts.VoiceOptions)
-			if err == nil && transcript.Text != "" {
-				return "voice", "speech", transcript.Text
+			opts := voice.DefaultASROptions()
+			opts.Options = m.opts.VoiceOptions
+			result, err := voice.TranscribeASR(ctx, samples, rate, opts)
+			if err == nil && result.Text != "" {
+				return "voice", "speech", result.Text, result
 			}
 		}
-		return "voice", "speech", fmt.Sprintf("%d speech segment(s), %.1f s",
-			len(segments), segments[0].End-segments[0].Start)
+		total := 0.0
+		for _, s := range segments {
+			total += s.End - s.Start
+		}
+		return "voice", "speech", fmt.Sprintf("%d speech segment(s), %.1f s of speech",
+			len(segments), total), asr
 	case "silence":
-		return "silence", "", ""
+		return "silence", "", "", asr
 	default:
-		return hit.Kind, "", ""
+		return hit.Kind, "", "", asr
 	}
 }
 

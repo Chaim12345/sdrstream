@@ -81,6 +81,10 @@ const indexPage = `<!DOCTYPE html>
   .badge.voice { color: var(--voice); border-color: #1e3a8a; }
   .badge.data { color: var(--data); border-color: #4c1d95; }
   .badge.cw, .badge.carrier { color: var(--warn); border-color: #78350f; }
+  .conf { font-size: 11px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--line); margin-left: 6px; }
+  .conf.hi { color: #4ade80; border-color: #166534; }
+  .conf.mid { color: #fbbf24; border-color: #78350f; }
+  .conf.lo { color: #f87171; border-color: #7f1d1d; }
   .badge.noise { color: var(--muted); border-color: var(--line); }
   .badge.silence { color: var(--muted); border-color: var(--line); opacity: .6; }
   #spectrum { width: 100%; max-width: 100%; height: 260px; display: block; border-radius: 8px; background: #06090f; border: 1px solid var(--line); }
@@ -523,6 +527,14 @@ async function refreshActivity() {
       if (a.detail) {
         const detail = document.createElement('div');
         detail.className = 'detail'; detail.textContent = a.detail;
+        if (a.confidence) {
+          const pct = Math.round(a.confidence * 100);
+          const chip = document.createElement('span');
+          chip.className = 'conf ' + (pct >= 80 ? 'hi' : pct >= 60 ? 'mid' : 'lo');
+          chip.textContent = pct + '%' + (a.language ? ' · ' + a.language : '') + (a.asr_fallback ? ' · fallback model' : '');
+          chip.title = 'Mean whisper token probability' + (a.asr_model ? ' (' + a.asr_model + ')' : '') + '. Low values mean the transcript is a guess.';
+          detail.appendChild(chip);
+        }
         card.appendChild(detail);
       }
       feed.appendChild(card);
