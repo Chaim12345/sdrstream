@@ -32,6 +32,14 @@ session added:
   (CQ, a callsign, NAVTEX framing); speech detection now runs before the
   narrow-signal carrier rule; and `SpeechCoverage` uses the hysteresis VAD
   so continuous SSB voice passes the hallucination guard.
+* **Fleet-scan source lifetime fixed** — `scanStation` created each receiver
+  with a 10 s connect context and cancelled it after connecting. The
+  OpenWebRX/WebSDR/Kiwi clients run their websocket read loop on that
+  context, so the FFT and audio stopped immediately after a successful
+  connection. The source now lives for the whole station session. The Kiwi
+  heuristic also no longer claims every `:8073` host (OpenWebRX's default
+  port), and `kiwisdr` preflight accepts full URLs instead of building
+  `http://http//host/status`.
 * `AGENTS.md` records the standing directives (personal use: licensing is not
   a gate; prefer NIM over local).
 

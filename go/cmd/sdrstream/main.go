@@ -2536,8 +2536,16 @@ func preflightDirectoryStation(ctx context.Context, stationType, rawURL string) 
 	return nil
 }
 
+// scanSourceFor builds the receiver source for one station visit. It is a
+// variable so tests can inject a fake receiver without a live server.
+var scanSourceFor = monitor.SourceFor
+
 func scanStation(ctx context.Context, server *web.Server, stationType, host string, targetLimit int, multimonPath, direwolfPath, capturesDir string, active *atomic.Int64, updateMetrics func()) scanOutcome {
-	if strings.EqualFold(stationType, "KiwiSDR") || looksLikeKiwi(host) {
+	// Trust the directory type. OpenWebRX also defaults to port 8073, so a
+	// port heuristic sent OpenWebRX stations to the Kiwi preflight; it then
+	// built http://http//host/status and blocklisted a healthy receiver as
+	// "refused". Only guess from the name when the caller gave no type.
+	if strings.EqualFold(stationType, "KiwiSDR") || (stationType == "" && looksLikeKiwi(host)) {
 		preflight := kiwiPreflight.Check(ctx, host)
 		if !preflight.Free() {
 			state := "refused/skipped"
@@ -2559,9 +2567,16 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 	if strings.EqualFold(stationType, "OpenWebRX") {
 		protocol = "openwebrx"
 	}
-	connectCtx, cancelConnect := context.WithTimeout(ctx, 10*time.Second)
-	if err := preflightDirectoryStation(connectCtx, stationType, host); err != nil {
-		cancelConnect()
+	// Preflight gets its own budget; the source then lives for the whole
+	// station session. Do NOT create a short context for SourceFor and
+	// cancel it after connect: the receiver clients run their websocket
+	// read loop on that context, so cancelling it stopped the FFT/audio
+	// stream right after a successful connection. The handshake has its own
+	// dial and read deadlines, and the station session bounds the source.
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, 10*time.Second)
+	err := preflightDirectoryStation(preflightCtx, stationType, host)
+	cancelPreflight()
+	if err != nil {
 		active.Add(-1)
 		updateMetrics()
 		outcome := classifyScanFailure(err)
@@ -2569,8 +2584,7 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 		blockStationIfEligible(ctx, server, host, reason, 30*time.Minute)
 		return outcome
 	}
-	source, err := monitor.SourceFor(connectCtx, protocol, host, "")
-	cancelConnect()
+	source, err := scanSourceFor(ctx, protocol, host, "")
 	if err != nil {
 		active.Add(-1)
 		updateMetrics()
@@ -2666,8 +2680,10 @@ func scanOpenWebRXSpectrum(ctx context.Context, server *web.Server, source monit
 			case <-runCtx.Done():
 				return
 			case <-ticker.C:
-				if _, _, _, ok := source.Spectrum(); ok {
+				if _, centre, span, ok := source.Spectrum(); ok {
 					sawSpectrum.Store(true)
+					setScanResult(server, key, "listening",
+						fmt.Sprintf("surveying %.3f MHz (%.2f MHz span)", centre/1e6, span/1e6))
 					return
 				}
 			case <-deadline.C:
@@ -2924,7 +2940,7 @@ func safeCaptureName(name string) string {
 
 func looksLikeKiwi(host string) bool {
 	text := strings.ToLower(host)
-	return strings.Contains(text, "kiwisdr") || strings.Contains(text, ":8073") || strings.Contains(text, "kiwi")
+	return strings.Contains(text, "kiwisdr") || strings.Contains(text, "kiwi")
 }
 
 func scanKiwiStation(ctx context.Context, server *web.Server, host string, targetLimit int, active *atomic.Int64, updateMetrics func(), wsPath string) scanOutcome {

@@ -780,6 +780,11 @@ func ChooseModeAt(mode string, bandwidthHz, frequencyHz float64) string {
 	if Airband(frequencyHz) {
 		return "am"
 	}
+	// Terrestrial VHF/UHF voice and data are FM even when the FFT peak is
+	// narrow (a repeater carrier measures a few kHz); HF voice is sideband.
+	if frequencyHz >= 30e6 {
+		return "fm"
+	}
 	if bandwidthHz > 12000 {
 		return "fm"
 	}

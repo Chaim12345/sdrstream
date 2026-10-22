@@ -162,6 +162,12 @@ Slices (a)–(g) landed in PR #4. Two integration changes followed:
   plus frequency/talkgroup metadata to `POST /api/call-upload`, so the archive
   and its UI come from an existing product instead of a second frontend.
   See `go/docs/RDIO.md`.
+* **Receiver sources now live for the whole station session.** A connect-only
+  context used to be cancelled right after `monitor.SourceFor` returned; the
+  protocol clients run their websocket read loop on it, so no FFT or audio
+  arrived after connect. Preflight keeps its own 10 s budget and the source
+  uses the station context. The Kiwi type check also trusts the directory
+  type instead of guessing from port 8073, which OpenWebRX shares.
 
 Remaining:
 

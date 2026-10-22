@@ -641,7 +641,7 @@ func TestChooseModeUsesTheBand(t *testing.T) {
 		{127_000_000, 8000, "am"},  // airband, wider AM
 		{300_000_000, 8000, "am"},  // military airband
 		{145_500_000, 12500, "fm"}, // narrowband repeater
-		{145_500_000, 2000, "usb"}, // narrow data on 2 m
+		{145_500_000, 2000, "fm"},  // narrow data on 2 m still uses FM
 		{7_100_000, 2400, "usb"},   // HF sideband
 		{100_000_000, 200_000, "fm"},
 	}

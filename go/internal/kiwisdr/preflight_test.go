@@ -191,3 +191,17 @@ func TestEgressDiagnostic(t *testing.T) {
 type roundTrip func(*http.Request) (*http.Response, error)
 
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestHostOnlyAcceptsURLs(t *testing.T) {
+	cases := map[string]string{
+		"http://kiwi.example:8073/":        "kiwi.example:8073",
+		"https://kiwi.example:8073/status": "kiwi.example:8073",
+		"  KIWI.EXAMPLE:8073  ":            "kiwi.example:8073",
+		"kiwi.example:8073":                "kiwi.example:8073",
+	}
+	for input, want := range cases {
+		if got := hostOnly(input); got != want {
+			t.Errorf("hostOnly(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

@@ -179,3 +179,24 @@ func TestAppendUsableKiwiStationsDedupesByHostPortAndSlots(t *testing.T) {
 		t.Fatalf("added station %q", got[2])
 	}
 }
+
+// TestLooksLikeKiwiDoesNotClaimOpenWebRX pins a fleet-scan failure: OpenWebRX
+// also defaults to port 8073, and the old ":8073" heuristic sent the
+// OpenWebRX station to the Kiwi preflight, which built http://http//host/status
+// and blocklisted a healthy receiver as "refused".
+func TestLooksLikeKiwiDoesNotClaimOpenWebRX(t *testing.T) {
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"http://sdr.ladar.club:8073", false},
+		{"http://example.com:8073", false},
+		{"http://kiwisdr.example:8073", true},
+		{"https://kiwi.example:8073/", true},
+	}
+	for _, test := range cases {
+		if got := looksLikeKiwi(test.host); got != test.want {
+			t.Errorf("looksLikeKiwi(%q) = %v, want %v", test.host, got, test.want)
+		}
+	}
+}

@@ -168,7 +168,19 @@ func WSPaths(server string, ts int64) []string {
 	return []string{ws, legacy}
 }
 
-func hostOnly(h string) string { return strings.ToLower(strings.TrimSpace(h)) }
+// hostOnly accepts the forms the directory and the CLI produce: a bare
+// "host:port", or a full URL. The probe always builds scheme://host/status,
+// so a URL passed as-is used to become "http://http//host/status".
+func hostOnly(h string) string {
+	h = strings.TrimSpace(h)
+	if i := strings.Index(h, "://"); i >= 0 {
+		h = h[i+3:]
+	}
+	if i := strings.IndexAny(h, "/?#"); i >= 0 {
+		h = h[:i]
+	}
+	return strings.ToLower(h)
+}
 
 // Check validates host ("host:port"). It never hits the network when a fresh
 // cached result exists, the host is backing off, or the daily budget is spent.
