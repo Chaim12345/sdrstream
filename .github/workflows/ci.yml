@@ -1,0 +1,27 @@
+name: ci
+on:
+  push:
+    branches: [master, sdrstream-team-integration, "fix/**"]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+      - name: Install optional tools used by tests
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg gcc
+      - name: scripts/ci.sh
+        env:
+          REQUIRE_RACE: "1"
+          # Skip the pinned-toolchain download in env.sh; actions/setup-go provides Go.
+          SDR_TOOLCHAIN: ${{ runner.temp }}/unused
+        run: |
+          mkdir -p "$SDR_TOOLCHAIN/go/bin"
+          ln -sf "$(command -v go)" "$SDR_TOOLCHAIN/go/bin/go"
+          scripts/ci.sh

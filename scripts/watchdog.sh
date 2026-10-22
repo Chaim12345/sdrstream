@@ -5,11 +5,32 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_DIR="${RUN_DIR:-$HOME/sdrstream-run}"
 STATE_DIR="${SDRSTREAM_STATE_DIR:-$HOME/sdrstream-state}"
 CLOUDFLARED="${CLOUDFLARED:-$HOME/toolchain/cloudflared}"
-: "${SDRSTREAM_UI_PASSWORD:=$(cat "$HOME/.vault/sdrstream-demo-ui-94f577/password")}" 
-: "${SDRSTREAM_NIM_API_KEY:=$(cat "$HOME/.vault/nvidia-nim-api-key-4ab10a/password")}" 
+# Secrets come from the environment or from vault files (written by `tools vault write-file`).
+UI_PASSWORD_FILE="${SDRSTREAM_UI_PASSWORD_FILE:-$HOME/.vault/sdrstream-demo-ui-94f577/password}"
+NIM_KEY_FILE="${SDRSTREAM_NIM_API_KEY_FILE:-$HOME/.vault/nvidia-nim-api-key-4ab10a/password}"
+need_secret() { # var file
+  local var="$1" file="$2"
+  [ -n "${!var:-}" ] && return 0
+  if [ ! -r "$file" ]; then
+    echo "watchdog: $var is not set and its vault file is missing or unreadable: $file" >&2
+    echo "watchdog: export $var, or recreate the file (vault write-file) and set ${var}_FILE if the path differs." >&2
+    exit 2
+  fi
+  printf -v "$var" '%s' "$(cat "$file")"
+}
+need_secret SDRSTREAM_UI_PASSWORD "$UI_PASSWORD_FILE"
+need_secret SDRSTREAM_NIM_API_KEY "$NIM_KEY_FILE"
 EXTRA_ARGS="${EXTRA_ARGS:---scan-start-connections 12 --scan-max-connections 12 --scan-ramp 12 --scan-open-directory --scan-hf-server http://websdr.ewi.utwente.nl:8901,http://websdr.fi:8080,f4kiy.ddns.net:8073 --scan-wspr}"
 export SDRSTREAM_UI_PASSWORD SDRSTREAM_NIM_API_KEY SDRSTREAM_STATE_DIR="$STATE_DIR" EXTRA_ARGS RUN_DIR
 mkdir -p "$RUN_DIR" "$STATE_DIR"
+# Single instance: a second watchdog would race on app.pid / the tunnel.
+exec 9>"$RUN_DIR/watchdog.lock"
+if ! flock -n 9; then
+  echo "watchdog: another instance already holds $RUN_DIR/watchdog.lock; exiting" >&2
+  exit 3
+fi
+echo $$ >"$RUN_DIR/watchdog.pid"
+trap 'rm -f "$RUN_DIR/watchdog.pid"' EXIT
 app_up() {
   local pid code
   if [ ! -f "$RUN_DIR/app.pid" ]; then return 1; fi

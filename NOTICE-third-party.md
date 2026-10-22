@@ -46,9 +46,13 @@ license. See `LICENSE` for the GNU Affero General Public License.
   Copyright 2007-2023 Joseph Gaeddert.
 - `go/internal/rivaspeech`: generated protobuf/gRPC bindings preserve NVIDIA
   and Google MIT/Apache-2.0 copyright and license headers in each source file.
-- `go/internal/vocoder`: WebSDR stream decoder and table reproduce publicly
-  documented WebSDR HTML5 client behavior, copyright 2013-2025 PA3FWM.
-  https://www.websdr.org/ .
+- `go/internal/vocoder`, `sdrstream/_websdr_table.py`: the 256-entry sample
+  table is taken from the WebSDR HTML5 client, copyright 2013-2025 PA3FWM.
+  **Permission to redistribute or reuse it has NOT been obtained.** Upstream
+  reserves all rights; see the open issue in `NOTICE`.
+- `go/internal/web/static/vendor/leaflet`: Leaflet 1.9.4, BSD-2-Clause,
+  Copyright (c) 2010-2023 Vladimir Agafonkin, (c) 2010-2011 CloudMade. License
+  text in `go/internal/web/static/vendor/leaflet/LICENSE`.
 - `go/internal/adpcm`: mirrors OpenWebRX's public IMA-ADPCM decoder behavior;
   no upstream source file is included. OpenWebRX source: https://github.com/jketterl/openwebrx .
 
@@ -62,6 +66,8 @@ protocol specifications. Other decoders that cite multimon-ng follow its
 published protocol/framing descriptions or use its output only as an external
 reference tool; multimon-ng itself is not bundled or linked into sdrstream.
 
-No third-party sample audio is included unless separately identified by a
-license file in the relevant test-data directory. The test harness fetches
+Third-party sample audio: two real off-air recordings in `tests/data` and the
+recordings under `go/internal/decode/testdata` are third-party material. Their
+sources and open licence questions are in `tests/data/NOTICE`; `ft8_lib.LICENSE`
+covers the ft8_lib port only. The test harness fetches
 recordings when explicitly requested.
