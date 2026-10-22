@@ -60,14 +60,25 @@ func pocsagAtBaud(samples []float64, rate, baud int) []POCSAGMessage {
 		centered[i] = s - mean
 	}
 	// Try every sub-sample bit phase; keep the first that yields a sync word.
-	phases := int(spb)
+	// Real discriminators come in either polarity, so the inverted stream
+	// is tried too, and the bit phase is stepped in quarter samples.
+	phases := int(spb * 4)
 	if phases < 1 {
 		phases = 1
 	}
-	for phase := 0; phase < phases; phase++ {
-		bits := pocsagSliceBits(centered, spb, float64(phase))
-		if idx := indexSync(bits); idx >= 0 {
-			return pocsagFromBits(bits[idx:])
+	for _, invert := range []bool{false, true} {
+		for phase := 0; phase < phases; phase++ {
+			bits := pocsagSliceBits(centered, spb, float64(phase)/4)
+			if invert {
+				for i := range bits {
+					bits[i] ^= 1
+				}
+			}
+			if idx := indexSync(bits); idx >= 0 {
+				if msgs := pocsagFromBits(bits[idx:]); len(msgs) > 0 {
+					return msgs
+				}
+			}
 		}
 	}
 	return nil
@@ -155,7 +166,15 @@ func pocsagFromBits(bits []byte) []POCSAGMessage {
 			flush()
 			continue
 		}
-		word = pocsagCorrect(word)
+		var good bool
+		word, good = pocsagCorrectOK(word)
+		if !good {
+			// Uncorrectable codeword: the page it belongs to cannot be
+			// trusted, so drop it.
+			cur = nil
+			data = data[:0]
+			continue
+		}
 		if word>>31&1 == 0 {
 			// Address codeword: start a new page.
 			flush()
@@ -288,12 +307,20 @@ func pocsagSyndrome(word uint32) uint32 {
 // returns the corrected codeword. The error table already accounts for the
 // overall parity bit, matching multimon-ng's bch_pocsag_correct.
 func pocsagCorrect(word uint32) uint32 {
+	w, _ := pocsagCorrectOK(word)
+	return w
+}
+
+// pocsagCorrectOK is pocsagCorrect plus the strict gate: it reports false
+// when the codeword still fails BCH and parity after correction, so the
+// caller can drop the page instead of publishing garbled text.
+func pocsagCorrectOK(word uint32) (uint32, bool) {
 	if syn := pocsagSyndrome(word); syn != 0 {
 		if err, ok := pocsagErrTbl[syn]; ok {
 			word ^= err
 		}
 	}
-	return word
+	return word, pocsagSyndrome(word) == 0
 }
 
 func parity32(x uint32) uint32 {
