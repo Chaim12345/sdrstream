@@ -1,6 +1,8 @@
 package decode
 
 import (
+	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -130,8 +132,8 @@ func TestSSTVReference(t *testing.T) {
 	if len(got) == 0 {
 		t.Fatal("SSTVDetect found no VIS header")
 	}
-	if got[0].VIS != 0x3C {
-		t.Errorf("VIS = 0x%02X, want 0x3C (Martin M2)", got[0].VIS)
+	if got[0].VIS != 0x28 {
+		t.Errorf("VIS = 0x%02X, want 0x28 (Martin M2)", got[0].VIS)
 	}
 	if got[0].Mode != "Martin M2" {
 		t.Errorf("mode = %q, want Martin M2", got[0].Mode)
@@ -166,5 +168,39 @@ func TestPOCSAGReference(t *testing.T) {
 	}
 	if msgs[0].Alpha != "HELLO PAGER TEST 123" {
 		t.Errorf("alpha = %q, want HELLO PAGER TEST 123", msgs[0].Alpha)
+	}
+}
+
+func TestDirewolfExternalReference(t *testing.T) {
+	binary := os.Getenv("SDRSTREAM_TEST_DIREWOLF")
+	if binary == "" {
+		t.Skip("set SDRSTREAM_TEST_DIREWOLF to exercise the optional binary")
+	}
+	samples, rate, err := ReadWAV(refAPRS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines, err := DirewolfDecode(context.Background(), binary, samples, rate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "M0XXX-9>APZSAT") || !strings.Contains(joined, "Hello from space!") {
+		t.Fatalf("Dire Wolf output does not contain expected APRS frame: %q", joined)
+	}
+}
+
+func TestMultimonExternalReference(t *testing.T) {
+	binary := os.Getenv("SDRSTREAM_TEST_MULTIMON")
+	if binary == "" {
+		t.Skip("set SDRSTREAM_TEST_MULTIMON to exercise the optional binary")
+	}
+	lines, err := MultimonDecodeWithBinary(context.Background(), binary, refAPRS, "AFSK1200")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "M0XXX-9") || !strings.Contains(joined, "Hello from space!") {
+		t.Fatalf("multimon-ng output does not contain expected APRS frame: %q", joined)
 	}
 }

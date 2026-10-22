@@ -309,6 +309,50 @@ also be transcribed on its own:
 go run ./cmd/sdrstream decode -mode voice capture.wav
 ```
 
+### Hosted NVIDIA NIM transcription
+
+A hosted speech backend from the
+[NVIDIA API catalog](https://build.nvidia.com/models?q=asr) can transcribe
+instead of, or ahead of, local whisper.cpp. The local models are
+English-first; the catalog's multilingual models cover the Spanish and
+other non-English traffic the receivers actually hear, and they run on
+NVIDIA's hardware instead of the 2-core budget here.
+
+```bash
+export SDRSTREAM_NIM_API_KEY=nvapi-...   # from build.nvidia.com
+```
+
+That is all that is required: with a key set, transcription goes to the
+hosted model first and falls back to local whisper.cpp if the call fails,
+so a network or quota problem never costs a transcript. The quality gate
+in `go/internal/voice/guard.go` stays in front of publication for both
+backends; a hosted model can hallucinate on noise just like a local one.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SDRSTREAM_NIM_API_KEY` | (empty: backend off) | NVIDIA API catalog key |
+| `SDRSTREAM_NIM_ENDPOINT` | `grpc.nvcf.nvidia.com:443` | Riva gRPC endpoint |
+| `SDRSTREAM_NIM_FUNCTION_ID` | `71203149-d3b7-4460-8231-1be2543a1fca` | catalog function id of the model |
+| `SDRSTREAM_NIM_LANG` | `multi` (auto-detect) | BCP-47 language hint |
+| `SDRSTREAM_VOICE_BACKEND` | `auto` | force `nim` or `whisper` |
+
+The default model is **parakeet-1.1b-rnnt-multilingual-asr** (25
+languages). Verified live on 2026-10-22: clean and noisy narrowband
+(8 kHz, ~10 dB SNR) Spanish and clean English clips all transcribed
+correctly with `multi` auto-detection, while a wrong fixed language hint
+degraded the alternative canary-1b model. **canary-1b-asr**
+(`b0e8b4a5-217c-40b7-9b96-17d84e666317`) is the translation-capable
+alternative; set `SDRSTREAM_NIM_LANG` to the real language with it,
+because it has no auto-detect code. Empty language codes are rejected by
+the hosted service.
+
+A live check against the real endpoint is one command:
+
+```bash
+SDRSTREAM_NIM_LIVE=1 SDRSTREAM_NIM_API_KEY=... SDRSTREAM_NIM_LIVE_WAV=clip.wav \
+    go test ./internal/voice/ -run TestNIMLive -v
+```
+
 ## Satellites
 
 The satellite side answers three questions: what is up there, when will it be
@@ -602,3 +646,26 @@ That is your call to make, not this library's.
 MIT. The WebSDR companding table in `sdrstream/_websdr_table.py` is reproduced
 from the public WebSDR HTML5 client (copyright 2013–2025 PA3FWM), which permits
 redistribution as part of a client.
+
+## Live public feeds (Live data tab)
+
+The web server streams ADS-B (adsb.lol), APRS-IS, PSK Reporter, Reverse Beacon
+Network and WSPRnet into the **Live data** tab only; nothing from the feeds is
+mixed into the detection views. `--feeds-lat/--feeds-lon` set the centre and
+`--no-feeds` turns them off. `sdrstream feeds -listen 25s` prints a one-shot
+status.
+
+AIS (aisstream.io) is optional and off by default. It needs a free API key,
+read from the `SDRSTREAM_AIS_KEY` environment variable (preferred, keeps it out
+of the process list) or `--ais-key`. The key is never stored on disk by
+sdrstream. Without it the AIS source shows as "disabled" with that hint and the
+other feeds are unaffected.
+
+### Whisper model choice for radio voice
+
+`SDRSTREAM_WHISPER_MODEL` can select a local whisper.cpp GGML model. The default
+model search still prefers `base.en`; a quantised `small.en-q5_1` can be chosen
+for an offline quality check on narrowband radio clips. The `.en` model is
+English-only. For non-English clips, use a multilingual small q5_1 model instead
+and compare transcripts against the saved audio before changing the live
+quality gate. Whisper output remains subject to the existing verification gate.

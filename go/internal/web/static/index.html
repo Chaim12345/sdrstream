@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#070a12">
+<title>sdrstream</title>
+<link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-name">SDRSTREAM</span>
+    <span class="brand-sub">live receiver monitor</span>
+  </div>
+  <div class="status-strip" role="status" aria-label="Monitor summary">
+    <span class="pill" id="pill-monitor"><span class="dot"></span><b id="monitor-state">connecting</b></span>
+    <span class="pill">receivers <b id="receiver-count">–</b></span>
+    <span class="pill">passes <b id="pass-count">–</b></span>
+    <span class="pill">captures <b id="capture-count">–</b></span>
+    <span class="pill" title="Verified detections from the monitor and public feeds">verified activity <b id="activity-count">–</b></span>
+  </div>
+  <form method="post" action="/logout" class="logout-form"><button class="logout" type="submit" title="Log out" aria-label="Log out">&#9211;</button></form>
+</header>
+
+<nav class="mainnav" aria-label="Views">
+  <button data-view="overview" class="active" aria-current="page"><span class="ico">&#9673;</span><span class="lbl">Overview</span></button>
+  <button data-view="map"><span class="ico">&#8982;</span><span class="lbl">Map</span></button>
+  <button data-view="activity"><span class="ico">&#8779;</span><span class="lbl">Activity</span></button>
+  <button data-view="passes"><span class="ico">&#9650;</span><span class="lbl">Passes</span></button>
+  <button data-view="gallery"><span class="ico">&#9702;</span><span class="lbl">Gallery</span></button>
+  <button data-view="captures"><span class="ico">&#9834;</span><span class="lbl">Captures</span></button>
+  <button data-view="scan"><span class="ico">&#8981;</span><span class="lbl">Scan</span></button>
+  <button data-view="stations"><span class="ico">&#8962;</span><span class="lbl">Stations</span></button>
+  <button data-view="satellites"><span class="ico">&#10022;</span><span class="lbl">Satellites</span></button>
+  <button data-view="feeds"><span class="ico">&#9788;</span><span class="lbl">Live data</span></button>
+  <button id="nav-more" aria-expanded="false"><span class="ico">⋯</span><span class="lbl">More</span></button>
+</nav>
+
+<main id="main">
+  <div id="msg" role="status">connecting&hellip;</div>
+
+  <section id="view-overview" class="view active" aria-label="Overview">
+    <div class="stat-cards" id="stat-cards">
+      <div class="stat skeleton" aria-hidden="true"></div>
+      <div class="stat skeleton" aria-hidden="true"></div>
+      <div class="stat skeleton" aria-hidden="true"></div>
+      <div class="stat skeleton" aria-hidden="true"></div>
+    </div>
+    <div class="panel next-pass" id="next-pass" hidden>
+      <div class="np-label">Next pass</div>
+      <div class="np-body">
+        <b id="np-sat"></b>
+        <span class="muted" id="np-receiver"></span>
+        <span class="np-countdown" id="np-countdown"></span>
+      </div>
+      <div class="np-meta muted" id="np-meta"></div>
+    </div>
+    <div class="panel">
+      <h2>Spectrum</h2>
+      <canvas id="spectrum" height="120" role="img" aria-label="Live spectrum of the monitored receiver"></canvas>
+      <canvas id="waterfall" height="160" role="img" aria-label="Scrolling waterfall of recent spectrum history"></canvas>
+      <div class="axis"><span id="spec-lo">—</span><span id="spec-mid">—</span><span id="spec-hi">—</span></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Live activity</h2>
+        <button class="linklike" data-goto="activity">view all</button>
+      </div>
+      <div class="feed" id="feed-overview"><div class="empty">no traffic seen yet</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Latest captures</h2>
+        <button class="linklike" data-goto="captures">view all</button>
+      </div>
+      <div id="live-captures" class="empty">none yet</div>
+    </div>
+  </section>
+
+  <section id="view-map" class="view" aria-label="Map">
+    <div class="map-toolbar" role="group" aria-label="Map layers">
+      <button class="chip on" data-layer="receivers">Receivers</button>
+      <button class="chip on" data-layer="stations">Stations</button>
+      <button class="chip on" data-layer="satellites">Satellites</button>
+      <button class="chip on" data-layer="activity">Activity</button>
+      <span class="muted map-note" id="map-note"></span>
+    </div>
+    <div id="map-canvas" role="application" aria-label="World map of receivers, satellites and activity"></div>
+  </section>
+
+  <section id="view-activity" class="view" aria-label="Activity">
+    <div class="toolbar" role="group" aria-label="Filter by kind">
+      <button class="chip on" data-kind="">all</button>
+      <button class="chip" data-kind="voice">voice</button>
+      <button class="chip" data-kind="data">data</button>
+      <button class="chip" data-kind="cw">cw</button>
+      <button class="chip" data-kind="carrier">carrier</button>
+    </div>
+    <div class="feed feed-full" id="feed" role="log" aria-live="polite" aria-label="Detected transmissions"><div class="empty">no traffic seen yet</div></div>
+  </section>
+
+  <section id="view-passes" class="view" aria-label="Passes">
+    <div id="passes-list" class="cards"><div class="empty">no passes predicted</div></div>
+  </section>
+
+  <section id="view-gallery" class="view" aria-label="Gallery">
+    <div class="toolbar" role="tablist" aria-label="Gallery source">
+      <span class="muted" id="gallery-count"></span>
+      <button role="tab" class="chip on" data-gallery-kind="live" aria-selected="true">Live decoded</button>
+      <button role="tab" class="chip" data-gallery-kind="satnogs" aria-selected="false">SatNOGS</button>
+      <button role="tab" class="chip" data-gallery-kind="test" aria-selected="false">Test fixtures</button>
+    </div>
+    <div class="gallery" id="gallery"></div>
+    <div class="panel scroll" id="test-fixtures" hidden></div>
+  </section>
+
+  <section id="view-captures" class="view" aria-label="Captures">
+    <div id="captures-list" class="cards"><div class="empty">none yet — run a capture</div></div>
+  </section>
+
+  <section id="view-scan" class="view" aria-label="Scan status">
+    <div class="toolbar">
+      <label for="scan-concurrency">Concurrent stations: <output id="scan-concurrency-value">49</output> · server ramp <output id="scan-ramp-value">49/100</output></label>
+      <div class="slider-controls"><button id="scan-minus" type="button" aria-label="Reduce concurrency">−</button><input id="scan-concurrency" type="range" min="1" max="100" value="49"><button id="scan-plus" type="button" aria-label="Increase concurrency">+</button></div>
+      <button id="scan-pause" type="button" class="btn">Pause</button>
+      <span id="scan-control-status" class="muted" aria-live="polite"></span>
+    </div>
+    <div id="band-conditions" class="muted" aria-label="Advisory HF band conditions"></div>
+    <h2>Connection log</h2>
+    <div class="toolbar"><button class="chip on" data-scan-state="">All</button><button class="chip" data-scan-state="decoded">Decoded</button><button class="chip" data-scan-state="timeout">Timeouts</button><button class="chip" data-scan-state="error">Errors</button></div>
+    <div id="scan-log" class="cards" aria-live="polite"><div class="empty">waiting for scan events</div></div>
+    <h2>Station status</h2>
+    <div id="scan-board" class="cards"><div class="empty">scanner offline</div></div><button id="scan-more" class="btn">Load more</button>
+  </section>
+
+  <section id="view-stations" class="view" aria-label="Stations">
+    <div class="toolbar">
+      <label class="sr-only" for="station-filter">Filter stations</label>
+      <input type="search" id="station-filter" placeholder="Filter by name, type or URL">
+      <span class="muted" id="station-summary"></span>
+    </div>
+    <div id="stations-list" class="cards"></div>
+    <button id="station-more" class="btn" hidden>show more</button>
+  </section>
+
+  <section id="view-feeds" class="view" aria-label="Live data">
+    <div class="toolbar" role="group" aria-label="Feed sources" id="feeds-sources"></div>
+    <div class="muted feeds-note" id="feeds-note"></div>
+    <div class="feed feed-full" id="feeds-list" role="log" aria-live="polite" aria-label="Live public data"><div class="empty">connecting to feeds&hellip;</div></div>
+    <h2>Data sources</h2>
+    <div class="toolbar">
+      <button id="sources-refresh" type="button" class="btn">check now</button>
+      <span id="sources-note" class="muted"></span>
+    </div>
+    <div id="sources-list" class="cards" aria-label="External data source health"><div class="empty">no health check yet - press check now</div></div>
+  </section>
+
+
+  <section id="view-satellites" class="view" aria-label="Satellites">
+    <div class="panel scroll-x"><p class="muted mobile-scroll-cue">Swipe to see the full satellite table →</p>
+      <table id="sats">
+        <thead><tr><th>name</th><th>norad</th><th>downlink</th><th>mode</th><th>relay</th><th>status</th><th>receivers</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<div id="toasts" aria-live="polite" aria-label="Notifications"></div>
+
+<div id="lightbox" hidden role="dialog" aria-modal="true" aria-label="Image viewer">
+  <button id="lightbox-close" aria-label="Close">&times;</button>
+  <img id="lightbox-img" alt="">
+  <div id="lightbox-caption" class="muted"></div>
+</div>
+
+<script src="/static/vendor/leaflet/leaflet.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

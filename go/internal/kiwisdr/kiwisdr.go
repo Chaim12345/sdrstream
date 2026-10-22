@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
 	"net/url"
 	"strconv"
@@ -51,7 +52,8 @@ type Options struct {
 	IdentUser    string
 	OpenTimeout  time.Duration
 	IdleTimeout  time.Duration
-	Waterfall    bool // also open the /W/F waterfall connection
+	Waterfall    bool   // also open the /W/F waterfall connection
+	WSPath       string // preflight-selected path style: "/ws/kiwi" or "legacy"
 	WriteTimeout time.Duration
 }
 
@@ -120,10 +122,23 @@ func New(server string, opts Options) (*Client, error) {
 // Connect opens the stream and starts audio flowing. It does not tune; call
 // Tune separately so repeated reconnections replay the last tuning.
 func (c *Client) Connect(ctx context.Context) error {
-	uri := fmt.Sprintf("ws://%s/%d/SND", c.base, time.Now().Unix())
+	timestamp := time.Now().Unix()
+	path := ""
+	if c.opts.WSPath == "/ws/kiwi" {
+		path = "/ws/kiwi"
+	}
+	uri := fmt.Sprintf("ws://%s%s/%d/SND", c.base, path, timestamp)
 	dialer := websocket.Dialer{HandshakeTimeout: c.opts.OpenTimeout}
-	ws, _, err := dialer.DialContext(ctx, uri, nil)
+	ws, response, err := dialer.DialContext(ctx, uri, nil)
 	if err != nil {
+		if response != nil {
+			snippet := ""
+			if response.Body != nil {
+				body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
+				snippet = strings.TrimSpace(string(body))
+			}
+			return fmt.Errorf("kiwisdr: %s: websocket HTTP %s server=%q body=%q: %w", c.base, response.Status, response.Header.Get("Server"), snippet, err)
+		}
 		return fmt.Errorf("kiwisdr: %s: %w", c.base, err)
 	}
 	c.ws = ws
@@ -238,7 +253,8 @@ func (c *Client) Record(ctx context.Context, duration time.Duration) ([]int16, i
 			}
 			flags := body[0]
 			seq := binary.LittleEndian.Uint32(body[1:5])
-			smeter := int(binary.BigEndian.Uint16(body[5:7]))*10 - 127*10
+			smeter10 := int(binary.BigEndian.Uint16(body[5:7])) // raw is 10*(dBm+127)
+			smeter := smeter10 - 127*10
 			chunk := decodeSampleBlock(flags, body[7:], &c.adpcm)
 			if len(chunk.Samples) > 0 {
 				if rate == 12000 {

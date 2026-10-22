@@ -377,7 +377,7 @@ def make_navtex(message="ZCZC SA00\nTEST NAVTEX MESSAGE 123\nNNNN",
                 center=1700.0, shift=170.0):
     """Render a SITOR-B (NAVTEX) transmission: 100 baud FSK, CCIR 476 code.
 
-    Each character is sent twice, the repeat five characters (35 bits) later,
+    Each character is sent twice, the repeat five slots (35 bits) later,
     with the phasing signals (alpha/beta) at the start and rep at the end.
     """
     mark = center + shift / 2
@@ -385,8 +385,8 @@ def make_navtex(message="ZCZC SA00\nTEST NAVTEX MESSAGE 123\nNNNN",
     baud = 100.0
 
     def bits_of(code):
-        # CCIR 476 is sent most-significant bit first.
-        return [(code >> (6 - i)) & 1 for i in range(7)]
+        # CCIR 476 is sent least-significant bit first.
+        return [(code >> i) & 1 for i in range(7)]
 
     symbols = []
     # Phasing: two alpha/beta pairs precede the message.
@@ -406,14 +406,12 @@ def make_navtex(message="ZCZC SA00\nTEST NAVTEX MESSAGE 123\nNNNN",
     # End-of-message phasing: three rep characters.
     symbols += [CCIR_REP, CCIR_REP, CCIR_REP]
 
-    # Interleave: the transmitter sends each logical symbol paired with the
-    # symbol from three steps earlier, so every character's repeat lands five
-    # characters (35 bits) after the original.
+    # Interleave: DX slots carry new symbols, RX slots the symbol sent two DX
+    # slots earlier, so every repeat lands five slots (35 bits) after the DX.
     stream = []
     for k, sym in enumerate(symbols):
-        delayed = symbols[k - 3] if k >= 3 else CCIR_REP
-        stream.append(delayed)
         stream.append(sym)
+        stream.append(symbols[k - 2] if k >= 2 else CCIR_REP)
 
     bits = []
     for sym in stream:
@@ -602,7 +600,7 @@ if __name__ == "__main__":
     write_wav("/tmp/test_morse.wav", make_morse("CQ DE RS44 SAT"))
     write_wav("/tmp/test_dtmf.wav", make_dtmf("0123456789*#ABCD"))
     write_wav("/tmp/test_rtty.wav", make_rtty("CQ DE RS44 RTTY TEST 599"))
-    write_wav("/tmp/test_sstv.wav", make_sstv_vis(0x3C))  # Martin M2
+    write_wav("/tmp/test_sstv.wav", make_sstv_vis(0x28))  # Martin M2
     write_wav("/tmp/test_psk31.wav", make_psk31("CQ DE RS44 PSK31 TEST"))
     write_wav("/tmp/test_pocsag.wav", make_pocsag(1234567, "HELLO PAGER TEST 123"))
     write_wav("/tmp/test_eas.wav", make_eas())

@@ -4,29 +4,37 @@ package web
 
 import (
 	"context"
+	"embed"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/chaim12345/sdrstream/go/internal/bandcond"
 	"github.com/chaim12345/sdrstream/go/internal/catalogue"
 	"github.com/chaim12345/sdrstream/go/internal/directory"
+	"github.com/chaim12345/sdrstream/go/internal/feeds"
 	"github.com/chaim12345/sdrstream/go/internal/gallery"
 	"github.com/chaim12345/sdrstream/go/internal/monitor"
 	"github.com/chaim12345/sdrstream/go/internal/relays"
 	"github.com/chaim12345/sdrstream/go/internal/satellites"
 	"github.com/chaim12345/sdrstream/go/internal/satnogs"
+	"github.com/chaim12345/sdrstream/go/internal/sources"
 	"github.com/chaim12345/sdrstream/go/internal/tle"
 	"github.com/chaim12345/sdrstream/go/internal/tracking"
+	"github.com/chaim12345/sdrstream/go/internal/verify"
 )
 
 // Capture is one recording the UI can show.
@@ -73,21 +81,86 @@ type SatelliteInfo struct {
 }
 
 // Server holds the state and serves the UI and API.
+type LiveGalleryItem struct {
+	ObservationID int       `json:"observation_id"`
+	Satellite     string    `json:"satellite"`
+	Station       string    `json:"station"`
+	Start         time.Time `json:"start"`
+	Mode          string    `json:"mode"`
+	FrequencyHz   int64     `json:"frequency_hz"`
+	Kind          string    `json:"kind"`
+	Name          string    `json:"name"`
+	URL           string    `json:"url"`
+	AudioURL      string    `json:"audio_url,omitempty"`
+	Size          int64     `json:"size,omitempty"`
+	Text          string    `json:"text,omitempty"`
+}
+
+type ScanStatus struct {
+	StationType string    `json:"station_type,omitempty"`
+	Station     string    `json:"station"`
+	FrequencyHz float64   `json:"frequency_hz"`
+	Mode        string    `json:"mode"`
+	State       string    `json:"state"`
+	Result      string    `json:"result,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	// BandCondition is the advisory HF band label (from the cached NOAA
+	// K-index) for scan targets inside an amateur HF band.
+	BandCondition string `json:"band_condition,omitempty"`
+}
+
+// ScanMetrics reports the bounded station-scan ramp and its current load.
+type ScanMetrics struct {
+	RampStep               int          `json:"ramp_step"`
+	MaxConnections         int          `json:"max_connections"`
+	ActiveConnections      int          `json:"active_connections"`
+	Refusals               int          `json:"refusals"`
+	Timeouts               int          `json:"timeouts"`
+	LoadAverage            float64      `json:"load_average"`
+	CoreCount              int          `json:"core_count"`
+	EstimatedBandwidthMbps float64      `json:"estimated_bandwidth_mbps"`
+	BandwidthLimitMbps     float64      `json:"bandwidth_limit_mbps"`
+	TargetConcurrency      int          `json:"target_concurrency"`
+	Paused                 bool         `json:"paused"`
+	MemoryBytes            uint64       `json:"memory_bytes"`
+	OpenFDs                int          `json:"open_fds"`
+	Stations               []ScanStatus `json:"stations"`
+}
+
 type Server struct {
-	mu          sync.Mutex
-	captures    []Capture
-	passes      []PassInfo
-	gallery     []gallery.Item
-	html        string
-	capturesDir string
-	galleryDir  string
-	galleryAt   time.Time
-	monitor     *monitor.Monitor
-	stations    []directory.Station
-	stationsAt  time.Time
+	mu                sync.Mutex
+	captures          []Capture
+	passes            []PassInfo
+	gallery           []gallery.Item
+	liveGallery       []LiveGalleryItem
+	html              string
+	capturesDir       string
+	galleryDir        string
+	galleryAt         time.Time
+	monitor           *monitor.Monitor
+	feeds             *feeds.Manager
+	scans             []ScanStatus
+	scanIndex         map[string]int
+	scanMetrics       ScanMetrics
+	scanLog           []ScanStatus
+	scanLogSeq        uint64
+	scanControlManual bool
+	stations          []directory.Station
+	stationsAt        time.Time
+	sourcesResults    []sources.Result
+	sourcesAt         time.Time
+	sourcesRunning    bool
+	cond              bandcond.Conditions
+	condAt            time.Time
+	condErr           string
+	// healthAll and fetchConditions are seams for the tests.
+	healthAll       func(ctx context.Context, opts sources.Options) []sources.Result
+	fetchConditions func(ctx context.Context) (bandcond.Conditions, error)
 	// fetchStations is directory.FetchStations in production and a seam
 	// for the tests, which cannot wait on the public directory.
 	fetchStations func(context.Context) ([]directory.Station, error)
+	NoAuth        bool
+	auth          authState
 }
 
 // New builds a server with the bundled page. When capturesDir is non-empty
@@ -99,7 +172,8 @@ func New(capturesDir, galleryDir string) *Server {
 	if galleryDir == "" {
 		galleryDir = filepath.Join(satnogs.CacheDir, "gallery")
 	}
-	s := &Server{capturesDir: capturesDir, galleryDir: galleryDir}
+	s := &Server{capturesDir: capturesDir, galleryDir: galleryDir, scanIndex: make(map[string]int)}
+	s.loadScanState()
 	s.loadGallery()
 	go s.galleryLoop()
 	s.loadPasses()
@@ -331,37 +405,50 @@ func wavInfo(path string) (rate int, dataBytes int64, err error) {
 	}
 }
 
-// securityHeaders sets the headers every response carries. The UI is a
-// single page with an inline script, so the policy allows inline code but
-// blocks framing and cross-origin access.
+// securityHeaders sets headers for the single-page UI and same-origin assets.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := w.Header()
 		header.Set("X-Content-Type-Options", "nosniff")
 		header.Set("X-Frame-Options", "DENY")
 		header.Set("Referrer-Policy", "no-referrer")
-		header.Set("Content-Security-Policy",
-			"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "+
-				"img-src 'self' data:; media-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'")
+		header.Set("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})
 }
 
+//go:embed static
+var staticFS embed.FS
+
 // Handler returns the HTTP routes.
 func (s *Server) Handler() http.Handler {
+	s.auth.init()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/login", s.handleLogin)
+	mux.HandleFunc("/logout", s.handleLogout)
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/status.json", s.handleStatus)
 	mux.HandleFunc("/api/captures.json", s.handleCaptures)
 	mux.HandleFunc("/api/satellites.json", s.handleSatellites)
 	mux.HandleFunc("/api/observations.json", s.handleObservations)
 	mux.HandleFunc("/api/gallery.json", s.handleGallery)
+	mux.HandleFunc("/api/test-fixtures.json", s.handleTestFixtures)
+	mux.HandleFunc("/api/scans.json", s.handleScans)
+	mux.HandleFunc("/api/feeds.json", s.handleFeeds)
+	mux.HandleFunc("/api/sources.json", s.handleSources)
+	mux.HandleFunc("/api/bandconditions.json", s.handleBandConditions)
+	mux.HandleFunc("/api/scanlog.json", s.handleScanLog)
+	mux.HandleFunc("/api/scans/control", s.handleScanControl)
 	mux.HandleFunc("/api/activity.json", s.handleActivity)
 	mux.HandleFunc("/api/spectrum.json", s.handleSpectrum)
 	mux.HandleFunc("/api/stations.json", s.handleStations)
+	mux.HandleFunc("/api/map.json", s.handleMap)
+	mux.HandleFunc("/api/tiles/", s.handleTile)
+	mux.Handle("/static/", http.FileServerFS(staticFS))
 	mux.HandleFunc("/audio/", s.handleAudio)
+	mux.HandleFunc("/audio/live/", s.handleLiveAudio)
 	mux.HandleFunc("/gallery/", s.handleGalleryFile)
-	return securityHeaders(mux)
+	return securityHeaders(s.wrapAuth(mux))
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -422,14 +509,83 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 // files so the browser never depends on the SatNOGS S3 bucket.
 func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	items := make([]gallery.Item, len(s.gallery))
-	copy(items, s.gallery)
+	items := append([]LiveGalleryItem(nil), s.liveGallery...)
+	sat := append([]gallery.Item(nil), s.gallery...)
 	s.mu.Unlock()
-	for i := range items {
-		items[i].URL = "/gallery/" + url.PathEscape(items[i].Name)
-		items[i].Path = ""
+	for i := range sat {
+		sat[i].URL = "/gallery/" + url.PathEscape(sat[i].Name)
+		sat[i].Path = ""
 	}
-	writeJSON(w, items)
+	out := make([]interface{}, 0, len(items)+len(sat))
+	for _, item := range items {
+		out = append(out, item)
+	}
+	for _, item := range sat {
+		out = append(out, item)
+	}
+	writeJSON(w, out)
+}
+
+// AddLiveArtifact saves a verified decoder result with source metadata.
+func (s *Server) AddLiveArtifact(activity monitor.Activity, pngData []byte) error {
+	if err := verify.Live(activity.Kind, activity.Mode, activity.Detail, pngData, activity.VerificationAnchor); err != nil {
+		return fmt.Errorf("live verification rejected content: %w", err)
+	}
+	name := fmt.Sprintf("live-%s-%d", activity.Started.UTC().Format("20060102T150405Z"), activity.ID)
+	var ext, kind string
+	var data []byte
+	if len(pngData) > 0 {
+		ext, kind, data = ".png", "image", pngData
+	} else {
+		ext, kind, data = ".txt", "text", []byte(activity.Detail)
+	}
+	name += ext
+	if err := os.MkdirAll(s.galleryDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(s.galleryDir, name), data, 0o644); err != nil {
+		return err
+	}
+	station := activity.Label
+	if station == "" {
+		station = activity.Source
+	}
+	item := LiveGalleryItem{ObservationID: 0, Satellite: "Live reception", Station: station, Start: activity.Started, Mode: activity.Mode, FrequencyHz: int64(activity.FrequencyHz), Kind: kind, Name: name, URL: "/gallery/" + url.PathEscape(name), Size: int64(len(data)), Text: activity.Detail}
+	if activity.AudioPath != "" {
+		audioName := name + ".wav"
+		src, err := os.ReadFile(activity.AudioPath)
+		if err == nil && len(src) > 0 {
+			if err := os.WriteFile(filepath.Join(s.galleryDir, audioName), src, 0o644); err == nil {
+				item.AudioURL = "/audio/live/" + url.PathEscape(audioName)
+			}
+		}
+	}
+	s.mu.Lock()
+	s.liveGallery = append([]LiveGalleryItem{item}, s.liveGallery...)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Server) handleLiveAudio(w http.ResponseWriter, r *http.Request) {
+	name, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/audio/live/"))
+	if err != nil || name == "" || strings.ContainsAny(name, "/\\") {
+		http.NotFound(w, r)
+		return
+	}
+	s.mu.Lock()
+	found := false
+	for _, item := range s.liveGallery {
+		if item.AudioURL != "" && strings.HasSuffix(item.AudioURL, url.PathEscape(name)) {
+			found = true
+			break
+		}
+	}
+	s.mu.Unlock()
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, filepath.Join(s.galleryDir, name))
 }
 
 // handleGalleryFile serves one downloaded artefact, but only names that are
@@ -442,6 +598,12 @@ func (s *Server) handleGalleryFile(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	found := false
+	for _, item := range s.liveGallery {
+		if item.Name == name {
+			found = true
+			break
+		}
+	}
 	for _, item := range s.gallery {
 		if item.Name == name {
 			found = true
@@ -456,11 +618,277 @@ func (s *Server) handleGalleryFile(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, filepath.Join(s.galleryDir, name))
 }
 
+// SetFeeds attaches live public feeds to the server.
+func (s *Server) SetFeeds(m *feeds.Manager) { s.mu.Lock(); s.feeds = m; s.mu.Unlock() }
+
+func (s *Server) handleFeeds(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	m := s.feeds
+	s.mu.Unlock()
+	if m == nil {
+		writeJSON(w, feeds.Snapshot{UpdatedAt: time.Now(), Sources: []feeds.SourceStatus{}, Items: []feeds.Item{}})
+		return
+	}
+	writeJSON(w, m.Snapshot(500))
+}
+
+func scanStateFile() string { return stateFile("sdrstream-scan-state.json") }
+func (s *Server) loadScanState() {
+	b, err := os.ReadFile(scanStateFile())
+	if err != nil {
+		return
+	}
+	var items []ScanStatus
+	if json.Unmarshal(b, &items) != nil {
+		return
+	}
+	for _, item := range items {
+		s.UpsertScanStatus(item)
+	}
+}
+func (s *Server) persistScanStateLocked() {
+	b, err := json.Marshal(s.scans)
+	if err != nil {
+		return
+	}
+	writeStateFile(scanStateFile(), b)
+}
+
 // SetMonitor attaches a live monitor to the server.
+func (s *Server) SetScanStatuses(scans []ScanStatus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old := make(map[string]ScanStatus, len(s.scans))
+	for _, item := range s.scans {
+		old[scanLogKey(item)] = item
+	}
+	if len(scans) > 500 {
+		scans = scans[len(scans)-500:]
+	}
+	s.scans = append([]ScanStatus(nil), scans...)
+	for _, item := range scans {
+		key := scanLogKey(item)
+		prev, ok := old[key]
+		if !ok || prev.State != item.State || prev.Result != item.Result {
+			s.scanLogSeq++
+			s.scanLog = append(s.scanLog, item)
+			if len(s.scanLog) > 2000 {
+				s.scanLog = append([]ScanStatus(nil), s.scanLog[len(s.scanLog)-2000:]...)
+			}
+		}
+	}
+	s.persistScanStateLocked()
+}
+
+func (s *Server) UpsertScanStatus(item ScanStatus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.scanIndex == nil {
+		s.scanIndex = make(map[string]int, len(s.scans))
+		for i, x := range s.scans {
+			s.scanIndex[scanLogKey(x)] = i
+		}
+	}
+	key := scanLogKey(item)
+	idx, ok := s.scanIndex[key]
+	if ok && idx < len(s.scans) {
+		prev := s.scans[idx]
+		s.scans[idx] = item
+		if prev.State != item.State || prev.Result != item.Result {
+			s.scanLogSeq++
+			s.scanLog = append(s.scanLog, item)
+			if len(s.scanLog) > 2000 {
+				s.scanLog = append([]ScanStatus(nil), s.scanLog[len(s.scanLog)-2000:]...)
+			}
+		}
+		s.persistScanStateLocked()
+		return
+	}
+	if len(s.scans) >= 500 {
+		delete(s.scanIndex, scanLogKey(s.scans[0]))
+		s.scans = append(s.scans[1:], item)
+		for i, x := range s.scans {
+			s.scanIndex[scanLogKey(x)] = i
+		}
+	} else {
+		s.scanIndex[key] = len(s.scans)
+		s.scans = append(s.scans, item)
+	}
+	s.scanLogSeq++
+	s.scanLog = append(s.scanLog, item)
+	if len(s.scanLog) > 2000 {
+		s.scanLog = append([]ScanStatus(nil), s.scanLog[len(s.scanLog)-2000:]...)
+	}
+	s.persistScanStateLocked()
+}
+
+func scanLogKey(item ScanStatus) string {
+	return fmt.Sprintf("%s|%.0f|%s", item.Station, item.FrequencyHz, item.Mode)
+}
+
+func (s *Server) handleScanLog(w http.ResponseWriter, r *http.Request) {
+	var since uint64
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		since, _ = strconv.ParseUint(raw, 10, 64)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	start := uint64(0)
+	if uint64(len(s.scanLog)) > s.scanLogSeq {
+		start = 0
+	} else {
+		start = s.scanLogSeq - uint64(len(s.scanLog))
+	}
+	items := make([]map[string]any, 0)
+	for i, item := range s.scanLog {
+		seq := start + uint64(i) + 1
+		if seq > since {
+			items = append(items, map[string]any{"id": seq, "station": item.Station, "station_type": item.StationType, "frequency_hz": item.FrequencyHz, "mode": item.Mode, "state": item.State, "reason": item.Result, "updated_at": item.UpdatedAt})
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool { return fmt.Sprint(items[i]["updated_at"]) < fmt.Sprint(items[j]["updated_at"]) })
+	writeJSON(w, map[string]any{"items": items, "next_since": s.scanLogSeq})
+}
+
+func (s *Server) handleScans(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	metrics := s.scanMetrics
+	if metrics.TargetConcurrency == 0 {
+		metrics.TargetConcurrency = metrics.RampStep
+	}
+	metrics.Stations = append([]ScanStatus(nil), s.scans...)
+	if len(s.cond.Bands) > 0 && time.Since(s.condAt) < 3*time.Hour {
+		for i := range metrics.Stations {
+			if label, ok := s.cond.LabelForHz(metrics.Stations[i].FrequencyHz); ok {
+				band, _ := bandcond.BandForHz(metrics.Stations[i].FrequencyHz)
+				metrics.Stations[i].BandCondition = band + " " + label
+			}
+		}
+	}
+	writeJSON(w, metrics)
+}
+
+// SetScanMetrics publishes live ramp and resource counters for the scanner.
+func (s *Server) handleScanControl(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("Origin") != "https://"+r.Host && r.Header.Get("Origin") != "http://"+r.Host {
+		http.Error(w, "same-origin required", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	if raw := r.FormValue("concurrency"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 100 {
+			s.mu.Unlock()
+			http.Error(w, "concurrency must be 1..100", http.StatusBadRequest)
+			return
+		}
+		s.scanMetrics.TargetConcurrency = n
+		s.scanControlManual = true
+	}
+	if raw := r.FormValue("paused"); raw != "" {
+		s.scanMetrics.Paused = raw == "true"
+	}
+	metrics := s.scanMetrics
+	s.mu.Unlock()
+	writeJSON(w, map[string]any{"target_concurrency": metrics.TargetConcurrency, "paused": metrics.Paused})
+}
+
+func (s *Server) ScanControl() (int, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	target := s.scanMetrics.TargetConcurrency
+	if target < 1 {
+		target = s.scanMetrics.RampStep
+	}
+	if target < 1 {
+		target = 1
+	}
+	if target > s.scanMetrics.MaxConnections && s.scanMetrics.MaxConnections > 0 {
+		target = s.scanMetrics.MaxConnections
+	}
+	return target, s.scanMetrics.Paused
+}
+
+func (s *Server) ScanControlManual() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.scanControlManual
+}
+
+func (s *Server) SetScanMetrics(metrics ScanMetrics) {
+	s.mu.Lock()
+	target, paused := s.scanMetrics.TargetConcurrency, s.scanMetrics.Paused
+	if !s.scanControlManual || target == 0 {
+		target = metrics.TargetConcurrency
+	}
+	metrics.TargetConcurrency, metrics.Paused = target, paused
+	metrics.Stations = append([]ScanStatus(nil), s.scans...)
+	s.scanMetrics = metrics
+	s.mu.Unlock()
+}
+
 func (s *Server) SetMonitor(instance *monitor.Monitor) {
 	s.mu.Lock()
 	s.monitor = instance
 	s.mu.Unlock()
+}
+
+// fixtureDir locates test fixtures independent of the process working directory.
+func fixtureDir() string {
+	isDir := func(path string) bool { st, err := os.Stat(path); return err == nil && st.IsDir() }
+	if dir := os.Getenv("SDRSTREAM_FIXTURE_DIR"); dir != "" && isDir(dir) {
+		return dir
+	}
+	if _, file, _, ok := runtime.Caller(0); ok {
+		dir := filepath.Join(filepath.Dir(file), "..", "..", "..", "tests", "data")
+		if isDir(dir) {
+			return dir
+		}
+	}
+	if isDir("tests/data") {
+		return "tests/data"
+	}
+	return ""
+}
+
+// handleTestFixtures lists local test WAV fixtures separately from live reception.
+func (s *Server) handleTestFixtures(w http.ResponseWriter, r *http.Request) {
+	type Fixture struct {
+		Name string `json:"name"`
+		Kind string `json:"kind"`
+		Size int64  `json:"size"`
+	}
+	root := fixtureDir()
+	if root == "" {
+		writeJSON(w, []Fixture{})
+		return
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		writeJSON(w, []Fixture{})
+		return
+	}
+	var fixtures []Fixture
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".wav") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		fixtures = append(fixtures, Fixture{Name: entry.Name(), Kind: "test audio", Size: info.Size()})
+	}
+	writeJSON(w, fixtures)
 }
 
 // handleActivity returns the transmissions the monitor has seen.
@@ -607,7 +1035,117 @@ func writeJSON(w http.ResponseWriter, value interface{}) {
 
 // Serve binds addr and serves the UI until the process exits.
 func (s *Server) Serve(addr string) error {
+	if os.Getenv("SDRSTREAM_UI_PASSWORD") == "" && !s.NoAuth {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			host = addr
+		}
+		ip := net.ParseIP(host)
+		loopback := (ip != nil && ip.IsLoopback()) || strings.EqualFold(host, "localhost")
+		if !loopback {
+			return fmt.Errorf("web: refusing to serve %q without SDRSTREAM_UI_PASSWORD: set a password or pass -no-auth to run an open UI", addr)
+		}
+		log.Printf("web: WARNING: no SDRSTREAM_UI_PASSWORD - serving an open UI on loopback only; set a password before exposing this beyond the local machine")
+	}
 	log.Printf("web UI on http://%s", addr)
 	server := &http.Server{Addr: addr, Handler: s.Handler()}
 	return server.ListenAndServe()
+}
+
+// sourcesResponse is the on-demand data-source health table.
+type sourcesResponse struct {
+	UpdatedAt time.Time        `json:"updated_at"`
+	Running   bool             `json:"running"`
+	Results   []sources.Result `json:"results"`
+}
+
+// handleSources serves the last health sweep. A sweep starts on the first
+// request, or when ?refresh=1 arrives and the last sweep finished more than
+// 30s ago - never on a timer, so the external services are only probed when
+// someone actually asks.
+func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	stale := time.Since(s.sourcesAt) > 30*time.Second
+	if !s.sourcesRunning && stale && (r.URL.Query().Get("refresh") == "1" || len(s.sourcesResults) == 0) {
+		s.sourcesRunning = true
+		go s.runSourcesSweep()
+	}
+	response := sourcesResponse{
+		UpdatedAt: s.sourcesAt,
+		Running:   s.sourcesRunning,
+		Results:   append([]sources.Result(nil), s.sourcesResults...),
+	}
+	s.mu.Unlock()
+	if response.Results == nil {
+		response.Results = []sources.Result{}
+	}
+	writeJSON(w, response)
+}
+
+func (s *Server) runSourcesSweep() {
+	s.mu.Lock()
+	fn := s.healthAll
+	s.mu.Unlock()
+	if fn == nil {
+		fn = sources.HealthAll
+	}
+	results := fn(context.Background(), sources.Options{Timeout: 10 * time.Second, Concurrency: 4})
+	s.mu.Lock()
+	s.sourcesResults = results
+	s.sourcesAt = time.Now()
+	s.sourcesRunning = false
+	s.mu.Unlock()
+}
+
+// bandcondResponse serves the advisory band conditions; stale marks a cache
+// served after a failed NOAA refresh, error carries the failure.
+type bandcondResponse struct {
+	bandcond.Conditions
+	Stale bool   `json:"stale,omitempty"`
+	Err   string `json:"error,omitempty"`
+}
+
+// handleBandConditions serves the cached NOAA-derived band conditions,
+// refreshing at most every 30 minutes. NOAA failures never blank a good
+// cache; they mark it stale with the error attached.
+func (s *Server) handleBandConditions(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	stale := time.Since(s.condAt) > 30*time.Minute
+	s.mu.Unlock()
+	if stale {
+		s.mu.Lock()
+		fn := s.fetchConditions
+		s.mu.Unlock()
+		if fn == nil {
+			fn = func(ctx context.Context) (bandcond.Conditions, error) {
+				return bandcond.Fetch(ctx, "", 8*time.Second)
+			}
+		}
+		conditions, err := fn(r.Context())
+		s.mu.Lock()
+		if err != nil {
+			s.condErr = err.Error()
+			// Count a failure against the refresh window too, so an
+			// unreachable NOAA is retried later, not on every poll.
+			s.condAt = time.Now()
+		} else {
+			s.cond = conditions
+			s.condErr = ""
+			s.condAt = time.Now()
+		}
+		s.mu.Unlock()
+	}
+	s.mu.Lock()
+	response := bandcondResponse{Conditions: s.cond, Err: s.condErr}
+	cachedAt := s.condAt
+	s.mu.Unlock()
+	response.UpdatedAt = cachedAt
+	if response.Err != "" && len(response.Bands) > 0 {
+		response.Stale = true
+	}
+	if len(response.Bands) == 0 {
+		response.Bands = []bandcond.BandCondition{}
+		response.Advisory = true
+	}
+	writeJSON(w, response)
 }

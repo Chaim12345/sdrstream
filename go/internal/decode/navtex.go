@@ -1,6 +1,9 @@
 package decode
 
-import "strings"
+import (
+	"math"
+	"strings"
+)
 
 // NAVTEX is the maritime navigational-telex service. It layers its messages
 // on SITOR collective B-mode (AMTOR-FEC): 100 baud FSK with a 170 Hz shift
@@ -63,7 +66,7 @@ func NAVTEXDecode(samples []float64, rate int, centerHz float64) []NAVTEXMessage
 		return nil
 	}
 	if centerHz == 0 {
-		centerHz = navtexCenter
+		centerHz = navtexCenterHz(samples, rate)
 	}
 	mark := centerHz + navtexShift
 	space := centerHz - navtexShift
@@ -81,42 +84,108 @@ func NAVTEXDecode(samples []float64, rate int, centerHz float64) []NAVTEXMessage
 			dec[p] = 1
 		}
 	}
-	// Search one character period (7 bits) for the start offset and try both
-	// mark/space polarities, keeping the alignment that yields the most valid
-	// CCIR 476 characters. Only the first second is scored so a long capture
-	// is not re-scanned for every candidate offset.
-	scoreLen := int(float64(rate))
-	if scoreLen > n {
-		scoreLen = n
+	// Clock drift between transmitter and receiver makes one global bit grid
+	// wrong late in a long capture, so each 45 s chunk is aligned on its own.
+	chunk := navtexChunkSeconds * rate
+	var text strings.Builder
+	for lo := 0; lo < n; lo += chunk {
+		hi := lo + chunk
+		if hi > n {
+			hi = n
+		}
+		if hi-lo < rate/2 || navtexQuiet(samples[lo:hi]) {
+			continue
+		}
+		text.WriteString(navtexChunkText(dec[lo:hi], float64(rate)))
 	}
-	var bestStart float64
-	bestInvert := false
+	return navtexMessages(text.String())
+}
+
+const navtexChunkSeconds = 45
+
+// navtexQuiet reports whether a chunk carries no signal worth decoding, using
+// its RMS against a floor well under any real FSK tone.
+func navtexQuiet(seg []float64) bool {
+	var sum float64
+	for _, v := range seg {
+		sum += v * v
+	}
+	return len(seg) == 0 || math.Sqrt(sum/float64(len(seg))) < 0.005
+}
+
+// navtexChunkText searches start phase, polarity and a narrow symbol-clock
+// range for one chunk and returns its text.
+func navtexChunkText(dec []byte, rate float64) string {
+	var bestChars []byte
 	bestScore := -1.0
-	step := spb / 14
-	for pol := 0; pol < 2; pol++ {
-		for start := 0.0; start < 7*spb; start += step {
-			chars := navtexChars(dec[:scoreLen], start, spb, pol == 1)
-			score := navtexScore(chars)
-			if score > bestScore {
-				bestScore = score
-				bestStart = start
-				bestInvert = pol == 1
+	for baud := 99.0; baud <= 101.001; baud += 0.1 {
+		spb := rate / baud
+		step := spb / 14
+		for pol := 0; pol < 2; pol++ {
+			for start := 0.0; start < 7*spb; start += step {
+				chars := navtexChars(dec, start, spb, pol == 1)
+				if score := navtexScore(chars); score > bestScore {
+					bestScore, bestChars = score, chars
+				}
 			}
 		}
 	}
 	if bestScore < 0.5 {
-		return nil
+		return ""
 	}
-	bestChars := navtexChars(dec, bestStart, spb, bestInvert)
-	// Every character is sent twice, alternating alpha and its repeat five
-	// characters later, so only one parity carries the data.
-	a := navtexText(bestChars, 0)
-	b := navtexText(bestChars, 1)
-	text := a
-	if strings.Count(b, "ZCZC") > strings.Count(a, "ZCZC") {
-		text = b
+	// SITOR-B alternates DX and RX slots. A DX character in slot 2j is
+	// repeated in RX slot 2j+5, so only one slot parity carries the first
+	// copies. Try both and keep the one that yields the most framing.
+	a := navtexText(navtexMerge(bestChars, 0))
+	b := navtexText(navtexMerge(bestChars, 1))
+	if navtexRank(b) > navtexRank(a) {
+		return b
 	}
-	return navtexMessages(text)
+	return a
+}
+
+func navtexRank(t string) int {
+	return 1000*strings.Count(t, "ZCZC") + strings.Count(t, "NNNN")*100 + len(t)
+}
+
+// navtexMerge returns the DX stream for one slot parity, replacing any
+// character that fails the constant-weight check with its RX repeat.
+func navtexMerge(chars []byte, phase int) []byte {
+	var out []byte
+	for j := 0; phase+2*j < len(chars); j++ {
+		dx := chars[phase+2*j]
+		rxIdx := phase + 2*(j+2) + 1
+		if popcount7(dx) == 4 {
+			out = append(out, dx)
+		} else if rxIdx < len(chars) && popcount7(chars[rxIdx]) == 4 {
+			out = append(out, chars[rxIdx])
+		} else {
+			out = append(out, 0)
+		}
+	}
+	return out
+}
+
+// navtexCenterHz estimates the center of the 170 Hz FSK pair by searching
+// for the candidate pair whose weaker tone has the most energy. Scoring the
+// weaker tone rejects a single unrelated carrier that would dominate a
+// one-tone peak detector.
+func navtexCenterHz(samples []float64, rate int) float64 {
+	bestCenter, bestScore := navtexCenter, -1.0
+	// NAVTEX audio commonly lies near 1700 Hz but receivers can place it
+	// anywhere in the usable SSB passband.
+	if len(samples) > rate/2 {
+		samples = samples[:rate/2]
+	}
+	for center := 900.0; center <= 2800; center += 5 {
+		mark := goertzel(samples, rate, center+navtexShift)
+		space := goertzel(samples, rate, center-navtexShift)
+		score := math.Min(mark, space)
+		if score > bestScore {
+			bestScore, bestCenter = score, center
+		}
+	}
+	return bestCenter
 }
 
 // navtexChars samples the decision stream on the bit grid anchored at start
@@ -135,7 +204,7 @@ func navtexChars(dec []byte, start, spb float64, invert bool) []byte {
 		if invert {
 			v ^= 1
 		}
-		code = (code << 1) | v
+		code |= v << uint(bit) // CCIR 476 is sent least-significant bit first
 		bit++
 		if bit == 7 {
 			chars = append(chars, code)
@@ -170,12 +239,12 @@ func popcount7(c byte) int {
 	return n
 }
 
-// navtexText decodes the characters at one parity (every other character,
-// starting at phase) into text, following the letters/figures shifts.
-func navtexText(chars []byte, phase int) string {
+// navtexText decodes a merged DX character stream into text, following the
+// letters/figures shifts.
+func navtexText(chars []byte) string {
 	var out strings.Builder
 	figures := false
-	for i := phase; i < len(chars); i += 2 {
+	for i := 0; i < len(chars); i++ {
 		c := chars[i]
 		switch c {
 		case ccirLTRS:

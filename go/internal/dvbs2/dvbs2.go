@@ -30,8 +30,8 @@ const (
 
 // TftpData is one TFTP DATA packet: opcode, block number and payload.
 type TftpData struct {
-	Block int
-	Data  []byte
+	Block  int
+	Data   []byte
 	Opcode int
 }
 
@@ -55,9 +55,9 @@ func ParseTftpData(frame []byte, payloadSize int) (TftpData, error) {
 
 // Frame is a DATA packet found at a byte offset in the capture.
 type Frame struct {
-	Offset     int
-	Block      int
-	Data       []byte
+	Offset      int
+	Block       int
+	Data        []byte
 	PayloadSize int
 }
 
@@ -195,8 +195,8 @@ func IterFrames(data []byte, payloadSize int, strict bool) Carved {
 func carve(data []byte, payloadSize int) Carved { return IterFrames(data, payloadSize, false) }
 
 // Carve516 and Carve1028 use the two documented layouts.
-func Carve516(data []byte) Carved   { return carve(data, Block516) }
-func Carve1028(data []byte) Carved  { return carve(data, Block1028) }
+func Carve516(data []byte) Carved  { return carve(data, Block516) }
+func Carve1028(data []byte) Carved { return carve(data, Block1028) }
 
 // Carve scans for frames of one payload size (exported form).
 func Carve(data []byte, payloadSize int) Carved { return carve(data, payloadSize) }

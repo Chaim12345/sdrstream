@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -306,12 +309,12 @@ func TestNarrowbandDecodersNeedANarrowChannel(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", test.file, err)
 		}
-		mode, detail, ok := instance.decodeData(samples, rate, 3000)
+		mode, detail, ok := instance.decodeData(context.Background(), samples, rate, 3000)
 		if !ok || mode != test.narrow {
 			t.Errorf("%s in a 3 kHz channel: got %q/%q, want %q (%s)",
 				test.file, mode, detail, test.narrow, test.note)
 		}
-		mode, detail, ok = instance.decodeData(samples, rate, 25000)
+		mode, detail, ok = instance.decodeData(context.Background(), samples, rate, 25000)
 		if test.wide == "" {
 			if ok {
 				t.Errorf("%s in a 25 kHz channel: got %q/%q, want nothing: the voice is not RTTY",
@@ -343,5 +346,106 @@ func TestActivityJSONOmitsUnsetEnded(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"ended"`) {
 		t.Errorf("set end time is missing from the JSON: %s", data)
+	}
+}
+
+func TestHandleJobDropsNoiseCandidates(t *testing.T) {
+	source := newWAVSource(t, "../../../tests/data/ref_dtmf.wav")
+	instance := New(Options{Source: source, Listen: 10 * time.Second, Name: "test"})
+	var published int
+	instance.opts.OnActivity = func(Activity) { published++ }
+	instance.mu.Lock()
+	instance.activities = []Activity{{ID: 9, Started: time.Now()}}
+	instance.mu.Unlock()
+
+	// A noise fixture uses broadband random samples with no deliberate signal.
+	noise := make([]float64, 8000)
+	seed := uint32(17)
+	for i := range noise {
+		seed = seed*1664525 + 1013904223
+		noise[i] = float64(int32(seed)) / float64(1<<31) * 0.01
+	}
+	source = &wavSource{samples: noise, rate: 8000}
+	instance.opts.Source = source
+	instance.handleJob(context.Background(), job{frequency: 145e6, modes: []string{"usb"}, activityID: 9})
+	if got := len(instance.Activities()); got != 0 {
+		t.Fatalf("noise candidate remained in feed, activities=%d", got)
+	}
+	if published != 0 {
+		t.Fatalf("noise candidate published %d times", published)
+	}
+}
+
+func TestDetectWideFMSpectrum(t *testing.T) {
+	frame := make([]float64, 16384)
+	for i := range frame {
+		frame[i] = -90
+	}
+	// 25 kHz wide signal, representative of a 2 m FM channel.
+	for i := 9000 - 100; i <= 9000+100; i++ {
+		frame[i] = -55
+	}
+	instance := New(Options{ThresholdDB: 8})
+	peaks := instance.detect(frame, 145e6, 2.048e6)
+	if len(peaks) == 0 {
+		t.Fatal("25 kHz wide FM signal not found")
+	}
+	if peaks[0].bandwidth < 20e3 {
+		t.Fatalf("reported width %.0f Hz, want near 25 kHz", peaks[0].bandwidth)
+	}
+	if math.Abs(peaks[0].frequency-(145e6-1.024e6+9000.5*(2.048e6/16384))) > 2e3 {
+		t.Errorf("frequency %.0f Hz not near center", peaks[0].frequency)
+	}
+}
+
+func TestDetectNarrowSignalOnWideFMNoiseFloor(t *testing.T) {
+	frame := make([]float64, 16384)
+	for i := range frame {
+		frame[i] = -90
+	}
+	for i := 10000; i <= 10300; i++ {
+		frame[i] = -65
+	}
+	frame[11000] = -45
+	instance := New(Options{ThresholdDB: 8})
+	peaks := instance.detect(frame, 145e6, 2.048e6)
+	if len(peaks) == 0 {
+		t.Fatal("narrow signal not found")
+	}
+	want := 145e6 - 1.024e6 + 11000.5*(2.048e6/16384)
+	if math.Abs(peaks[len(peaks)-1].frequency-want) > 500 {
+		t.Errorf("narrow peak frequency %.0f, want %.0f", peaks[len(peaks)-1].frequency, want)
+	}
+}
+
+func TestFloorTracksEdgeRolloff(t *testing.T) {
+	frame := make([]float64, 16384)
+	for i := range frame {
+		frame[i] = -90 + 20*math.Abs(float64(i)-float64(len(frame)/2))/float64(len(frame)/2)
+	}
+	instance := New(Options{ThresholdDB: 8})
+	if peaks := instance.detect(frame, 145e6, 2.048e6); len(peaks) != 0 {
+		t.Fatalf("edge rolloff produced false peaks: %+v", peaks)
+	}
+}
+
+// TestDecodeDataHonoursCancellation runs a slow fake multimon-ng and checks
+// that a cancelled job context interrupts the decode instead of waiting for
+// the external process.
+func TestDecodeDataHonoursCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake decoder")
+	}
+	fake := filepath.Join(t.TempDir(), "multimon-ng")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	instance := New(Options{MultimonBinary: fake})
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	instance.decodeData(ctx, make([]float64, 22050), 22050, 3000)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("decodeData took %v with a cancelled context; the external decoder ran to completion", elapsed)
 	}
 }
