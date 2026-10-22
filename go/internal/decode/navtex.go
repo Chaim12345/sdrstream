@@ -290,9 +290,14 @@ func navtexMessages(text string) []NAVTEXMessage {
 		rest = rest[4:]
 		end := strings.Index(rest, "NNNN")
 		body := rest
+		// Raw keeps the NNNN terminator only when it was actually received;
+		// the live gate requires both ZCZC and NNNN, so dropping it here
+		// made the gate unpassable for complete messages.
+		raw := "ZCZC " + hdr + body
 		if end >= 0 {
 			body = rest[:end]
 			rest = rest[end+4:]
+			raw = "ZCZC " + hdr + body + " NNNN"
 		} else {
 			rest = ""
 		}
@@ -301,7 +306,7 @@ func navtexMessages(text string) []NAVTEXMessage {
 			Subject: string(hdr[1]),
 			Serial:  hdr[2:4],
 			Text:    strings.TrimSpace(body),
-			Raw:     "ZCZC " + hdr + body,
+			Raw:     raw,
 		})
 	}
 	return out
