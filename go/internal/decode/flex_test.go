@@ -36,7 +36,7 @@ func TestFlexNoiseNoPages(t *testing.T) {
 	seed := uint32(1)
 	for i := range x {
 		seed = seed*1664525 + 1013904223
-		x[i] = float64(int32(seed))/2e9
+		x[i] = float64(int32(seed)) / 2e9
 	}
 	if m := FlexDecode(x, 22050); len(m) != 0 {
 		t.Fatalf("noise decoded %d pages", len(m))
