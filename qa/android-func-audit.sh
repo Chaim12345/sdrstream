@@ -62,6 +62,22 @@ done
 log "== settling ${SETTLE}s for live data =="; sleep "$SETTLE"
 log "== sweep t1 (after settle) =="; sweep t1
 adb exec-out screencap -p > "$R-after-settle.png"
+MON="${MONITOR_SERVER:-jukebox.spdns.eu:8073}"
+post() { curl -sS -m 40 -b $JAR -o /tmp/p.out -w "%{http_code}" -H "Origin: $BASE" -H "Referer: $BASE/" -X POST --data "$1" $BASE/api/monitor/control; }
+log "== monitor error path: bogus receiver =="
+c=$(post "action=start&kind=openwebrx&server=127.0.0.1:1&label=qa-bogus"); log "start bogus -> http=$c body=$(head -c 160 /tmp/p.out | tr '\n' ' ')"
+c=$(post "action=start&kind=bad&server=x.example:1"); log "start bad kind -> http=$c body=$(head -c 120 /tmp/p.out | tr '\n' ' ')"
+log "== monitor start on public receiver $MON (single bounded connection) =="
+c=$(post "action=start&kind=openwebrx&server=$MON&label=qa-audit"); log "start $MON -> http=$c body=$(head -c 200 /tmp/p.out | tr '\n' ' ')"
+if [ "$c" = 200 ]; then
+  sleep 90
+  for e in status live spectrum activity captures; do
+    curl -sS -m 20 -b $JAR -o "$R-mon-$e.json" -w "mon /api/$e.json http=%{http_code} bytes=%{size_download}\n" $BASE/api/$e.json | tee -a "$R-audit.txt"
+  done
+  curl -sS -m 15 -b $JAR --max-time 12 -o "$R-live-audio.bin" -w "live audio http=%{http_code} bytes=%{size_download} type=%{content_type}\n" $BASE/audio/live/ | tee -a "$R-audit.txt"
+  adb exec-out screencap -p > "$R-monitor-running.png"
+  c=$(post "action=stop"); log "stop -> http=$c body=$(head -c 120 /tmp/p.out | tr '\n' ' ')"
+fi
 adb shell run-as $PKG sh -c 'tail -60 files/engine.log 2>/dev/null' | sed "s/$PW/<pw>/g" > "$R-engine-tail.txt"
 adb shell run-as $PKG sh -c 'ls -la files/ files/state ../captures 2>&1 | head -40' > "$R-files.txt" 2>&1
 adb shell top -b -n 1 | grep -iE 'sdrstream|libsdr' | head -3 | tee -a "$R-audit.txt"

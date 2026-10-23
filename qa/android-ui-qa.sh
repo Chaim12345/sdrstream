@@ -9,6 +9,23 @@ OUT=qa-results; mkdir -p "$OUT"; export PATH=$PATH; R="$OUT/$LABEL"
 log() { echo "[qa] $*" | tee -a "$R-steps.txt"; }
 shot() { adb exec-out screencap -p > "$R-$1.png"; log "screenshot $1"; }
 dump() { adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; adb exec-out cat /sdcard/ui.xml > "$R-$1.xml" 2>/dev/null; }
+ensure_fg() { # relaunch and dismiss any battery dialog until the app owns focus
+  for i in 1 2 3 4; do
+    if adb shell dumpsys window 2>/dev/null | grep -E 'mCurrentFocus' | grep -q "$PKG"; then
+      dump fg; if grep -q 'text="Not now"' "$R-fg.xml"; then
+        xy=$(python3 - "$R-fg.xml" <<'PY'
+import re,sys
+x=open(sys.argv[1],errors='ignore').read()
+m=re.search(r'text="Not now"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"',x)
+if m:
+    a,b,c,d=map(int,m.groups()); print((a+c)//2,(b+d)//2)
+PY
+); [ -n "$xy" ] && adb shell input tap $xy; sleep 2; continue; fi
+      return 0
+    fi
+    adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 4
+  done; log "WARN: app not in foreground"
+}
 alive() { adb shell pidof $PKG >/dev/null 2>&1 && echo alive || echo dead; }
 
 adb install -r "$APK" 2>&1 | tee "$R-install.txt"
@@ -49,7 +66,7 @@ for m in re.finditer(r'<node[^>]*?(?:%s)[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d
 PY
   if [ -s /tmp/tap.txt ]; then adb shell input tap $(cat /tmp/tap.txt); echo ok; else echo none; fi
 }
-adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 3
+adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 3; ensure_fg
 dump 03b-pre-menu
 R1=$(tapnode "$R-03b-pre-menu.xml" 'content-desc="Menu"|text="Menu"|text="⋮"')
 log "tap visible Menu control: $R1"
@@ -70,7 +87,7 @@ fi
 PW=$(adb shell run-as $PKG cat shared_prefs/sdrstream.xml 2>/dev/null | sed -n 's/.*name="ui_password">\([^<]*\)<.*/\1/p')
 echo "::add-mask::$PW"
 [ -n "$PW" ] && log "on-device password exists (len ${#PW})" || log "NO on-device password found"
-adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 5
+adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 5; ensure_fg
 dump 04-pre-login
 python3 - "$R-04-pre-login.xml" <<'PY' > /tmp/field.txt
 import re,sys
@@ -94,10 +111,10 @@ for m in re.finditer(r'<node[^>]*class="android.widget.EditText"[^>]*bounds="\[(
     a,b,c,d=map(int,m.groups()); best=((a+c)//2,(b+d)//2)
 print("%d %d"%best if best else "")
 PY
-  adb shell input tap $(cat /tmp/field.txt); sleep 1
+  ensure_fg; adb shell input tap $(cat /tmp/field.txt); sleep 1
   adb shell input text "$PW"; adb shell input keyevent KEYCODE_ENTER; sleep 8
   shot 06-after-login; dump 06-after-login
-  if grep -qiE 'password' "$R-06-after-login.xml" && grep -q 'class="android.widget.EditText"' "$R-06-after-login.xml"; then log "LOGIN RESULT: still on login form"; else log "LOGIN RESULT: left login form"; fi
+  if ! adb shell dumpsys window | grep mCurrentFocus | grep -q "$PKG"; then log "LOGIN RESULT: INVALID (app not in foreground, input went elsewhere)"; elif grep -q "Open monitor" "$R-06-after-login.xml"; then log "LOGIN RESULT: still on login form"; elif grep -qE "Overview|Settings|Scan" "$R-06-after-login.xml"; then log "LOGIN RESULT: PASS (app tabs visible)"; else log "LOGIN RESULT: unclear"; fi
   grep -oE 'text="[^"]+"' "$R-06-after-login.xml" | head -40 > "$R-06-visible-text.txt"
 else
   log "no EditText found on screen (login form not exposed)"
@@ -115,7 +132,7 @@ for m in re.finditer(r'<node[^>]*class="android.widget.EditText"[^>]*bounds="\[(
 print("%d %d"%best if best else "")
 PY
 }
-adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 3; dump 06b
+adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 3; ensure_fg; dump 06b
 S1=$(tapnode "$R-06b.xml" 'content-desc="Menu"|text="Menu"|text="⋮"'); log "set-pw: tap Menu: $S1"
 if [ "$S1" = ok ]; then
   sleep 2; dump 06c; S2=$(tapnode "$R-06c.xml" 'text="Set UI password"'); log "set-pw: tap Set UI password: $S2"
