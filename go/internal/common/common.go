@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -166,14 +167,31 @@ func WriteWAVFile(path string, samples []int16, samplerate int) error {
 	return WriteFileAtomic(path, buffer.Bytes(), 0o644)
 }
 
-// WriteFileAtomic writes data to path via a sibling "<path>.tmp" file and a
+// WriteFileAtomic writes data to path via a sibling temp file and a
 // rename, so concurrent readers see either the old file or the new one,
-// never a mixture. Directories listing for a specific extension must skip
-// ".tmp" names while a write is in flight.
+// never a mixture. The temp name is unique per call (".tmp-<base>-*"):
+// concurrent writers used to share "<path>.tmp", and one writer could
+// rename another's temp out from under it (rename: no such file or
+// directory) or publish a mixture of two payloads. The last rename wins.
+// Directories listing for a specific extension must skip ".tmp*" names
+// while a write is in flight.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-"+filepath.Base(path)+"-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename lands
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }

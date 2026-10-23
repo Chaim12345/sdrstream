@@ -581,7 +581,7 @@ func (s *Server) scanCaptures() []Capture {
 // listCaptures reads every WAV in the captures directory as a Capture.
 // The satellite name is the leading part of the filename ("CAS-9_...wav"),
 // the sample rate comes from the WAV header, and the size gives the sample
-// count (16-bit mono). In-flight atomic writes ("<name>.wav.tmp") are
+// count (16-bit mono). In-flight atomic writes (".tmp-*" and "*.tmp") are
 // skipped, and the listing is capped so an overflowing directory cannot
 // turn one poll into unbounded work; retention (see retention.go) keeps
 // real directories far below the cap.
@@ -593,7 +593,7 @@ func (s *Server) listCaptures() []Capture {
 	var out []Capture
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || strings.HasSuffix(name, ".tmp") || !strings.HasSuffix(strings.ToLower(name), ".wav") {
+		if entry.IsDir() || strings.HasPrefix(name, ".tmp-") || strings.HasSuffix(name, ".tmp") || !strings.HasSuffix(strings.ToLower(name), ".wav") {
 			continue
 		}
 		if len(out) >= maxListedCaptures {

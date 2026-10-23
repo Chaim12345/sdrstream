@@ -23,6 +23,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/chaim12345/sdrstream/go/internal/common"
 	"github.com/chaim12345/sdrstream/go/internal/satnogs"
 )
 
@@ -215,7 +216,9 @@ func WriteManifest(items []Item, dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "index.json"), data, 0o644)
+	// The web server reads this manifest while imports write it; the
+	// atomic write keeps a reader from ever parsing a torn JSON half.
+	return common.WriteFileAtomic(filepath.Join(dir, "index.json"), data, 0o644)
 }
 
 // Decode bounds, kept tight so a small compressed payload cannot expand

@@ -67,7 +67,7 @@ func pruneCaptures(dir string, maxBytes int64) (removed int, freed int64) {
 	var prunable []candidate
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || strings.HasSuffix(name, ".tmp") || !strings.HasSuffix(strings.ToLower(name), ".wav") {
+		if entry.IsDir() || strings.HasPrefix(name, ".tmp-") || strings.HasSuffix(name, ".tmp") || !strings.HasSuffix(strings.ToLower(name), ".wav") {
 			continue
 		}
 		info, err := entry.Info()

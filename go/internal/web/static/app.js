@@ -3,6 +3,21 @@
    plus /api/map.json and /api/tiles/ (same-origin tile proxy). */
 
 const el = id => document.getElementById(id);
+/* Empty/muted placeholders are built as DOM nodes with textContent, never
+   innerHTML: static strings are safe today, but the pattern keeps the next
+   interpolated string from becoming an injection hole. */
+const setEmpty = (box, text) => {
+  const d = document.createElement('div');
+  d.className = 'empty';
+  d.textContent = text;
+  box.appendChild(d);
+};
+const setMuted = (box, text) => {
+  const d = document.createElement('span');
+  d.className = 'muted';
+  d.textContent = text;
+  box.appendChild(d);
+};
 /* Per-endpoint diagnostics: every API call records its outcome so the
    Health view can show which endpoint failed, when, and how fast - on the
    device itself, without ADB. A hung request must never leave a control at
@@ -186,7 +201,7 @@ function renderPasses(status) {
   const box = el('passes-list');
   const passes = (status.passes || []).slice().sort((a, b) => new Date(a.rise) - new Date(b.rise));
   box.textContent = '';
-  if (!passes.length) { box.innerHTML = '<div class="empty">no passes predicted</div>'; return; }
+  if (!passes.length) { setEmpty(box, 'no passes predicted'); return; }
   const now = Date.now();
   passes.slice(0, 60).forEach(p => {
     const rise = new Date(p.rise), set = new Date(p.set);
@@ -465,7 +480,7 @@ function renderCaptures(status) {
       card.appendChild(captureProof(c));
       box.appendChild(card);
     });
-    if (!captures.length) box.innerHTML = '<div class="empty">none yet — run a capture</div>';
+    if (!captures.length) setEmpty(box, 'none yet — run a capture');
   }
   const live = el('live-captures');
   const recent = captures.slice(0, 3);
@@ -664,7 +679,8 @@ async function refreshTestFixtures() {
     const files = await fetchJSON('/api/test-fixtures.json');
     if (!files.length && !testItems.length) { box.textContent = 'No test fixtures found.'; return; }
     const table = document.createElement('table');
-    table.innerHTML = '<thead><tr><th>fixture</th><th>type</th><th>bytes</th></tr></thead>';
+    const head = table.createTHead().insertRow();
+    ['fixture', 'type', 'bytes'].forEach(h => { const th = document.createElement('th'); th.textContent = h; head.appendChild(th); });
     const body = document.createElement('tbody');
     files.forEach(f => {
       const tr = document.createElement('tr');
@@ -949,9 +965,9 @@ function renderActivity() {
   const feed = el('feed');
   feed.textContent = '';
   if (!full.length) {
-    feed.innerHTML = activityItems.length
-      ? '<div class="empty">no decode matches the current filters</div>'
-      : '<div class="empty">No gate-passed activity yet. Start the Scan view to check public receivers.</div>';
+    setEmpty(feed, activityItems.length
+      ? 'no decode matches the current filters'
+      : 'No gate-passed activity yet. Start the Scan view to check public receivers.');
   }
   full.slice(0, limit).forEach(a => feed.appendChild(activityCard(a, false)));
   const more = el('activity-more');
@@ -966,7 +982,7 @@ function renderActivity() {
     full.length + ' of ' + activityItems.length + ' decodes' + (active.length ? ' · filtered by ' + active.join(', ') : '');
   const over = el('feed-overview');
   over.textContent = '';
-  if (!activityItems.length) { over.innerHTML = '<div class="empty">no traffic seen yet</div>'; }
+  if (!activityItems.length) { setEmpty(over, 'no traffic seen yet'); }
   activityItems.slice(0, 6).forEach(a => over.appendChild(activityCard(a, false)));
   renderDecodes();
 }
@@ -1054,7 +1070,7 @@ function renderSignal(live) {
     el('meter-fill').style.width = '0%';
     meter.setAttribute('aria-valuenow', 0);
     el('signal-level').textContent = '--';
-    el('onair-list').innerHTML = '<span class="muted">monitor offline</span>';
+    setMuted(el('onair-list'), 'monitor offline');
     return;
   }
   el('signal-receiver').textContent = (live.label || live.name || 'monitored receiver') + ' · ' + (live.strategy || '');
@@ -1079,9 +1095,9 @@ function renderSignal(live) {
   const list = el('onair-list');
   list.textContent = '';
   if (!live.spectrum_ok) {
-    list.innerHTML = '<span class="muted">this receiver sends no spectrum - listening blind</span>';
+    setMuted(list, 'this receiver sends no spectrum - listening blind');
   } else if (!hot) {
-    list.innerHTML = '<span class="muted">no signal over the threshold right now</span>';
+    setMuted(list, 'no signal over the threshold right now');
   } else {
     live.on_air.slice(0, 8).forEach(p => {
       const chip = document.createElement('span');
@@ -1158,7 +1174,7 @@ function renderDecodes() {
   const box = el('decode-feed');
   const decodes = (activityItems || []).filter(a => a.detail && a.mode);
   box.textContent = '';
-  if (!decodes.length) { box.innerHTML = '<div class="empty">nothing decoded yet</div>'; return; }
+  if (!decodes.length) { setEmpty(box, 'nothing decoded yet'); return; }
   decodes.slice(0, 40).forEach(a => {
     const line = document.createElement('div');
     line.className = 'decode-line ' + (a.kind || '');
@@ -1280,7 +1296,7 @@ async function refreshScanLog() {
     const data = await fetchJSON('/api/scanlog.json?since=' + scanLogSince);
     const box = el('scan-log');
     const items = data.items || [];
-    if (!items.length && scanLogSince === 0) { box.innerHTML = '<div class="empty">waiting for scan events</div>'; return; }
+    if (!items.length && scanLogSince === 0) { setEmpty(box, 'waiting for scan events'); return; }
     items.filter((x, i) => (i === 0 || x.state !== items[i - 1].state || x.reason !== items[i - 1].reason) && (!scanLogFilter || x.state===scanLogFilter)).forEach(x => {
       scanLogSince = Math.max(scanLogSince, x.id || 0);
       const row = document.createElement('div'); row.className = 'card';
@@ -1335,7 +1351,7 @@ async function refreshScans() {
     });
     renderDropped(dropped);
   } catch {
-    el('scan-board').innerHTML = '<div class="empty">scanner offline</div>';
+    setEmpty(el('scan-board'), 'scanner offline');
   }
 }
 
@@ -1372,7 +1388,7 @@ document.getElementById('dropped-toggle').addEventListener('click', () => {
   droppedOpen = !droppedOpen;
   const t = document.getElementById('dropped-toggle');
   t.setAttribute('aria-expanded', String(droppedOpen));
-  t.innerHTML = (droppedOpen ? '&#9662; dropped stations (' : '&#9656; dropped stations (') + el('dropped-count').textContent + ')';
+  t.textContent = (droppedOpen ? '\u25BE dropped stations (' : '\u25B8 dropped stations (') + el('dropped-count').textContent + ')';
   if (scansData) {
     const dropped = (scansData.stations || []).filter(x => FAILED_STATE.test(x.state || ''));
     (scansData.dropped || []).forEach(x => dropped.push({ station: x.station, state: 'blocked', result: x.reason, blocked_until: x.until }));
@@ -1556,7 +1572,7 @@ function renderFeeds() {
  const staleSrc=sources.filter(s=>s.state==='live'&&s.refresh_seconds&&s.last_ok&&!s.last_ok.startsWith('0001')&&Date.now()-new Date(s.last_ok).getTime()>3*s.refresh_seconds*1000);
  const note=el('feeds-note'); note.textContent='updated '+relTime(feedsSnapshot.updated_at)+staleSrc.map(s=>' · '+s.name+': STALE, last fetch '+relTime(s.last_ok)).join('')+sources.filter(s=>s.state==='disabled'||s.state==='error').map(s=>' · '+s.name+': '+(s.last_error||s.detail||s.state)).join('');
  const list=el('feeds-list'); list.textContent=''; const shown=items.filter(i=>!feedsSourceFilter||i.source===feedsSourceFilter);
- if(!shown.length){list.innerHTML='<div class="empty">no live data yet - feeds are connecting</div>';return}
+ if(!shown.length){setEmpty(list, 'no live data yet - feeds are connecting');return}
  shown.slice(0,120).forEach(it=>{const c=document.createElement('div');c.className='card-activity feed-'+(it.kind||'data');const r=document.createElement('div');r.className='row';const label=document.createElement('span');label.className='freq';label.textContent=it.label;const badge=document.createElement('span');badge.className='badge feed-src';badge.textContent=it.source;const t=document.createElement('span');t.className='muted';t.textContent=relTime(it.time);r.append(label,badge,t);if(it.ref){const a=document.createElement('a');a.href=safeURL(it.ref);a.target='_blank';a.rel='noopener noreferrer';a.textContent='source';r.append(a)}const pb=document.createElement('button');pb.className='chip';pb.textContent='proof';const pf=document.createElement('div');pf.className='meta';pf.hidden=true;pf.textContent='provider time '+fmtDate(it.time)+' · fetched '+(it.fetched_at?fmtDate(it.fetched_at):'unknown')+' · decoded by '+(it.decoded_by||'provider')+' · source '+it.source+(((feedsSnapshot.sources||[]).find(x=>x.name===it.source)||{}).license?' · licence '+(feedsSnapshot.sources.find(x=>x.name===it.source).license):'');if(it.receiver)pf.textContent+=' · receiver '+it.receiver;if(it.ref&&it.ref.indexOf('/audio/')===0){const au=document.createElement('audio');au.className='proof-audio';au.controls=true;au.preload='none';au.src=it.ref;pf.appendChild(au)};pb.onclick=()=>{pf.hidden=!pf.hidden};r.append(pb);c.appendChild(r);c.appendChild(pf);if(it.detail){const d=document.createElement('div');d.className='detail';d.textContent=it.detail;c.appendChild(d)}if(it.has_pos){const m=document.createElement('div');m.className='meta';m.textContent=it.lat.toFixed(3)+', '+it.lon.toFixed(3);c.appendChild(m)}list.appendChild(c)});
 }
 
@@ -1596,7 +1612,7 @@ function renderSources(data) {
   note.textContent = (data.running ? 'checking... ' : '') + (data.updated_at ? 'last check ' + relTime(data.updated_at) : '');
   const list = el('sources-list'); list.textContent = '';
   const results = data.results || [];
-  if (!results.length) { list.innerHTML = '<div class="empty">no health check yet - press check now</div>'; return; }
+  if (!results.length) { setEmpty(list, 'no health check yet - press check now'); return; }
   results.forEach(r => {
     const card = document.createElement('div'); card.className = 'card';
     const title = document.createElement('div'); title.className = 'card-title';
@@ -1828,7 +1844,7 @@ function renderMsglog() {
   box.dataset.key = key;
   box.textContent = '';
   if (!items.length) {
-    box.innerHTML = '<div class="empty">' + (msglogMode ? 'no ' + msglogMode + ' messages' : 'nothing decoded yet') + '</div>';
+    setEmpty(box, msglogMode ? 'no ' + msglogMode + ' messages' : 'nothing decoded yet');
   }
   items.slice(-300).forEach(a => {
     const line = document.createElement('div');
@@ -2045,7 +2061,7 @@ function renderApiDiag() {
   const box = el('diag-list');
   if (!box) return;
   const keys = Object.keys(apiDiag).sort();
-  if (!keys.length) { box.innerHTML = '<div class="empty">no API calls recorded yet</div>'; return; }
+  if (!keys.length) { setEmpty(box, 'no API calls recorded yet'); return; }
   box.textContent = '';
   keys.forEach(k => {
     const d = apiDiag[k];
@@ -2114,7 +2130,7 @@ function renderReceiverProof(entries) {
     .slice().sort((a, b) => String(b.provider_time).localeCompare(String(a.provider_time)));
   box.textContent = '';
   if (!mine.length) {
-    box.innerHTML = '<div class="empty">no receiver captures archived yet - scheduled captures and archive imports land here with their audio, decode and verdict</div>';
+    setEmpty(box, 'no receiver captures archived yet - scheduled captures and archive imports land here with their audio, decode and verdict');
     return;
   }
   mine.slice(0, 8).forEach(e => {
