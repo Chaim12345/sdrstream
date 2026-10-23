@@ -2447,13 +2447,14 @@ func shouldBlockScanFailure(ctx context.Context, reason string) bool {
 	return !isShutdownBlockReason(reason)
 }
 
-func blockStationIfEligible(ctx context.Context, server *web.Server, host, reason string, duration time.Duration) {
+func blockStationIfEligible(ctx context.Context, server *web.Server, host, reason string, duration time.Duration) (bool, time.Time) {
 	if shouldBlockScanFailure(ctx, reason) {
-		blockStation(server, host, reason, duration)
+		return true, blockStation(server, host, reason, duration)
 	}
+	return false, time.Time{}
 }
 
-func blockStation(server *web.Server, host, reason string, duration time.Duration) {
+func blockStation(server *web.Server, host, reason string, duration time.Duration) time.Time {
 	until := time.Now().Add(duration)
 	blockMu.Lock()
 	m := loadBlocklist()
@@ -2462,6 +2463,7 @@ func blockStation(server *web.Server, host, reason string, duration time.Duratio
 	blockMu.Unlock()
 	t := until
 	server.UpsertScanStatus(web.ScanStatus{Station: host, State: "blocked", Result: reason, BlockedUntil: &t, UpdatedAt: time.Now()})
+	return until
 }
 
 // stationHostPortKey normalises a roster host to lowercase host:port for
@@ -2727,9 +2729,11 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 				scanHealth.observeOutcome(r.host, r.outcome)
 			}
 			receiverAtFault := (r.outcome.refused || r.outcome.timedOut) && !r.outcome.localResource
+			blocked := false
+			var blockUntil time.Time
 			if receiverAtFault {
 				reason := "receiver refused or timed out"
-				blockStationIfEligible(ctx, server, r.host, reason, 30*time.Minute)
+				blocked, blockUntil = blockStationIfEligible(ctx, server, r.host, reason, 30*time.Minute)
 			}
 			inFlight--
 			delete(activeStations, r.host)
@@ -2747,6 +2751,14 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 				}
 				backoffFor[r.host] = d
 				backoffUntil[r.host] = time.Now().Add(d)
+				// The persistent blocklist entry outlives the local
+				// backoff (30 min block vs <=15 min local cap): without
+				// this merge a blocked station is re-dispatched while
+				// still blocklisted, burning preflight budget on a
+				// refusal the block already predicts.
+				if blocked && blockUntil.After(backoffUntil[r.host]) {
+					backoffUntil[r.host] = blockUntil
+				}
 			} else {
 				backoffFor[r.host] = 0
 				delete(backoffUntil, r.host)

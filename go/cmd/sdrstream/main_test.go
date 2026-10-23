@@ -332,3 +332,36 @@ func TestJukeboxAPRSNoSignalAlsoRemovesTemp(t *testing.T) {
 		t.Fatalf("silence produced captures: %v", entries)
 	}
 }
+
+// A blocked station's dispatch backoff must cover the whole block
+// window: the persistent block outlives the local exponential cap
+// (30 min vs 15 min), and re-dispatching inside the block window burns
+// the daily preflight budget on a refusal the block already predicts.
+func TestBlockStationIfEligibleReturnsBlockWindow(t *testing.T) {
+	t.Setenv("SDRSTREAM_STATE_DIR", t.TempDir())
+	server := web.New(t.TempDir(), t.TempDir())
+
+	blocked, until := blockStationIfEligible(context.Background(), server, "Example.COM:8073", "receiver refused", 30*time.Minute)
+	if !blocked {
+		t.Fatal("ordinary receiver refusal must block")
+	}
+	if d := time.Until(until); d < 29*time.Minute || d > 30*time.Minute {
+		t.Errorf("block window ends in %v, want ~30m", d)
+	}
+	entry, ok := loadBlocklist()["example.com:8073"]
+	if !ok {
+		t.Fatal("blocklist entry not persisted under the lowercase host key")
+	}
+	if !entry.Until.Equal(until) {
+		t.Errorf("persisted block end %v, want the returned %v", entry.Until, until)
+	}
+
+	if blocked, _ := blockStationIfEligible(context.Background(), server, "b:8073", "use of closed network connection", time.Minute); blocked {
+		t.Error("shutdown-shaped reason must not block")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if blocked, _ := blockStationIfEligible(ctx, server, "c:8073", "receiver refused", time.Minute); blocked {
+		t.Error("canceled scan context must not block")
+	}
+}
