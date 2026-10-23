@@ -1,58 +1,33 @@
 #!/usr/bin/env python3
-"""Pinned APK v2 signer-certificate fingerprint extractor.
+"""Pinned APK signer-certificate fingerprint method for sdrstream.
 
-Every signer comparison for sdrstream builds MUST use this script so all
-reported fingerprints are computed by one pinned method. Prints the
-SHA-256 (and SHA-1/MD5 for cross-tool checks) of the first signer's
-signing certificate, byte-pair colon format, matching `apksigner verify
---print-certs` output.
+Uses androguard's APK signature parsing (v1/v2/v3) - a hand-rolled block
+parser proved unreliable against multi-scheme APKs (mis-read certificates;
+retired 2026-10-23). Cross-checked against `apksigner verify --print-certs`.
+Prints package, versionCode and every scheme's signer cert digests.
 
 Usage: apk-signer-fp.py <apk> [<apk>...]
+Requires: pip install androguard
 """
 import hashlib
-import struct
+import logging
 import sys
 
-V2_BLOCK_ID = 0x7109871A
-MAGIC = b"APK Sig Block 42"
-
-
-def first_signer_cert(path):
-    data = open(path, "rb").read()
-    eocd = data.rfind(b"PK\x05\x06")
-    if eocd < 0:
-        raise SystemExit(f"{path}: no ZIP end-of-central-directory")
-    cd_off = struct.unpack("<I", data[eocd + 16 : eocd + 20])[0]
-    if data[cd_off - 16 : cd_off] != MAGIC:
-        raise SystemExit(f"{path}: no APK Signature Scheme v2 block")
-    size = struct.unpack("<Q", data[cd_off - 24 : cd_off - 16])[0]
-    pos, end = cd_off - 8 - size + 8, cd_off - 24
-    while pos < end:
-        plen = struct.unpack("<Q", data[pos : pos + 8])[0]
-        pid = struct.unpack("<I", data[pos + 8 : pos + 12])[0]
-        if pid == V2_BLOCK_ID:
-            val = data[pos + 12 : pos + 8 + plen]
-            slen = struct.unpack("<I", val[:4])[0]
-            signer = val[4 : 4 + slen]
-            sdlen = struct.unpack("<I", signer[:4])[0]
-            sd = signer[4 : 4 + sdlen]
-            dlen = struct.unpack("<I", sd[:4])[0]
-            r = 4 + dlen
-            clen = struct.unpack("<I", sd[r : r + 4])[0]
-            certs = sd[r + 4 : r + 4 + clen]
-            clen2 = struct.unpack("<I", certs[:4])[0]
-            return certs[4 : 4 + clen2]
-        pos += 8 + plen
-    raise SystemExit(f"{path}: v2 block has no signer")
+logging.disable(logging.CRITICAL)
+from androguard.core.apk import APK  # noqa: E402
 
 
 def colon(h):
-    return ":".join(h[i : i + 2] for i in range(0, len(h), 2))
+    return ":".join(h[i : i + 2].upper() for i in range(0, len(h), 2))
 
 
-for apk in sys.argv[1:]:
-    cert = first_signer_cert(apk)
-    print(apk)
-    print("  SHA-256:", colon(hashlib.sha256(cert).hexdigest().upper()))
-    print("  SHA-1:  ", colon(hashlib.sha1(cert).hexdigest().upper()))
-    print("  MD5:    ", colon(hashlib.md5(cert).hexdigest().upper()))
+for path in sys.argv[1:]:
+    a = APK(path)
+    print(path)
+    print("  package:", a.get_package())
+    print("  versionCode:", a.get_androidversion_code())
+    print("  signed v1/v2/v3:", a.is_signed_v1(), a.is_signed_v2(), a.is_signed_v3())
+    for scheme, certs in (("v1", a.get_certificates_v1()), ("v2", a.get_certificates_v2()), ("v3", a.get_certificates_v3())):
+        for c in certs or []:
+            der = c.dump() if hasattr(c, "dump") else bytes(c)
+            print(f"  {scheme} SHA-256:", colon(hashlib.sha256(der).hexdigest()))

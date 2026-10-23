@@ -69,6 +69,7 @@ jobs:
           mv "$APK.signed" "$APK"
           rm -f /tmp/release.keystore
           "$APKSIGNER" verify --print-certs "$APK"
+          pip install --quiet androguard
           python3 ../scripts/apk-signer-fp.py "$APK"
       - uses: actions/upload-artifact@v4
         with:
