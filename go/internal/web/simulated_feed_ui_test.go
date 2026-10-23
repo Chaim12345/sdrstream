@@ -80,6 +80,43 @@ func TestSimulatedFeedUIServer(t *testing.T) {
 	if err := pngFile.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// Small real PNGs for the live-tab seed cards so every card renders
+	// an image (broken icons would hide placement proof).
+	for _, small := range []struct {
+		name  string
+		phase int
+	}{{"sim-twin.png", 0}, {"sim-legacy.png", 7}, {"sim-fixture.png", 13}} {
+		img := image.NewGray(image.Rect(0, 0, 200, 120))
+		for y := 0; y < 120; y++ {
+			for x := 0; x < 200; x++ {
+				img.SetGray(x, y, color.Gray{Y: uint8((x + y + small.phase) % 64 * 4)})
+			}
+		}
+		f, err := os.Create(filepath.Join(s.galleryDir, small.name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := png.Encode(f, img); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Two more decodable captures with explicit source classes, next to
+	// CAP_simfax.wav (no source line - the pre-field unknown case): the
+	// re-decode placement proof needs one of each.
+	for _, extra := range []struct{ name, source string }{
+		{"CAP_simfax_live.wav", "live"},
+		{"CAP_simfax_fix.wav", "test-fixture"},
+	} {
+		if err := voice.WriteWAV(filepath.Join(s.capturesDir, extra.name), faxSamples, 12000); err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteCaptureMetadata(s.capturesDir, extra.name, CaptureMetadata{Mode: "wefax", Receiver: "simulated", FrequencyHz: 13900000, Started: now.Add(-40 * time.Minute), Source: extra.source}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	s.liveGallery = []LiveGalleryItem{
 		// Tall WEFAX-style chart for the lightbox zoom check. Kept on
 		// the test-fixture tab so the documented pill expectation of 1
@@ -87,11 +124,11 @@ func TestSimulatedFeedUIServer(t *testing.T) {
 		// reception claim.
 		{Source: "test-fixture", Station: "simulated", Start: now, Kind: "image", Mode: "wefax", Name: "sim-wefax.png", URL: "/gallery/sim-wefax.png", FrequencyHz: 13900000, Verification: "synthetic WEFAX-style chart for zoom check - not a reception"},
 		// Twin of the passed decode: merges into ONE counted entry.
-		{Source: "live", Station: "simulated", Start: now, Kind: "image", Mode: "sstv", Name: "sim-twin.png", FrequencyHz: 14491234, Verification: "simulated gate reason - not a reception"},
+		{Source: "live", Station: "simulated", Start: now, Kind: "image", Mode: "sstv", Name: "sim-twin.png", URL: "/gallery/sim-twin.png", FrequencyHz: 14491234, Verification: "simulated gate reason - not a reception"},
 		// Legacy live item with no gate-owned verdict: historical.
-		{Source: "live", Station: "simulated", Start: now.Add(-time.Hour), Kind: "image", Mode: "sstv", Name: "sim-legacy.png", FrequencyHz: 14491000},
+		{Source: "live", Station: "simulated", Start: now.Add(-time.Hour), Kind: "image", Mode: "sstv", Name: "sim-legacy.png", URL: "/gallery/sim-legacy.png", FrequencyHz: 14491000},
 		// Synthetic proof is not live provenance: never in the feed.
-		{Source: "test-fixture", Station: "simulated", Start: now.Add(-2 * time.Hour), Kind: "image", Mode: "sstv", Name: "sim-fixture.png", Verification: "synthetic proof"},
+		{Source: "test-fixture", Station: "simulated", Start: now.Add(-2 * time.Hour), Kind: "image", Mode: "sstv", Name: "sim-fixture.png", URL: "/gallery/sim-fixture.png", Verification: "synthetic proof"},
 	}
 	inner := s.Handler()
 	const banner = `<div style="background:#b91c1c;color:#fff;font:bold 16px/2.4 sans-serif;text-align:center;letter-spacing:.05em">SIMULATED FEED TEST - no live reception</div>`

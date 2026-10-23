@@ -2,13 +2,18 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"image/png"
 
 	"github.com/chaim12345/sdrstream/go/internal/decode"
 	"github.com/chaim12345/sdrstream/go/internal/monitor"
@@ -113,7 +118,7 @@ func TestCaptureDecodeWEFAXPublishes(t *testing.T) {
 	// Gate-passing chart config from the hfrun gate tests: 280 lines
 	// clears the structural image gate; bars content avoids the
 	// phasing-sync slow-diagonal tracker limitation.
-	publishWEFAXCapture(t, s, "CAP_fax.wav")
+	publishWEFAXCapture(t, s, "CAP_fax.wav", "live")
 	started := time.Now().UTC().Add(-3 * time.Hour)
 	rec, resp := decodeCapture(t, s, `{"name":"CAP_fax.wav"}`)
 	if rec.Code != http.StatusOK || !resp.OK {
@@ -134,6 +139,19 @@ func TestCaptureDecodeWEFAXPublishes(t *testing.T) {
 	}
 	if item.DecodedFrom != "CAP_fax.wav" {
 		t.Errorf("decoded_from %q, want the capture name", item.DecodedFrom)
+	}
+	if item.Satellite == "Live reception" {
+		t.Errorf("re-decode titled %q: implies fresh reception", item.Satellite)
+	}
+	if got := item.galleryLiveClass(); got != galleryLiveRedecode {
+		t.Errorf("class %v, want galleryLiveRedecode (listed with verdict, never counted)", got)
+	}
+	// The render is a wide strip by design: IOC 576 lines are 1810 px
+	// wide; a 280-line fixture chart is ~280 rows tall.
+	if img, err := png.Decode(bytes.NewReader(mustReadGallery(t, s, item.URL))); err != nil {
+		t.Fatal(err)
+	} else if img.Bounds().Dx() != 1810 || img.Bounds().Dy() < 200 || img.Bounds().Dy() > 400 {
+		t.Errorf("render %dx%d, want 1810 wide and ~280 tall (short fixture, not a full chart)", img.Bounds().Dx(), img.Bounds().Dy())
 	}
 	if d := item.Start.Sub(started); d > time.Second || d < -time.Second {
 		t.Errorf("item start %v vs capture write %v: %v apart", item.Start, started, d)
@@ -169,7 +187,7 @@ func TestCaptureDecodeRequiresAuth(t *testing.T) {
 // gallery item, the recorded verdict comes back.
 func TestCaptureDecodeDuplicateIsIdempotent(t *testing.T) {
 	s := &Server{capturesDir: t.TempDir(), galleryDir: t.TempDir()}
-	publishWEFAXCapture(t, s, "CAP_dup.wav")
+	publishWEFAXCapture(t, s, "CAP_dup.wav", "live")
 	_, resp := decodeCapture(t, s, `{"name":"CAP_dup.wav"}`)
 	if !resp.OK {
 		t.Fatalf("first decode: %+v", resp)
@@ -188,7 +206,7 @@ func TestCaptureDecodeDuplicateIsIdempotent(t *testing.T) {
 // it never enters the verified activity count the pill renders.
 func TestCaptureDecodeNotCountedAsFreshActivity(t *testing.T) {
 	s := &Server{capturesDir: t.TempDir(), galleryDir: t.TempDir()}
-	publishWEFAXCapture(t, s, "CAP_feed.wav")
+	publishWEFAXCapture(t, s, "CAP_feed.wav", "live")
 	if _, resp := decodeCapture(t, s, `{"name":"CAP_feed.wav"}`); !resp.OK {
 		t.Fatalf("decode: %+v", resp)
 	}
@@ -243,13 +261,13 @@ func TestScannerWEFAXWithoutReportStaysUnverdicted(t *testing.T) {
 	}
 }
 
-func publishWEFAXCapture(t *testing.T, s *Server, name string) {
+func publishWEFAXCapture(t *testing.T, s *Server, name, source string) {
 	t.Helper()
 	samples := wefaxfixture.Encode(wefaxfixture.Fixture{Rate: 12000, ImageLines: 280, Bars: true, LineSec: 0.5004, NoiseAmp: 0.3})
 	if err := voice.WriteWAV(s.capturesDir+"/"+name, samples, 12000); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteCaptureMetadata(s.capturesDir, name, CaptureMetadata{Mode: "wefax", Receiver: "test-receiver", FrequencyHz: 13900000, Started: time.Now().UTC().Add(-3 * time.Hour)}); err != nil {
+	if err := WriteCaptureMetadata(s.capturesDir, name, CaptureMetadata{Mode: "wefax", Receiver: "test-receiver", FrequencyHz: 13900000, Started: time.Now().UTC().Add(-3 * time.Hour), Source: source}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -262,4 +280,126 @@ func wefaxPNG(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return pngData
+}
+
+func mustReadGallery(t *testing.T, s *Server, url string) []byte {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, url, nil)
+	rec := httptest.NewRecorder()
+	s.handleGalleryFile(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gallery read %s: %d", url, rec.Code)
+	}
+	return rec.Body.Bytes()
+}
+
+// An explicit live source keeps its verdict but publishes as a
+// re-decode (never counted, never titled "Live reception"); a
+// synthetic capture stays on the test-fixture tab; an unknown source
+// (all pre-field sidecars) publishes the passed image historically
+// with no verdict recorded - unknown provenance is never upgraded.
+func TestCaptureDecodeSourceClassPlacement(t *testing.T) {
+	s := &Server{capturesDir: t.TempDir(), galleryDir: t.TempDir()}
+	cases := []struct {
+		name, source string
+		wantTab      string
+		wantVerdict  bool
+	}{
+		{"CAP_src_live.wav", "live", "live", true},
+		{"CAP_src_fix.wav", "test-fixture", "test-fixture", true},
+		{"CAP_src_unk.wav", "", "live", false},          // listed historically, no verdict
+		{"CAP_src_ext.wav", "satnogs", "satnogs", true}, // foreign class preserved
+	}
+	for _, tc := range cases {
+		publishWEFAXCapture(t, s, tc.name, tc.source)
+		body, _ := json.Marshal(captureDecodeRequest{Name: tc.name})
+		req := httptest.NewRequest(http.MethodPost, "/api/captures/decode", bytes.NewReader(body))
+		req.RemoteAddr = "127.0.0.1:1"
+		rec := httptest.NewRecorder()
+		s.handleCaptureDecode(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", tc.name, rec.Code, rec.Body)
+		}
+	}
+	gall := append([]LiveGalleryItem(nil), s.liveGallery...)
+	for _, tc := range cases {
+		var item *LiveGalleryItem
+		for i := range gall {
+			if gall[i].DecodedFrom == tc.name {
+				item = &gall[i]
+				break
+			}
+		}
+		if item == nil {
+			t.Errorf("%s not in gallery", tc.name)
+			continue
+		}
+		if item.Source != tc.wantTab {
+			t.Errorf("%s: placed on %q tab, want %q", tc.name, item.Source, tc.wantTab)
+		}
+		if (item.Verification != "") != tc.wantVerdict {
+			t.Errorf("%s: verdict recorded %t, want %t (unknown provenance never upgraded)", tc.name, item.Verification != "", tc.wantVerdict)
+		}
+		if item.Satellite == "Live reception" {
+			t.Errorf("%s: titled %q: implies fresh reception", tc.name, item.Satellite)
+		}
+		if tc.source == "live" && item.galleryLiveClass() != galleryLiveRedecode {
+			t.Errorf("%s: class %v, want galleryLiveRedecode", tc.name, item.galleryLiveClass())
+		}
+		if tc.source == "" && item.galleryLiveClass() != galleryLiveHistorical {
+			t.Errorf("%s: class %v, want galleryLiveHistorical", tc.name, item.galleryLiveClass())
+		}
+		if tc.source != "" && tc.source != "live" && tc.source != "test-fixture" && item.galleryLiveClass() != galleryForeign {
+			t.Errorf("%s: class %v, want galleryForeign", tc.name, item.galleryLiveClass())
+		}
+		if tc.source == "test-fixture" && !strings.Contains(item.Satellite, "synthetic") {
+			t.Errorf("%s: title %q does not declare synthetic content", tc.name, item.Satellite)
+		}
+	}
+	// And a re-decode never increments the fresh-decode pill even in a batch.
+	req := httptest.NewRequest(http.MethodGet, "/api/activity.json", nil)
+	rec := httptest.NewRecorder()
+	s.handleActivity(rec, req)
+	var feed []monitor.Activity
+	if err := json.Unmarshal(rec.Body.Bytes(), &feed); err != nil {
+		t.Fatal(err)
+	}
+	counted := 0
+	for _, a := range feed {
+		if a.Verification != "" && a.Rejected == "" {
+			counted++
+		}
+	}
+	if counted != 0 {
+		t.Errorf("pill-countable entries %d after 4 re-decodes, want 0", counted)
+	}
+}
+
+// A queued decode whose caller goes away cancels promptly instead of
+// waiting behind a running decode and publishing for nobody.
+func TestCaptureDecodeQueuedCancelIsPrompt(t *testing.T) {
+	s := &Server{capturesDir: t.TempDir(), galleryDir: t.TempDir()}
+	publishWEFAXCapture(t, s, "CAP_q.wav", "live")
+	// Hold the decode semaphore: the queued request must wait. Its
+	// caller is already gone, so the handler must return promptly
+	// instead of waiting for the lock and decoding for nobody.
+	s.decodeMu.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	body, _ := json.Marshal(captureDecodeRequest{Name: "CAP_q.wav"})
+	req := httptest.NewRequest(http.MethodPost, "/api/captures/decode", bytes.NewReader(body)).WithContext(ctx)
+	req.RemoteAddr = "127.0.0.1:1"
+	cancel()
+	start := time.Now()
+	s.handleCaptureDecode(httptest.NewRecorder(), req)
+	elapsed := time.Since(start)
+	s.decodeMu.Unlock()
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("queued decode with a cancelled caller took %s; want prompt return, not a wait for the lock", elapsed)
+	}
+	if len(s.liveGallery) != 0 {
+		t.Errorf("cancelled queued decode published %d gallery items, want 0", len(s.liveGallery))
+	}
+	if _, err := os.Stat(filepath.Join(s.capturesDir, "CAP_q.png")); !os.IsNotExist(err) {
+		t.Errorf("cancelled queued decode left a PNG: %v", err)
+	}
 }

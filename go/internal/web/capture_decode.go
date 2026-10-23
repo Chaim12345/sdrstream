@@ -46,6 +46,8 @@ func readCaptureSidecar(dir, wavName string) (CaptureMetadata, error) {
 			meta.Receiver = strings.TrimPrefix(line, "receiver=")
 		case strings.HasPrefix(line, "decode="):
 			meta.Detail = strings.TrimPrefix(line, "decode=")
+		case strings.HasPrefix(line, "source="):
+			meta.Source = strings.TrimPrefix(line, "source=")
 		case strings.HasPrefix(line, "started="):
 			if parsed, perr := time.Parse(time.RFC3339, strings.TrimPrefix(line, "started=")); perr == nil {
 				meta.Started = parsed.UTC()
@@ -115,8 +117,16 @@ func (s *Server) handleCaptureDecode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Decodes are CPU-bound; run one at a time so a run of clicks
-	// cannot pile up on a small device.
-	s.decodeMu.Lock()
+	// cannot pile up on a small device. A queued request whose caller
+	// went away cancels promptly instead of waiting for the lock and
+	// then spending a decode nobody sees.
+	for !s.decodeMu.TryLock() {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 	defer s.decodeMu.Unlock()
 	samples, rate, err := decode.ReadWAV(wavPath)
 	if err != nil {
@@ -171,7 +181,26 @@ func (s *Server) handleCaptureDecode(w http.ResponseWriter, r *http.Request) {
 	// The gallery shows what was verified: the gate's own diagnostics,
 	// not the capture's recorded detail string.
 	activity.Detail = reason
-	if err := s.AddLiveArtifactDecoded(activity, pngData, name); err != nil {
+	// The published item keeps the capture's explicit source class:
+	// a live capture re-decodes onto the live tab with its verdict,
+	// titled as a re-decode so it is never mistaken for fresh
+	// reception and never counted as one; a synthetic capture stays
+	// on the test-fixture tab with an honest string; any other
+	// explicit class is preserved as foreign. An UNKNOWN source (all
+	// pre-field sidecars) stays historical: the image publishes only
+	// if the gate passed, but no verdict is recorded - unknown
+	// provenance is never upgraded by a reason string.
+	source := strings.ToLower(strings.TrimSpace(meta.Source))
+	gallerySource, title, suppressVerdict := source, "Recorded capture re-decode", false
+	switch source {
+	case "live":
+		// galleryLiveRedecode class: listed with verdict, not counted.
+	case "test-fixture":
+		title = "Test fixture re-decode (synthetic - not a reception)"
+	case "":
+		gallerySource, title, suppressVerdict = "live", "Recorded capture re-decode (source unknown)", true
+	}
+	if err := s.AddLiveArtifactDecoded(activity, pngData, name, gallerySource, title, suppressVerdict); err != nil {
 		http.Error(w, "gallery publication rejected the decode: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

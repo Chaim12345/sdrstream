@@ -73,10 +73,16 @@ type CaptureMetadata struct {
 	FrequencyHz float64
 	Mode        string
 	Receiver    string
-	Detail      string
-	Kind        string
-	Target      string
-	Gate        string
+	// Source is the capture's explicit provenance class: "live" for
+	// this receiver's own recordings, "test-fixture" for synthetic
+	// content, or another foreign value. Empty (all pre-field
+	// sidecars) means unknown - re-decodes of unknown captures stay
+	// historical and never gain a recorded verdict.
+	Source string
+	Detail string
+	Kind   string
+	Target string
+	Gate   string
 	// GateVerdict / Crosscheck / CrosscheckRef: the separate proof facets
 	// described on Capture. Empty values keep the legacy sidecar format.
 	GateVerdict      string
@@ -185,12 +191,21 @@ const (
 	// galleryForeign is any other source in the manifest (test
 	// fixtures, imports): not receiver activity at all.
 	galleryForeign
+	// galleryLiveRedecode is a gate-passed re-decode of a recorded
+	// live capture (decoded_from set): receiver content with a real
+	// verdict, listed on the live tab with its provenance, but NOT
+	// fresh reception - never counted as current activity or as a
+	// gate-passed live decode.
+	galleryLiveRedecode
 )
 
 func (it LiveGalleryItem) galleryLiveClass() galleryLiveClass {
 	switch it.Source {
 	case "live":
 		if it.Verification != "" {
+			if it.DecodedFrom != "" {
+				return galleryLiveRedecode
+			}
 			return galleryLiveVerified
 		}
 		return galleryLiveHistorical
@@ -562,6 +577,9 @@ func WriteCaptureMetadata(dir, name string, meta CaptureMetadata) error {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "frequency_hz=%.0f\nmode=%s\nreceiver=%s\ndecode=%s\nkind=%s\ntarget=%s\ngate=%s\nstarted=%s\nduration_sec=%.3f\nverified=%t\n", meta.FrequencyHz, clean(meta.Mode), clean(meta.Receiver), clean(meta.Detail), clean(meta.Kind), clean(meta.Target), clean(meta.Gate), meta.Started.UTC().Format(time.RFC3339), meta.DurationSec, meta.Verified)
+	if meta.Source != "" {
+		fmt.Fprintf(&b, "source=%s\n", clean(meta.Source))
+	}
 	if meta.GateVerdict != "" {
 		fmt.Fprintf(&b, "gate_verdict=%s\n", clean(meta.GateVerdict))
 	}
@@ -1133,14 +1151,18 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 
 // AddLiveArtifact saves a verified decoder result with source metadata.
 func (s *Server) AddLiveArtifact(activity monitor.Activity, pngData []byte) error {
-	return s.AddLiveArtifactDecoded(activity, pngData, "")
+	return s.AddLiveArtifactDecoded(activity, pngData, "", "", "", false)
 }
 
-// AddLiveArtifactDecoded is AddLiveArtifact with an explicit
-// decoded-from provenance note for user-triggered re-decodes of
-// recorded captures. decodedFrom is a bare capture filename, never a
-// path; live decodes pass "".
-func (s *Server) AddLiveArtifactDecoded(activity monitor.Activity, pngData []byte, decodedFrom string) error {
+// AddLiveArtifactDecoded is AddLiveArtifact with explicit shaping for
+// user-triggered re-decodes of recorded captures: decodedFrom names
+// the capture (bare filename, never a path), source is the capture's
+// own provenance class ("" keeps the default live write), title
+// replaces the "Live reception" heading, and suppressVerdict keeps a
+// gate-passed image from recording a verdict when the capture's
+// provenance is unknown - the gate still runs; only the record is
+// withheld. Live decodes pass ("", "", "", false).
+func (s *Server) AddLiveArtifactDecoded(activity monitor.Activity, pngData []byte, decodedFrom, source, title string, suppressVerdict bool) error {
 	verification := ""
 	if len(pngData) > 0 && activity.Kind == "sstv" {
 		// SSTV frames verify on the decode report's sync-lock
@@ -1184,7 +1206,16 @@ func (s *Server) AddLiveArtifactDecoded(activity monitor.Activity, pngData []byt
 	if station == "" {
 		station = activity.Source
 	}
-	item := LiveGalleryItem{Source: "live", ObservationID: 0, Satellite: "Live reception", Station: station, Start: activity.Started, Mode: activity.Mode, FrequencyHz: int64(activity.FrequencyHz), Kind: kind, Name: name, URL: "/gallery/" + url.PathEscape(name), Size: int64(len(data)), Text: activity.Detail, Verification: verification, DecodedFrom: decodedFrom}
+	if source == "" {
+		source = "live"
+	}
+	if title == "" {
+		title = "Live reception"
+	}
+	if suppressVerdict {
+		verification = ""
+	}
+	item := LiveGalleryItem{Source: source, ObservationID: 0, Satellite: title, Station: station, Start: activity.Started, Mode: activity.Mode, FrequencyHz: int64(activity.FrequencyHz), Kind: kind, Name: name, URL: "/gallery/" + url.PathEscape(name), Size: int64(len(data)), Text: activity.Detail, Verification: verification, DecodedFrom: decodedFrom}
 	if activity.AudioPath != "" {
 		audioName := name + ".wav"
 		src, err := os.ReadFile(activity.AudioPath)
@@ -2132,7 +2163,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 			Detail:      it.Text,
 			Source:      it.Station,
 		}
-		if class == galleryLiveVerified && it.DecodedFrom == "" {
+		if class == galleryLiveVerified {
 			a.Verification = it.Verification
 		} else {
 			// A gallery item without a gate-owned verdict is

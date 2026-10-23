@@ -478,10 +478,10 @@ function renderCaptures(status) {
             });
             const data = await resp.json().catch(() => null);
             if (resp.ok && data && data.ok) {
-              result.textContent = data.reason;
+              result.textContent = 'decoded artefact gate verdict: ' + data.reason;
               refreshGallery(); refreshActivity();
             } else {
-              result.textContent = 'not verified: ' + ((data && data.reason) || ('HTTP ' + resp.status));
+              result.textContent = 'decoded artefact not verified: ' + ((data && data.reason) || ('HTTP ' + resp.status));
             }
           } catch (err) {
             result.textContent = 'decode failed: ' + err;
@@ -694,14 +694,17 @@ function renderGallery() {
   // marked source "live" with a recorded reason counts as gate-passed.
   // Legacy (source-less) items display on this tab but stay historical
   // even if a string sits in their verification field.
-  const proven = live.filter(it => it.source === 'live' && it.verification).length;
-  const unknown = live.length - proven;
+  // Re-decodes of recorded captures carry a real verdict but are not
+  // fresh reception: tallied separately, never in the live count.
+  const redecodes = live.filter(it => it.source === 'live' && it.verification && it.decoded_from).length;
+  const proven = live.filter(it => it.source === 'live' && it.verification && !it.decoded_from).length;
+  const unknown = live.length - proven - redecodes;
   el('gallery-count').textContent = active === 'live'
-    ? proven + ' gate-passed live decode' + (proven === 1 ? '' : 's') + (unknown ? ' · ' + unknown + ' historical (verification unknown)' : '')
+    ? proven + ' gate-passed live decode' + (proven === 1 ? '' : 's') + (redecodes ? ' · ' + redecodes + ' recorded-capture re-decode' + (redecodes === 1 ? '' : 's') : '') + (unknown ? ' · ' + unknown + ' historical (verification unknown)' : '')
     : satnogs.length + ' SatNOGS artefact' + (satnogs.length === 1 ? '' : 's');
   const src = el('gallery-source');
   if (src) {
-    if (active === 'live') { src.textContent = 'decoded by this receiver, gate-passed'; }
+    if (active === 'live') { src.textContent = 'decoded by this receiver - live, re-decoded and historical items labeled per card'; }
     else { src.textContent = 'source: SatNOGS network (network.satnogs.org) - observation data CC BY-SA 4.0 - names link to the source observation'; }
   }
   box.textContent = '';

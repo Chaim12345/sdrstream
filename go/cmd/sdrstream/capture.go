@@ -68,9 +68,13 @@ func writeCaptureWAV(capturesDir string, wav []byte, meta captureMeta) (string, 
 		return "", err
 	}
 	sidecarErr := web.WriteCaptureMetadata(capturesDir, name, web.CaptureMetadata{
-		FrequencyHz:   meta.FrequencyHz,
-		Mode:          meta.Mode,
-		Receiver:      meta.Station,
+		FrequencyHz: meta.FrequencyHz,
+		Mode:        meta.Mode,
+		Receiver:    meta.Station,
+		// Every scan/HF path through this writer records this receiver's
+		// own live reception; imported or synthetic content never comes
+		// through here.
+		Source:        "live",
 		Detail:        meta.Detail,
 		Kind:          meta.Kind,
 		Target:        meta.Target,
@@ -182,6 +186,8 @@ func writeActivitySidecar(server *web.Server, activity monitor.Activity, verifie
 		FrequencyHz: activity.FrequencyHz,
 		Mode:        activity.Mode,
 		Receiver:    activity.Source,
+		// Live activity recordings are this receiver's own reception.
+		Source:      "live",
 		Detail:      activity.Detail,
 		Kind:        activity.Kind,
 		Target:      activity.Target,
