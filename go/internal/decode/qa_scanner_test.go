@@ -202,3 +202,23 @@ func TestQACreateTempWAV(t *testing.T) {
 		t.Fatalf("name %q", f.Name())
 	}
 }
+
+// KNOWN SEMANTIC GAP (found on integration 4d7f46a): the grow-outward search is
+// greedy and contiguous, so a two-peak signal overshoots. Two simultaneous
+// equal tones 170 Hz apart (RTTY-like, synthetic) measure ~1424 Hz, while the
+// narrowest interval holding 90% of the passband power is ~206 Hz (computed
+// by brute force below). Single tones and noise are fine. QA_KNOWN_DEFECTS=1.
+func TestQAOccupiedBandwidthTwoTonesKnownGap(t *testing.T) {
+	if os.Getenv("QA_KNOWN_DEFECTS") != "1" {
+		t.Skip("known gap, QA_KNOWN_DEFECTS=1 to run")
+	}
+	const rate = 8000
+	a, b := qaTone(1000, rate, 1, 0.3), qaTone(1170, rate, 1, 0.3)
+	for i := range a {
+		a[i] += b[i]
+	}
+	got := OccupiedBandwidth(a, rate)
+	if got > 500 {
+		t.Fatalf("two tones 170 Hz apart measured %.0f Hz; the narrowest 90%% interval is ~206 Hz", got)
+	}
+}
