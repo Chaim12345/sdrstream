@@ -2,10 +2,14 @@ package web
 
 import (
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -37,7 +41,39 @@ func TestSimulatedFeedUIServer(t *testing.T) {
 	m.RecordGate(rejectedID, false, "text failed plausibility (simulated)")
 	s := &Server{}
 	s.monitor = m
+	// A tall WEFAX-style chart (576x1400) exercises the lightbox zoom:
+	// fit-to-screen shrinks it, full-size mode must scroll. Synthetic
+	// stripes and blocks make the readability difference visible.
+	s.galleryDir = t.TempDir()
+	chart := image.NewGray(image.Rect(0, 0, 576, 1400))
+	for y := 0; y < 1400; y++ {
+		for x := 0; x < 576; x++ {
+			switch {
+			case y/40%2 == 0 && x/16%2 == 0:
+				chart.SetGray(x, y, color.Gray{Y: 30})
+			case (x-288)*(x-288)/140+(y-700)*(y-700)/90 < 900:
+				chart.SetGray(x, y, color.Gray{Y: 200})
+			default:
+				chart.SetGray(x, y, color.Gray{Y: 120})
+			}
+		}
+	}
+	pngFile, err := os.Create(filepath.Join(s.galleryDir, "sim-wefax.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(pngFile, chart); err != nil {
+		t.Fatal(err)
+	}
+	if err := pngFile.Close(); err != nil {
+		t.Fatal(err)
+	}
 	s.liveGallery = []LiveGalleryItem{
+		// Tall WEFAX-style chart for the lightbox zoom check. Kept on
+		// the test-fixture tab so the documented pill expectation of 1
+		// is unchanged; its string is honest fixture provenance, not a
+		// reception claim.
+		{Source: "test-fixture", Station: "simulated", Start: now, Kind: "image", Mode: "wefax", Name: "sim-wefax.png", URL: "/gallery/sim-wefax.png", FrequencyHz: 13900000, Verification: "synthetic WEFAX-style chart for zoom check - not a reception"},
 		// Twin of the passed decode: merges into ONE counted entry.
 		{Source: "live", Station: "simulated", Start: now, Kind: "image", Mode: "sstv", Name: "sim-twin.png", FrequencyHz: 14491234, Verification: "simulated gate reason - not a reception"},
 		// Legacy live item with no gate-owned verdict: historical.

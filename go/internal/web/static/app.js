@@ -678,13 +678,41 @@ function renderGallery() {
   }
 }
 function openLightbox(url, caption) {
-  el('lightbox-img').src = url;
-  el('lightbox-img').alt = caption;
+  const img = el('lightbox-img');
+  el('lightbox').classList.remove('zoomed');
+  img.classList.remove('zoomable');
+  el('lightbox-hint').hidden = true;
+  img.src = url;
+  img.alt = caption;
   el('lightbox-caption').textContent = caption;
   el('lightbox').hidden = false;
   el('lightbox-close').focus();
 }
-function closeLightbox() { el('lightbox').hidden = true; el('lightbox-img').src = ''; }
+function closeLightbox() {
+  el('lightbox').hidden = true;
+  el('lightbox').classList.remove('zoomed');
+  el('lightbox-img').classList.remove('zoomable');
+  el('lightbox-img').src = '';
+  el('lightbox-hint').hidden = true;
+}
+// Zoom toggle for decodes larger than the fit box (WEFAX charts, APT
+// passes): fit-to-screen first, tap the image for natural size with
+// scroll, tap again to refit. The hint appears only when the image is
+// actually shrunk, so small frames get no false affordance.
+el('lightbox-img').addEventListener('load', () => {
+  const img = el('lightbox-img');
+  if (el('lightbox').hidden || !img.src) return;
+  const shrunk = img.naturalWidth > img.clientWidth + 8 || img.naturalHeight > img.clientHeight + 8;
+  img.classList.toggle('zoomable', shrunk);
+  el('lightbox-hint').hidden = !shrunk;
+  if (shrunk) el('lightbox-hint').textContent = 'tap image for full size';
+});
+el('lightbox-img').addEventListener('click', () => {
+  const img = el('lightbox-img');
+  if (!img.classList.contains('zoomable')) return;
+  const zoomed = el('lightbox').classList.toggle('zoomed');
+  el('lightbox-hint').textContent = zoomed ? 'tap image to fit screen' : 'tap image for full size';
+});
 el('lightbox-close').addEventListener('click', closeLightbox);
 el('lightbox').addEventListener('click', e => { if (e.target === el('lightbox')) closeLightbox(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
