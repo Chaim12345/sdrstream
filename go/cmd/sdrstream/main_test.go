@@ -365,3 +365,27 @@ func TestBlockStationIfEligibleReturnsBlockWindow(t *testing.T) {
 		t.Error("canceled scan context must not block")
 	}
 }
+
+// The jukebox APRS fast path must remove its temp WAV on every outcome:
+// a decode miss returns false and the temp file must be gone, not
+// leaked one per capture.
+func TestTryJukeboxAPRSRemovesTempWAVOnMiss(t *testing.T) {
+	server := web.New(t.TempDir(), t.TempDir())
+	wavPath := filepath.Join(t.TempDir(), "jukebox-probe.wav")
+	silence := make([]float64, 12000)
+	if tryJukeboxAPRS(server, silence, 12000, wavPath, t.TempDir(), 144800000, "jukebox.spdns.eu:6166", func(_, _ string) {}) {
+		t.Fatal("silence must not decode as APRS")
+	}
+	if _, err := os.Stat(wavPath); !os.IsNotExist(err) {
+		t.Errorf("temp WAV still present after a decode miss: %v", err)
+	}
+
+	// An unwritable target also returns false and must not leave a file.
+	blocked := filepath.Join(t.TempDir(), "no-such-dir", "probe.wav")
+	if tryJukeboxAPRS(server, silence, 12000, blocked, t.TempDir(), 144800000, "jukebox.spdns.eu:6166", func(_, _ string) {}) {
+		t.Fatal("unwritable temp path must not decode")
+	}
+	if _, err := os.Stat(blocked); !os.IsNotExist(err) {
+		t.Errorf("temp WAV still present after a write failure: %v", err)
+	}
+}

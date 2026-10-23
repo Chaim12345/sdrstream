@@ -3766,6 +3766,8 @@ var scannerCaptureDir string
 // was decoded and recorded (true = the caller moves to the next target).
 func tryJukeboxAPRS(server *web.Server, samples []float64, rate int, wavPath, capturesDir string, frequency float64, host string, update func(state, result string)) (decoded bool) {
 	if err := finishInt16(samples, rate, wavPath); err != nil {
+		// A partially written temp WAV must not outlive the attempt.
+		_ = os.Remove(wavPath)
 		return false
 	}
 	defer func() { _ = os.Remove(wavPath) }()
