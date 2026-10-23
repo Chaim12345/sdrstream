@@ -38,6 +38,35 @@ if [ "$INSTALL_OK" = 1 ]; then
   adb shell am start -n com.chaim12345.sdrstream/.MainActivity || true
   sleep 8
   adb exec-out screencap -p > "$OUT/$LABEL-final.png" || true
+
+  # Menu-reachability proof (the 0.1.1 bug: the options menu existed in code
+  # but no on-screen control could open it). Find a UI node by attribute
+  # value in the uiautomator dump, tap its center, and screenshot the result.
+  tap_node() { # $1=attr name, $2=attr value, $3=screenshot label
+    ATTR="$1"; VAL="$2"; SHOT="$3"
+    adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
+    adb pull /sdcard/ui.xml "$OUT/$LABEL-ui.xml" >/dev/null 2>&1 || true
+    BOUNDS=$(grep -o "$ATTR=\"$VAL\"[^>]*bounds=\"\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]\"" "$OUT/$LABEL-ui.xml" \
+      | head -1 | grep -o '\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]' || true)
+    if [ -z "$BOUNDS" ]; then
+      echo "node $ATTR=$VAL NOT FOUND" | tee "$OUT/$LABEL-$SHOT-missing.txt"
+      return 1
+    fi
+    XY=$(echo "$BOUNDS" | tr -d '[]' | tr ',' ' ')
+    set -- $XY
+    adb shell input tap $(( ($1 + $3) / 2 )) $(( ($2 + $4) / 2 )) || true
+    sleep 2
+    adb exec-out screencap -p > "$OUT/$LABEL-$SHOT.png" || true
+    echo "tapped $ATTR=$VAL at $XY"
+    return 0
+  }
+  # Open the overflow menu via its always-visible button, then open the
+  # password dialog. The password shown is generated fresh on the ephemeral
+  # CI emulator - not the user's device password.
+  if tap_node content-desc Menu menu-open; then
+    tap_node text "Show UI password" password-dialog || true
+    adb shell input keyevent KEYCODE_BACK || true
+  fi
 fi
 adb logcat -d -v threadtime > "$OUT/$LABEL-logcat.txt" 2>&1 || true
 grep -iE 'sdrstream|AndroidRuntime|FATAL EXCEPTION' "$OUT/$LABEL-logcat.txt" | tail -120 > "$OUT/$LABEL-logcat-matches.txt" || true

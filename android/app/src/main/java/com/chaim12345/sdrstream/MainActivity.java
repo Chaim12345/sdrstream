@@ -4,17 +4,25 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.text.Html;
+import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.View;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Button;
 import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.PopupMenu;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
@@ -31,6 +39,12 @@ import java.util.ArrayList;
  * source is https://github.com/Chaim12345/sdrstream (linked from the menu,
  * which satisfies the in-app source offer).
  *
+ * Menu: the app theme is NoActionBar and phones no longer have a menu key,
+ * so a legacy options menu alone is unreachable (the 0.1.1 bug: "Show UI
+ * password" existed in code but could not be opened). The top bar's
+ * overflow button opens the same actions through a PopupMenu, which works
+ * without an action bar on every supported Android version.
+ *
  * Failure handling: nothing dies silently. The first directory fetch can
  * keep the engine from binding its port for up to about a minute, so the UI
  * waits two minutes before giving up, and every failure path ends in a
@@ -40,6 +54,14 @@ public class MainActivity extends Activity {
     private static final String UI_URL = "http://127.0.0.1:" + EngineService.PORT + "/";
     private static final int MAX_WAIT_ATTEMPTS = 120;
     private static final int REQ_NOTIFICATIONS = 42;
+
+    private static final int MENU_SHOW_PASSWORD = 1;
+    private static final int MENU_SET_PASSWORD = 2;
+    private static final int MENU_SOURCE = 3;
+    private static final int MENU_STOP_ENGINE = 4;
+    private static final int MENU_DIAGNOSTICS = 5;
+    private static final int MENU_SHARE_LOGS = 6;
+
     private WebView webView;
     private AlertDialog batteryDialog;
     private Thread waitThread;
@@ -61,9 +83,63 @@ public class MainActivity extends Activity {
         webView.getSettings().setDomStorageEnabled(true);
         webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
         webView.setWebViewClient(new WebViewClient());
-        setContentView(webView);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.addView(buildTopBar(), new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+        root.addView(webView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        setContentView(root);
+
         showCrashReportIfAny();
         loadWhenUp();
+    }
+
+    /** Title bar with an always-visible overflow button that opens the menu. */
+    private View buildTopBar() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setBackgroundColor(Color.parseColor("#10141F"));
+        bar.setPadding(dp(12), 0, dp(4), 0);
+
+        TextView title = new TextView(this);
+        title.setText(R.string.app_name);
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        bar.addView(title, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button overflow = new Button(this);
+        overflow.setText("⋮");
+        overflow.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        overflow.setContentDescription("Menu");
+        overflow.setMinWidth(0);
+        overflow.setMinimumWidth(0);
+        overflow.setOnClickListener(v -> showMenuPopup(v));
+        bar.addView(overflow, new LinearLayout.LayoutParams(dp(48), dp(40)));
+        return bar;
+    }
+
+    private int dp(int value) {
+        return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP,
+                value, getResources().getDisplayMetrics());
+    }
+
+    /** The reachable menu: a PopupMenu anchored to the overflow button. */
+    private void showMenuPopup(View anchor) {
+        PopupMenu popup = new PopupMenu(this, anchor);
+        popup.getMenu().add(0, MENU_SHOW_PASSWORD, 0, "Show UI password");
+        popup.getMenu().add(0, MENU_SET_PASSWORD, 1, "Set UI password");
+        popup.getMenu().add(0, MENU_SOURCE, 2, "Source code (AGPL-3.0)");
+        popup.getMenu().add(0, MENU_STOP_ENGINE, 3, "Stop engine");
+        popup.getMenu().add(0, MENU_DIAGNOSTICS, 4, "Diagnostics");
+        popup.getMenu().add(0, MENU_SHARE_LOGS, 5, "Share logs");
+        popup.setOnMenuItemClickListener(item -> {
+            handleMenuAction(item.getItemId());
+            return true;
+        });
+        popup.show();
     }
 
     private void startEngineService() {
@@ -201,21 +277,27 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Legacy options menu for devices that still have a menu key. */
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
-        menu.add(0, 1, 0, "Show UI password");
-        menu.add(0, 2, 0, "Set UI password");
-        menu.add(0, 3, 0, "Source code (AGPL-3.0)");
-        menu.add(0, 4, 0, "Stop engine");
-        menu.add(0, 5, 0, "Diagnostics");
-        menu.add(0, 6, 0, "Share logs");
+        menu.add(0, MENU_SHOW_PASSWORD, 0, "Show UI password");
+        menu.add(0, MENU_SET_PASSWORD, 1, "Set UI password");
+        menu.add(0, MENU_SOURCE, 2, "Source code (AGPL-3.0)");
+        menu.add(0, MENU_STOP_ENGINE, 3, "Stop engine");
+        menu.add(0, MENU_DIAGNOSTICS, 4, "Diagnostics");
+        menu.add(0, MENU_SHARE_LOGS, 5, "Share logs");
         return true;
     }
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        switch (item.getItemId()) {
-            case 1:
+        return handleMenuAction(item.getItemId()) || super.onOptionsItemSelected(item);
+    }
+
+    /** One handler behind both the overflow PopupMenu and the options menu. */
+    private boolean handleMenuAction(int id) {
+        switch (id) {
+            case MENU_SHOW_PASSWORD:
                 new AlertDialog.Builder(this)
                         .setTitle("Web UI password")
                         .setMessage("Log in to the UI with:\n\n" + Prefs.getUiPassword(this)
@@ -223,7 +305,7 @@ public class MainActivity extends Activity {
                         .setPositiveButton("OK", null)
                         .show();
                 return true;
-            case 2: {
+            case MENU_SET_PASSWORD: {
                 final EditText input = new EditText(this);
                 input.setHint("new password");
                 new AlertDialog.Builder(this)
@@ -241,23 +323,23 @@ public class MainActivity extends Activity {
                         .show();
                 return true;
             }
-            case 3:
+            case MENU_SOURCE:
                 startActivity(new Intent(Intent.ACTION_VIEW,
                         Uri.parse("https://github.com/Chaim12345/sdrstream")));
                 return true;
-            case 4:
+            case MENU_STOP_ENGINE:
                 startService(new Intent(this, EngineService.class)
                         .setAction(EngineService.ACTION_STOP));
                 finish();
                 return true;
-            case 5:
+            case MENU_DIAGNOSTICS:
                 showDiagnostics("Diagnostics");
                 return true;
-            case 6:
+            case MENU_SHARE_LOGS:
                 shareLogs();
                 return true;
             default:
-                return super.onOptionsItemSelected(item);
+                return false;
         }
     }
 
