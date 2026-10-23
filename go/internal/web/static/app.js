@@ -534,11 +534,14 @@ function renderGallery() {
   const satnogs = items.filter(it => !isLive(it));
   const active = document.querySelector('[data-gallery-kind][aria-selected="true"]')?.dataset.galleryKind || 'live';
   const shown = active === 'live' ? live : satnogs;
-  el('gallery-count').textContent = active === 'live' ? live.length + ' gate-passed live decode' + (live.length === 1 ? '' : 's') : satnogs.length + ' SatNOGS artefact' + (satnogs.length === 1 ? '' : 's');
+  const archSources = [...new Set(satnogs.map(it => it.source || 'satnogs'))];
+  const onlySatnogs = archSources.length === 1 && archSources[0] === 'satnogs';
+  el('gallery-count').textContent = active === 'live' ? live.length + ' gate-passed live decode' + (live.length === 1 ? '' : 's') : satnogs.length + (onlySatnogs ? ' SatNOGS artefact' : ' archived artefact') + (satnogs.length === 1 ? '' : 's');
   const src = el('gallery-source');
   if (src) {
     if (active === 'live') { src.textContent = 'decoded by this receiver, gate-passed'; }
-    else { src.textContent = 'source: SatNOGS network (network.satnogs.org) - observation data CC BY-SA 4.0 - names link to the source observation'; }
+    else if (onlySatnogs) { src.textContent = 'source: SatNOGS network (network.satnogs.org) - observation data CC BY-SA 4.0 - names link to the source observation'; }
+    else { src.textContent = 'sources: ' + archSources.join(', '); }
   }
   box.textContent = '';
   shown.slice(0, 60).forEach(it => {
