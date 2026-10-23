@@ -127,3 +127,73 @@ class ChaseSessionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _FakeOpenWebRXClient(_FakeClient):
+    """An OpenWebRX-ish fake that records tune kwargs and profiles."""
+
+    def __init__(self, url, reconnect=False):
+        super().__init__(url, reconnect=reconnect)
+        self.profiles = [
+            {"id": "rtlsdr-1|HF", "name": "RTL-SDR A 40m"},
+            {"id": "rtlsdr-1|NOAA 2", "name": "RTL-SDR A NOAA 136-138"},
+        ]
+        self.selected = []
+
+    async def tune(self, frequency=None, modulation=None, bandwidth=None,
+                   **kwargs):
+        self.tunes.append((frequency, modulation, bandwidth))
+
+    async def select_profile(self, key):
+        self.selected.append(key)
+
+
+def _weather_plan() -> ChasePlan:
+    from sdrstream.satellites import WEATHER_SATELLITES
+    sat = WEATHER_SATELLITES["NOAA 15"]
+    receiver = catalogue.Receiver(
+        url="http://example/openwebrx", kind="openwebrx",
+        latitude=51.80, longitude=5.71,
+        bands=(catalogue.Band(name="NOAA 136-138", center_khz=137000.0,
+                              samplerate_khz=2048.0),))
+    now = datetime.now(timezone.utc)
+    return ChasePlan(
+        satellite=sat, receiver=receiver, passes=[],
+        start=now - timedelta(minutes=5), end=now + timedelta(minutes=5),
+        start_frequency_hz=sat.downlink_hz, doppler_range_hz=(0, 0),
+    )
+
+
+class AptDemodTest(unittest.TestCase):
+    def setUp(self):
+        _FakeClient.instances = []
+        self._patch = mock.patch("sdrstream.satellite.OpenWebRXClient",
+                                 _FakeOpenWebRXClient)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
+    def test_bandwidth_mapping(self):
+        from sdrstream.satellite import APT_BANDWIDTH_HZ, _bandwidth_for
+        from sdrstream.satellites import WEATHER_SATELLITES, by_name
+        noaa = WEATHER_SATELLITES["NOAA 15"]
+        self.assertEqual(_bandwidth_for("openwebrx", noaa), APT_BANDWIDTH_HZ)
+        self.assertIsNone(_bandwidth_for("websdr", noaa))
+        self.assertIsNone(_bandwidth_for("openwebrx", by_name("ISS")))
+
+    def test_weather_chase_tunes_wide_and_selects_profile(self):
+        messages = []
+        session = _ChaseSession(_weather_plan(), messages.append)
+        try:
+            samples, _ = asyncio.run(session.record(137_620_000.0, 1.0))
+            self.assertEqual(len(samples), 3)
+        finally:
+            asyncio.run(session.close())
+        client = _FakeClient.instances[0]
+        self.assertEqual(client.selected, ["rtlsdr-1|NOAA 2"],
+                         "band name must select the NOAA profile")
+        freq, mode, bandwidth = client.tunes[0]
+        self.assertEqual((mode, bandwidth), ("nfm", 40000),
+                         "APT needs wide FM, not the ~12.5 kHz default")
+        self.assertTrue(any("selected profile rtlsdr-1|NOAA 2" in m
+                            for m in messages),
+                        "capture log must prove the selected profile")

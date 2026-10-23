@@ -246,11 +246,34 @@ func modeFor(kind, mode string) string {
 	return strings.ToUpper(mode)
 }
 
+// aptBandwidthHz is the demodulator bandwidth NOAA APT needs: the downlink
+// is wide FM (+/-17 kHz deviation), so OpenWebRX's default narrow-FM filter
+// (~12.5 kHz) destroys the waveform. Weather-table birds only; amateur FM
+// voice satellites keep the narrow default.
+const aptBandwidthHz = int64(40000)
+
+// demodFor returns the receiver modulation and, where the receiver supports
+// it, an explicit bandwidth. Weather satellites get the wide filter APT
+// needs; everything else keeps the mode defaults.
+func demodFor(kind string, sat satellites.Sat) (string, *int64) {
+	mode := modeFor(kind, sat.Mode)
+	if kind == "openwebrx" && sat.Group == "weather" {
+		bw := aptBandwidthHz
+		return mode, &bw
+	}
+	return mode, nil
+}
+
 // segment opens a fresh connection, tunes, records one segment, closes.
+// say may be nil; it receives the profile-selection and bandwidth facts so a
+// capture log proves the audio chain that produced (or failed) a decode.
 func segment(ctx context.Context, plan ChasePlan, frequencyHz float64,
-	window time.Duration) ([]int16, int, error) {
+	window time.Duration, say func(string)) ([]int16, int, error) {
+	if say == nil {
+		say = func(string) {}
+	}
 	kind := plan.Receiver.Kind
-	mode := modeFor(kind, plan.Satellite.Mode)
+	mode, bandwidth := demodFor(kind, plan.Satellite)
 	if kind == "openwebrx" {
 		client, err := openwebrx.New(plan.Receiver.URL, openwebrx.DefaultOptions())
 		if err != nil {
@@ -264,18 +287,27 @@ func segment(ctx context.Context, plan ChasePlan, frequencyHz float64,
 		// frequency; servers often default to an HF profile. The receiver's
 		// band names carry the profile display names recorded when the
 		// receiver was verified, so select the matching one first.
+		profileMatched := false
 		if band, ok := plan.Receiver.BandFor(frequencyHz); ok && band.Name != "" {
 			for _, profile := range client.ProfileList() {
 				if strings.Contains(strings.ToLower(profile.Name), strings.ToLower(band.Name)) {
 					if err := client.SelectProfile(ctx, profile.Key); err != nil {
 						return nil, 0, err
 					}
+					say(fmt.Sprintf("  selected profile %s (%s)", profile.Key, profile.Name))
+					profileMatched = true
 					break
 				}
 			}
+			if !profileMatched {
+				say(fmt.Sprintf("  no profile matching band %q; tuning the server's default profile", band.Name))
+			}
+		}
+		if bandwidth != nil {
+			say(fmt.Sprintf("  wide-FM demod for APT: %s bandwidth %d Hz", mode, *bandwidth))
 		}
 		freq := int64(frequencyHz)
-		if err := client.Tune(ctx, &freq, mode, nil); err != nil {
+		if err := client.Tune(ctx, &freq, mode, bandwidth); err != nil {
 			return nil, 0, err
 		}
 		return client.RecordSamples(ctx, window)
@@ -352,7 +384,7 @@ func Chase(ctx context.Context, plan ChasePlan, outPath string,
 			break
 		}
 		window := math.Min(segmentSeconds, remaining)
-		samples, segmentRate, err := segment(ctx, plan, current, time.Duration(window*float64(time.Second)))
+		samples, segmentRate, err := segment(ctx, plan, current, time.Duration(window*float64(time.Second)), say)
 		if err != nil {
 			failures++
 			say(fmt.Sprintf("  segment failed (%s); retrying in %.0f s",

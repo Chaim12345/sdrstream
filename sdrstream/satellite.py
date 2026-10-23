@@ -187,6 +187,24 @@ def plan_pass(
     )
 
 
+#: Demodulator bandwidth NOAA APT needs, in Hz. The downlink is wide FM
+#: (+/-17 kHz deviation), so the default narrow-FM filter (~12.5 kHz)
+#: destroys the waveform. Weather-table birds only; amateur FM voice
+#: satellites keep the narrow default.
+APT_BANDWIDTH_HZ = 40000
+
+
+def _bandwidth_for(kind: str, sat) -> "Optional[int]":
+    """Explicit demodulator bandwidth for receivers that accept one.
+
+    Only OpenWebRX takes a bandwidth parameter, and only weather-table
+    satellites need the wide APT filter.
+    """
+    if kind == "openwebrx" and getattr(sat, "group", "amateur") == "weather":
+        return APT_BANDWIDTH_HZ
+    return None
+
+
 def _mode_for(kind: str, mode: str) -> str:
     """Translate a satellite mode into the receiver's own vocabulary."""
     if kind == "openwebrx":
@@ -224,9 +242,11 @@ class _ChaseSession:
     connection is only rebuilt when it actually fails.
     """
 
-    def __init__(self, plan: ChasePlan):
+    def __init__(self, plan: ChasePlan, say: Optional[Callable[[str], None]] = None):
         self._plan = plan
         self._mode = _mode_for(plan.receiver.kind, plan.satellite.mode)
+        self._bandwidth = _bandwidth_for(plan.receiver.kind, plan.satellite)
+        self._say = say or (lambda message: None)
         self._client = None
         self._is_openwebrx = plan.receiver.kind == "openwebrx"
 
@@ -241,12 +261,22 @@ class _ChaseSession:
             band = self._plan.receiver.band_for(self._plan.satellite.downlink_hz)
             if band is not None and band.name:
                 want = band.name.lower()
+                matched = False
                 for profile in self._client.profiles:
                     name = str(profile.get("name", "")).lower()
                     key = profile.get("id", "")
                     if key and want in name:
                         await self._client.select_profile(key)
+                        self._say("  selected profile %s (%s)"
+                                  % (key, profile.get("name", "")))
+                        matched = True
                         break
+                if not matched:
+                    self._say("  no profile matching band %r; tuning the "
+                              "server's default profile" % band.name)
+            if self._bandwidth is not None:
+                self._say("  wide-FM demod for APT: %s bandwidth %d Hz"
+                          % (self._mode, self._bandwidth))
         else:
             self._client = WebSDRClient(self._plan.receiver.url,
                                         reconnect=False)
@@ -273,7 +303,8 @@ class _ChaseSession:
         try:
             if self._is_openwebrx:
                 await client.tune(frequency=int(frequency_hz),
-                                  modulation=self._mode)
+                                  modulation=self._mode,
+                                  bandwidth=self._bandwidth)
                 chunks = await client.record(seconds)
                 rate = chunks[0].samplerate if chunks else 12000
                 return OpenWebRXClient.concat(chunks), rate
@@ -326,7 +357,7 @@ async def chase(
     last_retune = 0.0
     failures = 0
 
-    session = _ChaseSession(plan)
+    session = _ChaseSession(plan, say)
     try:
         while datetime.now(timezone.utc) < plan.end:
             now = datetime.now(timezone.utc)
