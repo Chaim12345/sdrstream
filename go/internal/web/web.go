@@ -1015,6 +1015,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/status.json", s.handleStatus)
 	mux.HandleFunc("/api/logs/tail", s.handleLogTail)
 	mux.HandleFunc("/api/captures.json", s.handleCaptures)
+	mux.HandleFunc("/api/history/search", s.handleHistorySearch)
 	mux.HandleFunc("/api/captures/decode", s.handleCaptureDecode)
 	mux.HandleFunc("/api/satellites.json", s.handleSatellites)
 	mux.HandleFunc("/api/passes.json", s.handlePasses)
