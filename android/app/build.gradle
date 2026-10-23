@@ -23,6 +23,16 @@ android {
         release {
             minifyEnabled false
         }
+        debug {
+            // Side-by-side on-device test build: ./gradlew assembleDebug
+            // -PappIdSuffix=dbg installs as com.chaim12345.sdrstream.dbg
+            // next to the release app, no uninstall or data wipe needed.
+            // Default builds (CI, QA harness) are unchanged.
+            if (project.hasProperty('appIdSuffix')) {
+                applicationIdSuffix '.' + project.property('appIdSuffix')
+                versionNameSuffix '-' + project.property('appIdSuffix')
+            }
+        }
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
