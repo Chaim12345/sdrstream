@@ -284,7 +284,7 @@ function captureProof(c) {
   row('verdict', c.crosscheck === 'verified' && gateFacetOf(c) === 'passed'
     ? 'verified live - gate passed and independently confirmed'
     : (c.verified ? 'gate passed - no independent cross-check recorded' : 'unverified'));
-  row('origin', c.target ? 'scheduled target "' + c.target + '"' : 'blind scan (no named target)');
+  row('origin', c.kind === 'archive' ? 'archive import' + (c.target ? ' - original target "' + c.target + '"' : '') : (c.target ? 'scheduled target "' + c.target + '"' : 'blind scan (no named target)'));
   row('archive', c.samples + ' samples at ' + c.rate + ' Hz' + (c.samples && c.rate ? ' (' + fmtDuration(c.samples / c.rate) + ')' : ''));
   pb.onclick = () => { pf.hidden = !pf.hidden; };
   wrap.append(pb, pf);
@@ -380,14 +380,17 @@ function renderHealth() {
   if (crossChecked) el('health-success-legend').appendChild(document.createTextNode(' · independently verified: ' + crossChecked));
   if (gateText) el('health-success-legend').appendChild(document.createTextNode(' · gates: ' + gateText));
 
-  const scheduled = caps.filter(c => c.target).length;
-  const blind = caps.length - scheduled;
+  const archived = caps.filter(c => c.kind === 'archive').length;
+  const scheduled = caps.filter(c => c.kind !== 'archive' && c.target).length;
+  const blind = caps.length - scheduled - archived;
   hbar(el('health-origin-bar'), [
     { label: 'scheduled target', count: scheduled, tone: 'accent' },
+    { label: 'archive import', count: archived, tone: 'dim' },
     { label: 'blind scan', count: blind, tone: 'dim' },
   ]);
   hlegend(el('health-origin-legend'), [
     { label: 'scheduled target', count: scheduled, tone: 'accent' },
+    { label: 'archive import', count: archived, tone: 'dim' },
     { label: 'blind scan', count: blind, tone: 'dim' },
   ], 'no archived captures yet');
 
@@ -432,8 +435,13 @@ function renderCaptures(status) {
       else if (c.gate) vb.title = 'quality gate: ' + c.gate;
       badges.appendChild(vb);
       const ob = document.createElement('span');
-      ob.className = 'badge ' + (c.target ? 'scheduled' : 'blind');
-      ob.textContent = c.target ? 'scheduled: ' + c.target : 'blind scan';
+      if (c.kind === 'archive') {
+        ob.className = 'badge archive';
+        ob.textContent = 'archive import' + (c.target ? ': ' + c.target : '');
+      } else {
+        ob.className = 'badge ' + (c.target ? 'scheduled' : 'blind');
+        ob.textContent = c.target ? 'scheduled: ' + c.target : 'blind scan';
+      }
       badges.appendChild(ob);
       facetChips(c).forEach(ch => badges.appendChild(ch));
       card.appendChild(badges);

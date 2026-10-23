@@ -577,6 +577,7 @@ kbd {
 .badge.unverified { color: var(--bad); border-color: var(--bad); }
 .badge.scheduled { color: var(--accent); border-color: var(--accent-dim); }
 .badge.blind { color: var(--muted); }
+.badge.archive { color: var(--warn, #e0a34a); border-color: var(--warn, #e0a34a); }
 .proof-toggle { margin-top: 6px; }
 .capture-proof { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
 .proof-row { display: flex; gap: 8px; font: 11px var(--mono); margin: 2px 0; }

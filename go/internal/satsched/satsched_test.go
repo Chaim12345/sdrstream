@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/satellites"
+	"github.com/chaim12345/sdrstream/go/internal/tracking"
 )
 
 func satByNameForTest(t *testing.T, name string) satellites.Sat {
@@ -57,5 +58,36 @@ func TestEventOverrideLeavesSatelliteAloneOutsideWindow(t *testing.T) {
 	}
 	if got.DownlinkHz != iss.DownlinkHz || len(got.Beacons) != len(iss.Beacons) {
 		t.Fatalf("catalogue entry mutated outside an event window: %+v", got)
+	}
+}
+
+// Past-pass handling: a pass whose recording window has fully closed must be
+// treated as elapsed (plan() skips it), while a pass in progress - risen but
+// not yet set - stays plannable as an immediate chase.
+func TestRecordingWindowElapsedSkipsSetKeepsInProgress(t *testing.T) {
+	now := time.Date(2026, 10, 23, 9, 6, 0, 0, time.UTC)
+	set := tracking.Pass{
+		Rise: now.Add(-3 * time.Hour),
+		Set:  now.Add(-2*time.Hour + 50*time.Minute),
+	}
+	start, end := recordingWindow(set, 90, 60)
+	if !elapsed(end, now) {
+		t.Fatalf("fully-set pass not elapsed: window %s..%s at %s", start, end, now)
+	}
+	inProgress := tracking.Pass{
+		Rise: now.Add(-4 * time.Minute),
+		Set:  now.Add(6 * time.Minute),
+	}
+	_, end = recordingWindow(inProgress, 90, 60)
+	if elapsed(end, now) {
+		t.Fatalf("in-progress pass treated as elapsed: window ends %s at %s", end, now)
+	}
+	future := tracking.Pass{
+		Rise: now.Add(17 * time.Hour),
+		Set:  now.Add(17*time.Hour + 10*time.Minute),
+	}
+	_, end = recordingWindow(future, 90, 60)
+	if elapsed(end, now) {
+		t.Fatalf("future pass treated as elapsed: window ends %s at %s", end, now)
 	}
 }

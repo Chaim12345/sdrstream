@@ -52,7 +52,7 @@ func (p ChasePlan) Summary() string {
 			chaseSuffix(p.Satellite),
 			p.Satellite.Mode),
 		fmt.Sprintf("  recording %s to %s UTC (%.1f min)",
-			p.Start.Format("15:04:05"), p.End.Format("15:04:05"),
+			p.Start.Format("2006-01-02 15:04:05"), p.End.Format("2006-01-02 15:04:05"),
 			p.End.Sub(p.Start).Minutes()),
 		fmt.Sprintf("  Doppler range %+d to %+d Hz", p.DopplerLow, p.DopplerHigh),
 	}

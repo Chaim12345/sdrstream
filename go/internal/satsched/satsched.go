@@ -97,6 +97,11 @@ func (s *Service) PlanOnce() error {
 		s.say(fmt.Sprintf("nothing recordable in the next %.0f h (replan in %s)", s.opts.LookaheadH, wait))
 		return nil
 	}
+	// Anchor the plan: a clock time alone reads as a past pass when the
+	// next usable pass is after midnight, so state when the plan was made
+	// and that every printed time carries its date.
+	fmt.Printf("plan anchored at %s UTC; all times below UTC with dates\n",
+		time.Now().UTC().Format("2006-01-02 15:04:05"))
 	fmt.Println(next.plan.Summary())
 	return nil
 }
@@ -165,6 +170,15 @@ func applyEventOverride(sat satellites.Sat, now, windowEnd time.Time) (satellite
 	return sat, ev.Name
 }
 
+// recordingWindow pads a pass into the recording interval.
+func recordingWindow(pass tracking.Pass, leadSeconds, tailSeconds float64) (time.Time, time.Time) {
+	return pass.Rise.Add(-time.Duration(leadSeconds * float64(time.Second))),
+		pass.Set.Add(time.Duration(tailSeconds * float64(time.Second)))
+}
+
+// elapsed reports whether the recording window closed before now.
+func elapsed(end, now time.Time) bool { return end.Before(now) }
+
 // plan finds the best next pass: earliest rise wins; when two passes overlap,
 // the satellite earlier in the priority list wins.
 func (s *Service) plan() (*candidate, time.Duration) {
@@ -207,9 +221,10 @@ func (s *Service) plan() (*candidate, time.Duration) {
 			}
 			one := plan
 			one.Passes = []tracking.Pass{pass}
-			one.Start = pass.Rise.Add(-time.Duration(s.opts.LeadSeconds * float64(time.Second)))
-			one.End = pass.Set.Add(time.Duration(s.opts.TailSeconds * float64(time.Second)))
-			if one.End.Before(time.Now()) {
+			one.Start, one.End = recordingWindow(pass, s.opts.LeadSeconds, s.opts.TailSeconds)
+			if elapsed(one.End, time.Now()) {
+				// Fully-set passes are never planned; a pass in progress
+				// (risen, not yet set) stays - it is an immediate chase.
 				s.done[key] = true
 				continue
 			}

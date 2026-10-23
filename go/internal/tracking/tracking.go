@@ -54,10 +54,12 @@ type Pass struct {
 // MaxElevation is the peak elevation of the pass, in degrees.
 func (p Pass) MaxElevation() float64 { return p.Peak.Elevation }
 
-// Summary renders the pass the way the Python CLI does.
+// Summary renders the pass the way the Python CLI does, with the date on
+// every time: a clock-only "02:07:16 rise" reads as a past pass when the
+// plan is printed mid-morning for a pass after midnight tomorrow.
 func (p Pass) Summary() string {
 	return fmt.Sprintf("%s rise  peak %5.1f deg at %s  set  duration %4.1f min",
-		p.Rise.Format("15:04:05"), p.MaxElevation(), p.Peak.Time.Format("15:04:05"),
+		p.Rise.Format("2006-01-02 15:04:05"), p.MaxElevation(), p.Peak.Time.Format("15:04:05"),
 		p.DurationSec/60)
 }
 

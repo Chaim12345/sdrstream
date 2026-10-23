@@ -43,7 +43,8 @@ EVENTS = [
         # Secondary "Oct 22-25" renderings are lossy summaries, not a
         # disagreement. Dates remain subject to ISS operational changes.
         source=(
-            "Owning source: ARISS @arissintl.bsky.social 2026-10-14 post, verbatim republication "
+            "Owning source: ARISS @arissintl.bsky.social 2026-10-14 post "
+            "https://bsky.app/profile/arissintl.bsky.social/post/3mxucornkvc2e (URL observed quoted in the verbatim republication) "
             "https://www.sbarc.co.uk/news/expedition-75-series-34-sstv-from-the-iss/ "
             "(updates 2026-10-20 confirmed, 2026-10-21 end extended to Oct 26 17:45 UTC). "
             "Corroborated by darc.de 2026-10-20, darc-e39.org 2026-10-21, f6kmf.fr 2026-10-15. "
