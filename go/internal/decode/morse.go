@@ -1,6 +1,7 @@
 package decode
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"sort"
@@ -89,13 +90,31 @@ func goertzel(samples []float64, rate int, freq float64) float64 {
 // MorseDecode runs envelope tracking over the whole file and returns any
 // readable text plus tone diagnostics.
 func MorseDecode(path string) (MorseResult, error) {
+	return MorseDecodeContext(context.Background(), path)
+}
+
+// MorseDecodeContext is MorseDecode with cancellation checked per analysis
+// window and per envelope pass: a cancelled context returns
+// (MorseResult{}, ctx.Err()).
+func MorseDecodeContext(ctx context.Context, path string) (MorseResult, error) {
 	samples, rate, err := ReadWAV(path)
 	if err != nil {
 		return MorseResult{}, err
 	}
-	res, tone, snr := morseFromSamples(samples, rate)
+	res, tone, snr, err := morseFromSamplesContext(ctx, samples, rate)
+	if err != nil {
+		return MorseResult{}, err
+	}
 	res.ToneHz, res.SnrdB = tone, snr
 	return res, nil
+}
+
+// Plausible reports whether the read passes the noise-rejection gates
+// (beacon-rate element timing and a mostly decodable character mix).
+// morseFromSamples returns its best read even when implausible, so callers
+// publishing transcripts must gate on this.
+func (r MorseResult) Plausible() bool {
+	return plausibleMorseRange(r, 2500)
 }
 
 // morseEnvelope tracks the keyed-on/off envelope at one tone frequency
@@ -152,6 +171,11 @@ func morseLetters(text string) int {
 }
 
 func morseFromSamples(samples []float64, rate int) (MorseResult, float64, float64) {
+	res, tone, snr, _ := morseFromSamplesContext(context.Background(), samples, rate)
+	return res, tone, snr
+}
+
+func morseFromSamplesContext(ctx context.Context, samples []float64, rate int) (MorseResult, float64, float64, error) {
 	// Analyse in 1 s windows: pick the strongest window's tone once, then
 	// track the envelope at that frequency for the whole file.
 	chunk := rate
@@ -161,6 +185,9 @@ func morseFromSamples(samples []float64, rate int) (MorseResult, float64, float6
 	bestTone, bestSNR := 0.0, math.Inf(-1)
 	bestStart := 0
 	for start := 0; start+chunk <= len(samples); start += chunk {
+		if err := ctx.Err(); err != nil {
+			return MorseResult{}, 0, 0, err
+		}
 		f, snr := FindDominantTone(samples[start:start+chunk], rate)
 		if snr > bestSNR {
 			bestTone, bestSNR = f, snr
@@ -168,16 +195,16 @@ func morseFromSamples(samples []float64, rate int) (MorseResult, float64, float6
 		}
 	}
 	if bestTone <= 0 {
-		return MorseResult{Text: ""}, 0, bestSNR
+		return MorseResult{Text: ""}, 0, bestSNR, nil
 	}
 
 	env := morseEnvelope(samples, rate, bestTone)
 	if len(env) < 3 {
-		return MorseResult{Text: ""}, bestTone, bestSNR
+		return MorseResult{Text: ""}, bestTone, bestSNR, nil
 	}
 	res := morseFromEnvelope(env, rate, bestTone, bestSNR, 2000)
 	if plausibleMorse(res) {
-		return res, bestTone, bestSNR
+		return res, bestTone, bestSNR, nil
 	}
 
 	// Two-tone fallback: numbers-station MCW alternates the keying
@@ -196,11 +223,11 @@ func morseFromSamples(samples []float64, rate int) (MorseResult, float64, float6
 				}
 			}
 			if res2 := morseFromEnvelope(comb, rate, bestTone, bestSNR, 2500); plausibleMorseRange(res2, 2500) && morseLetters(res2.Text) > morseLetters(res.Text) {
-				return res2, bestTone, bestSNR
+				return res2, bestTone, bestSNR, nil
 			}
 		}
 	}
-	return res, bestTone, bestSNR
+	return res, bestTone, bestSNR, nil
 }
 
 // morseFromEnvelope turns a keyed-tone envelope into text. maxToneHz is

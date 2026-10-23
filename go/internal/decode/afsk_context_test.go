@@ -56,3 +56,20 @@ func TestAFSKFramesContextCancelInFlight(t *testing.T) {
 	}
 	t.Fatalf("decode never observed in-flight cancellation (baseline %s)", base)
 }
+
+// MorseDecodeContext: a pre-cancelled context stops the decode and the
+// Background path still reads the reference.
+func TestMorseDecodeContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := MorseDecodeContext(ctx, refMorse); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled context: got %v, want context.Canceled", err)
+	}
+	res, err := MorseDecodeContext(context.Background(), refMorse)
+	if err != nil {
+		t.Fatalf("MorseDecodeContext: %v", err)
+	}
+	if !res.Plausible() {
+		t.Fatalf("reference CW read should pass its own plausibility gate, got %+v", res)
+	}
+}

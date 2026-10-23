@@ -375,7 +375,8 @@ func DecodeFramesContext(ctx context.Context, saved []Item, dir string) []Item {
 		wantSSTV := strings.Contains(mode, "SSTV")
 		wantAPT := strings.Contains(mode, "APT")
 		wantAFSK := strings.Contains(mode, "AFSK") || strings.Contains(mode, "APRS") || strings.Contains(mode, "AX25")
-		if !wantSSTV && !wantAPT && !wantAFSK {
+		wantCW := strings.Contains(mode, "CW")
+		if !wantSSTV && !wantAPT && !wantAFSK && !wantCW {
 			continue // not an image-payload mode; nothing to report
 		}
 		path := item.Path
@@ -474,6 +475,60 @@ func DecodeFramesContext(ctx context.Context, saved []Item, dir string) []Item {
 			out := filepath.Join(dir, name)
 			if err := os.WriteFile(out, text.Bytes(), 0o644); err != nil {
 				item.DecodeStatus = "packets decoded but could not be saved: " + err.Error()
+				continue
+			}
+			frames = append(frames, Item{
+				Source:         item.Source,
+				ObservationURL: item.ObservationURL,
+				ObservationID:  item.ObservationID,
+				Satellite:      item.Satellite,
+				NoradID:        item.NoradID,
+				Station:        item.Station,
+				Start:          item.Start,
+				Mode:           item.Mode,
+				FrequencyHz:    item.FrequencyHz,
+				Kind:           "text",
+				Name:           name,
+				Path:           out,
+				Size:           int64(text.Len()),
+				Text:           preview(text.Bytes()),
+				DecodedFrom:    item.Name,
+			})
+			continue
+		}
+		if wantCW {
+			// Beacon audio: the Morse decoder returns its best read even
+			// when it looks like noise, so the plausibility gate (element
+			// timing + decodable character mix) decides whether anything
+			// ships. The transcript is an automatic decode, not verified
+			// text.
+			res, merr := decode.MorseDecodeContext(dctx, path)
+			cancel()
+			if merr != nil {
+				if errors.Is(merr, context.DeadlineExceeded) {
+					item.DecodeStatus = fmt.Sprintf("frame decode skipped: decode exceeded the %d min limit", int(maxDecodeWallClock.Minutes()))
+				} else if errors.Is(merr, context.Canceled) {
+					item.DecodeStatus = "frame decode skipped: decode cancelled"
+				} else {
+					item.DecodeStatus = "frame decode skipped: morse decode failed: " + merr.Error()
+				}
+				continue
+			}
+			if res.Text == "" || !res.Plausible() {
+				item.DecodeStatus = "frame decode skipped: no plausible Morse found"
+				continue
+			}
+			wpm := 0.0
+			if res.DotMs > 0 {
+				wpm = 1200 / res.DotMs
+			}
+			var text bytes.Buffer
+			fmt.Fprintf(&text, "Automatic Morse (CW) decode of %s by sdrstream - plausibility-gated, transcript not independently verified\n\ntranscript: %s\n\ntone %.0f Hz, %.1f WPM, SNR %.1f dB\n", item.Name, res.Text, res.ToneHz, wpm, res.SnrdB)
+			ext := filepath.Ext(item.Name)
+			name := strings.TrimSuffix(item.Name, ext) + "-sdrstream-decoded.txt"
+			out := filepath.Join(dir, name)
+			if err := os.WriteFile(out, text.Bytes(), 0o644); err != nil {
+				item.DecodeStatus = "morse decoded but could not be saved: " + err.Error()
 				continue
 			}
 			frames = append(frames, Item{
