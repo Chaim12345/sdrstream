@@ -208,17 +208,17 @@ func TestQACreateTempWAV(t *testing.T) {
 // equal tones 170 Hz apart (RTTY-like, synthetic) measure ~1424 Hz, while the
 // narrowest interval holding 90% of the passband power is ~206 Hz (computed
 // by brute force below). Single tones and noise are fine. QA_KNOWN_DEFECTS=1.
-func TestQAOccupiedBandwidthTwoTonesKnownGap(t *testing.T) {
-	if os.Getenv("QA_KNOWN_DEFECTS") != "1" {
-		t.Skip("known gap, QA_KNOWN_DEFECTS=1 to run")
-	}
+func TestQAOccupiedBandwidthTwoTonesGap(t *testing.T) {
 	const rate = 8000
 	a, b := qaTone(1000, rate, 1, 0.3), qaTone(1170, rate, 1, 0.3)
 	for i := range a {
 		a[i] += b[i]
 	}
 	got := OccupiedBandwidth(a, rate)
-	if got > 500 {
+	// Regression for the greedy-expansion defect fixed in f881646: the
+	// narrowest 90% interval here is ~206 Hz; following the sidelobes
+	// outward from the peak measured ~1.4 kHz.
+	if got <= 0 || got > 500 {
 		t.Fatalf("two tones 170 Hz apart measured %.0f Hz; the narrowest 90%% interval is ~206 Hz", got)
 	}
 }
