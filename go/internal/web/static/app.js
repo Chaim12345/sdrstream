@@ -2296,6 +2296,9 @@ function renderReceiverProof(entries) {
     when.textContent = ' ' + fmtDate(e.provider_time);
     title.append(b, when); card.appendChild(title);
     const badges = document.createElement('div'); badges.className = 'badge-row';
+    const btime = document.createElement('span'); btime.className = 'muted badge-record-time';
+    btime.textContent = 'status at record time:';
+    badges.appendChild(btime);
     const ev = document.createElement('span');
     if (e.evidence === 'verified') {
       ev.className = 'badge verified';
@@ -2325,6 +2328,9 @@ function renderReceiverProof(entries) {
       crosscheck: e.crosscheck, crosscheck_ref: e.crosscheck_ref, crosscheck_detail: e.crosscheck_detail,
       gate: e.gate, verified: e.evidence === 'verified' }).forEach(ch => badges.appendChild(ch));
     card.appendChild(badges);
+    const prov = document.createElement('div'); prov.className = 'muted capture-provenance';
+    prov.textContent = 'provenance: ' + captureProvenance({ source: e.capture_source });
+    card.appendChild(prov);
     if (e.gate) {
       const g = document.createElement('div'); g.className = 'card-meta';
       g.textContent = 'quality gate: ' + e.gate;

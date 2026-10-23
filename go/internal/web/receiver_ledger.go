@@ -76,6 +76,7 @@ func receiverLedgerEntry(c Capture, fetchedAt time.Time) feeds.LedgerEntry {
 		Evidence:  evidence,
 		Gate:      c.Gate,
 	}
+	entry.CaptureSource = c.Source
 	entry.GateVerdict = gateVerdict
 	entry.Crosscheck = c.Crosscheck
 	entry.CrosscheckRef = c.CrosscheckRef

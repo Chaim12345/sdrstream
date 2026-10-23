@@ -267,3 +267,16 @@ func TestReceiverLedgerRealPreservedProofs(t *testing.T) {
 		t.Fatalf("portpatrick evidence/gate = %q/%q", portpatrick.Evidence, portpatrick.Gate)
 	}
 }
+
+// The ledger entry keeps the capture sidecar's explicit provenance
+// class; a pre-field sidecar contributes nothing (never guessed).
+func TestReceiverLedgerEntryCarriesCaptureSource(t *testing.T) {
+	live := receiverLedgerEntry(Capture{Path: "A.wav", Source: "live", Start: time.Now().UTC()}, time.Now().UTC())
+	if live.CaptureSource != "live" {
+		t.Errorf("capture_source %q, want live", live.CaptureSource)
+	}
+	legacy := receiverLedgerEntry(Capture{Path: "B.wav", Start: time.Now().UTC()}, time.Now().UTC())
+	if legacy.CaptureSource != "" {
+		t.Errorf("pre-field capture_source %q, want empty - provenance is never guessed", legacy.CaptureSource)
+	}
+}

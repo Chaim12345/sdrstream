@@ -48,8 +48,13 @@ type LedgerEntry struct {
 	DecodedBy string    `json:"decoded_by"`
 	Ref       string    `json:"ref,omitempty"`
 	Receiver  string    `json:"receiver,omitempty"` // receiver ID for source="receiver" captures
-	Evidence  string    `json:"evidence,omitempty"` // EvidenceVerified / EvidenceUnverified for own decodes
-	Gate      string    `json:"gate,omitempty"`     // quality-gate reason when Evidence is unverified
+	// CaptureSource is the capture sidecar's explicit provenance class
+	// ("live" this receiver, "test-fixture" synthetic, foreign verbatim);
+	// empty means the sidecar predates the field - shown as "source not
+	// recorded", never guessed.
+	CaptureSource string `json:"capture_source,omitempty"`
+	Evidence      string `json:"evidence,omitempty"` // EvidenceVerified / EvidenceUnverified for own decodes
+	Gate          string `json:"gate,omitempty"`     // quality-gate reason when Evidence is unverified
 	// GateVerdict is the Go live quality gate's own outcome at capture
 	// (GatePassed / GateFailed); empty means the gate's verdict was not
 	// preserved. Crosscheck records an independent reference check
