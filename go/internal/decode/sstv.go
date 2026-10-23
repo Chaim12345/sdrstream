@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 )
 
 // SSTV (slow-scan television) sends a picture as an audio tone whose
@@ -241,9 +242,19 @@ func leaderHolds(p1900, p1200 []float64, from, to int) bool {
 }
 
 // hasSyncCadence reports whether the 1200 Hz purity trace after the
-// header carries at least three line-sync runs at a consistent cadence
-// (successive intervals within 15% of each other, in the 30-1100 ms
-// range spanned by every documented SSTV mode).
+// header carries line-sync runs on a consistent cadence grid. A grid is
+// an anchor run near the header plus a candidate period taken from
+// spacings among the runs just after it (period in the 30-1100 ms
+// range spanned by every documented SSTV mode, tolerance the larger of
+// 12 ms or 12% of the period). The grid must collect at least five
+// aligned runs, and the densest 30-line window of the grid must be at
+// least 70% filled (the window shrinks to the run list's own span for
+// short clips, so a brief real image is judged on the lines it has).
+// Anchoring and period-hunting near the header is what makes random
+// energy fail: sparse noise can luck onto some wide-tolerance grid
+// when every run and every spacing in a long trace is a fresh lottery
+// ticket, but it cannot fill the grid the way one sync pulse per image
+// line does, right from the first line after the header.
 func hasSyncCadence(p1200 []float64, hopSec, fromSec float64) bool {
 	start := int(fromSec / hopSec)
 	var runs []int // run start hops
@@ -281,37 +292,64 @@ func hasSyncCadence(p1200 []float64, hopSec, fromSec float64) bool {
 		}
 		center[idx] = float64(r+j-1) / 2 * hopSec
 	}
-	periods := map[int]bool{}
-	var candidates []float64
-	for k := 1; k < len(center); k++ {
-		d := center[k] - center[k-1]
-		if d < 0.03 || d > 1.1 {
-			continue
+	// The cadence belongs to the image that follows this header, so
+	// both the anchor and the candidate periods come from the runs
+	// closest to the header. Letting every run in a long trace anchor,
+	// and every spacing nominate a period, hands random noise thousands
+	// of independent grids and it lucks onto one; a handful of early
+	// grids is the honest test.
+	for a, anchor := range center {
+		if a >= 6 {
+			break
 		}
-		key := int(d * 1000)
-		if !periods[key] {
-			periods[key] = true
-			candidates = append(candidates, d)
+		periods := map[int]bool{}
+		var candidates []float64
+		for k := a + 1; k < len(center) && k <= a+10; k++ {
+			d := center[k] - center[k-1]
+			if d < 0.03 || d > 1.1 {
+				continue
+			}
+			key := int(d * 1000)
+			if !periods[key] {
+				periods[key] = true
+				candidates = append(candidates, d)
+			}
 		}
-	}
-	for _, d := range candidates {
-		tol := d * 0.12
-		if tol < 0.012 {
-			tol = 0.012
-		}
-		for a, anchor := range center {
-			aligned := 1
-			for b := a + 1; b < len(center); b++ {
+		for _, d := range candidates {
+			tol := d * 0.12
+			if tol < 0.012 {
+				tol = 0.012
+			}
+			var gridIdx []int
+			for b := a; b < len(center); b++ {
 				k := (center[b] - anchor) / d
 				nearest := float64(int(k + 0.5))
-				if nearest < 1 {
-					continue
-				}
 				if diff := center[b] - anchor - nearest*d; diff < tol && diff > -tol {
-					aligned++
+					gridIdx = append(gridIdx, int(k+0.5))
 				}
 			}
-			if aligned >= 5 {
+			if len(gridIdx) < 5 {
+				continue
+			}
+			// Occupancy over the densest 30-line window: a real frame
+			// fires one sync per line, filling the window even when
+			// spurious edge-splatter runs sit between the true syncs.
+			// The denominator never exceeds the span the run list
+			// actually covers, so a short real image is judged on its
+			// own lines and a long non-image tail cannot dilute it.
+			runSpan := int((center[len(center)-1]-center[0])/d+0.5) + 1
+			den := 30
+			if runSpan < den {
+				den = runSpan
+			}
+			best := 0.0
+			for i := 0; i < len(gridIdx); i++ {
+				hi := sort.SearchInts(gridIdx, gridIdx[i]+30)
+				if occ := float64(hi-i) / float64(den); occ > best {
+					best = occ
+				}
+			}
+			if best >= 0.7 {
 				return true
 			}
 		}
