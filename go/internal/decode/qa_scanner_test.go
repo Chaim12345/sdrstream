@@ -141,14 +141,11 @@ func TestQAOccupiedBandwidth(t *testing.T) {
 	}
 }
 
-// KNOWN DEFECT (found by QA, production fix not in this branch): for a narrow
-// signal OccupiedBandwidth returns absurd widths (1 kHz tone: ~1,370,798 Hz;
-// 500 Hz tone: ~6.8 MHz; 2 kHz tone: 19 Hz). The documented contract is a
-// width inside the 300-2700 Hz search band. Set QA_KNOWN_DEFECTS=1 to run.
-func TestQAOccupiedBandwidthNarrowSignalKnownDefect(t *testing.T) {
-	if os.Getenv("QA_KNOWN_DEFECTS") != "1" {
-		t.Skip("known defect, see comment; QA_KNOWN_DEFECTS=1 to run")
-	}
+// Regression for the defect QA found (fixed in 727aacf): for a narrow
+// signal OccupiedBandwidth returned absurd widths (1 kHz tone: ~1,370,798
+// Hz; 500 Hz tone: ~6.8 MHz; 2 kHz tone: 19 Hz). The documented contract
+// is a width inside the 300-2700 Hz search band.
+func TestQAOccupiedBandwidthNarrowSignalDefect(t *testing.T) {
 	const rate = 8000
 	for _, hz := range []float64{500, 1000, 1500, 2000} {
 		w := OccupiedBandwidth(qaTone(hz, rate, 1, 0.5), rate)

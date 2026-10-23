@@ -2,7 +2,6 @@ package decode
 
 import (
 	"math"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -89,7 +88,7 @@ func TestQAHostileSamplesDoNotPanic(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			_ = Classify(s, rate)
-			if name != "huge" { // see TestQAOccupiedBandwidthHugeSamplesKnownDefect
+			if name != "huge" { // huge-magnitude powers have a dedicated timeout test below
 				_ = OccupiedBandwidth(s, rate)
 			}
 			_ = DTMFDecode(s, rate)
@@ -109,14 +108,11 @@ func TestQAHostileSamplesDoNotPanic(t *testing.T) {
 	}
 }
 
-// KNOWN DEFECT (hardening, low reachability: ReadWAV yields only samples in
-// [-1,1]): OccupiedBandwidth never returns for +-1e300 samples (powers
-// overflow to Inf/NaN and the grow loop has no progress guarantee).
-// QA_KNOWN_DEFECTS=1 to run; it fails with a timeout after 3 s.
-func TestQAOccupiedBandwidthHugeSamplesKnownDefect(t *testing.T) {
-	if os.Getenv("QA_KNOWN_DEFECTS") != "1" {
-		t.Skip("known defect, QA_KNOWN_DEFECTS=1 to run")
-	}
+// Hardening regression (fixed in 727aacf; low reachability: ReadWAV yields
+// only samples in [-1,1]): OccupiedBandwidth must return for +-1e300
+// samples even when powers overflow to Inf/NaN. Fails with a timeout
+// after 3 s if the grow loop ever loses its progress guarantee.
+func TestQAOccupiedBandwidthHugeSamplesDefect(t *testing.T) {
 	s := make([]float64, 8000)
 	for i := range s {
 		s[i] = 1e300 * math.Pow(-1, float64(i))
