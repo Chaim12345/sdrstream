@@ -245,15 +245,17 @@ func Observations(noradID int, limit int, timeout time.Duration) ([]Observation,
 }
 
 // onlyNorad keeps the observations whose NORAD id matches. An observation
-// with no NORAD id is kept as-is: the caller asked for data and an
-// unlabelled row is better than none.
+// with no NORAD id is dropped when a specific satellite was requested:
+// returning it would silently attribute an unknown satellite's recording
+// to the target. Unlabelled rows are only kept for unfiltered queries
+// (noradID <= 0), where no attribution is implied.
 func onlyNorad(observations []Observation, noradID int) []Observation {
 	if noradID <= 0 {
 		return observations
 	}
 	var out []Observation
 	for _, o := range observations {
-		if o.NoradID == noradID || o.NoradID == 0 {
+		if o.NoradID == noradID {
 			out = append(out, o)
 		}
 	}
