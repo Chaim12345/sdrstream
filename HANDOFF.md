@@ -191,10 +191,11 @@ clamp, WebSDR retune-during-reconnect race.
 **Still open** (re-audited against the tree 2026-10-23; several former
 entries were stale and are listed under "Recently closed" below):
 
-- R2 transport remainder: websdr preflight short-read (the original
-  review note's phrase; no anchor in the tree yet - the backoff-reset
-  half is done, and openwebrx auto-reconnect shipped in a9e606d).
-- `TranscribeASR` not yet under the NIM semaphore.
+- R2 transport remainder: closed. openwebrx auto-reconnect shipped in
+  a9e606d, the websdr backoff reset in 3cb752d. The "websdr preflight
+  short-read" phrase has no anchor in the tree and the original review
+  note is unrecoverable (both sides searched) - treated as unverifiable,
+  no fix invented.
 - R5 decode coverage: truncated-WAV fuzz, FT8/WSPR audio-level SNR
   fixtures, WEFAX color + mid-chart, AIS eviction tests, block-scan budget
   reduction.
@@ -215,6 +216,12 @@ entries were stale and are listed under "Recently closed" below):
   `cmd/sdrstream/main.go` (`--captures-max-gb`) and the web server prunes
   on its own tick.
 - Jukebox temp-WAV cleanup: unique temp + rename in `main.go`.
+- NIM semaphore: `TranscribeNIM` is bounded by `nimSlots` (2 concurrent)
+  with quota/auth cooldown, pinned by `internal/voice/nim_slot_test.go`;
+  every production path (monitor, web, cmd) goes through
+  `TranscribeBest`, so all hosted calls are semaphored. Only the
+  `asreval` dev tool calls local `TranscribeASR` directly, which is
+  bounded by `transcribeSlot`.
 
 ## 7. Pending owner decisions
 
