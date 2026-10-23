@@ -1117,6 +1117,15 @@ function activityCard(a, fresh) {
   const meta = document.createElement('div'); meta.className = 'meta';
   meta.textContent = (a.mode ? a.mode + ' · ' : '') + activityProvenance(a);
   card.appendChild(meta);
+  const provenance = document.createElement('div'); provenance.className='muted activity-source-class';
+  const sourceLabels = {
+    'live-verified':'live source - gate passed', 'live-unverified':'live source - no recorded gate pass',
+    'live-redecode':'live capture re-decode - not fresh reception',
+    synthetic:'test fixture / synthetic - not a reception',foreign:'foreign origin - not this receiver',
+    unknown:'source unknown - not verified as live reception'
+  };
+  provenance.textContent = a.rejected ? 'live source - gate rejected: '+a.rejected : sourceLabels[a.source_class] || 'source class not recorded';
+  card.appendChild(provenance);
   if (a.detail) {
     const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = a.detail;
     card.appendChild(detail);

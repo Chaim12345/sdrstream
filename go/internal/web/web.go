@@ -1015,6 +1015,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/status.json", s.handleStatus)
 	mux.HandleFunc("/api/logs/tail", s.handleLogTail)
 	mux.HandleFunc("/api/captures.json", s.handleCaptures)
+	mux.HandleFunc("/api/history/search", s.handleHistorySearch)
 	mux.HandleFunc("/api/captures/decode", s.handleCaptureDecode)
 	mux.HandleFunc("/api/satellites.json", s.handleSatellites)
 	mux.HandleFunc("/api/passes.json", s.handlePasses)
@@ -2168,9 +2169,15 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	live := append([]LiveGalleryItem(nil), s.liveGallery...)
 	s.mu.Unlock()
 
-	var items []monitor.Activity
+	type activityRow struct {
+		monitor.Activity
+		SourceClass string `json:"source_class"`
+	}
+	items := make([]activityRow, 0)
 	if instance != nil {
-		items = instance.Activities()
+		for _, a := range instance.Activities() {
+			items = append(items, activityRow{a, historyMonitorClass(a)})
+		}
 	}
 	// Scanner and feed decodes only live in the gallery, so merge them in
 	// (skipping anything the monitor already reported; monitor decodes are
@@ -2228,10 +2235,11 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 			// the callback's generic pass note: it wins.
 			if class == galleryLiveVerified {
 				items[pos].Verification = it.Verification
+				items[pos].SourceClass = historyGalleryClass(it)
 			}
 			continue
 		}
-		items = append(items, a)
+		items = append(items, activityRow{a, historyGalleryClass(it)})
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].Started.After(items[j].Started) })
 	writeJSON(w, items)

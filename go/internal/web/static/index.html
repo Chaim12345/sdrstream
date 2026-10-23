@@ -41,6 +41,7 @@
   <button data-view="decodes"><span class="ico">&#9679;</span><span class="lbl">Decodes</span></button>
   <button data-view="passes"><span class="ico">&#9650;</span><span class="lbl">Passes</span></button>
   <button data-view="gallery"><span class="ico">&#9702;</span><span class="lbl">Gallery</span></button>
+  <button data-view="history"><span class="ico">&#8981;</span><span class="lbl">History</span></button>
   <button data-view="captures"><span class="ico">&#9834;</span><span class="lbl">Captures</span></button>
   <button data-view="scan"><span class="ico">&#8981;</span><span class="lbl">Scan</span></button>
   <button data-view="stations"><span class="ico">&#8962;</span><span class="lbl">Stations</span></button>
@@ -270,6 +271,26 @@
     <button id="activity-more" class="btn" hidden>show more</button>
   </section>
 
+  <section id="view-history" class="view" aria-label="Search history">
+    <h2>Search saved history</h2>
+    <p class="muted">Search capture metadata, decoder text and gallery records. Results are records, not distinct receptions.</p>
+    <form id="history-form" class="history-form" role="search">
+      <label>Text, receiver or frequency<input id="history-query" type="search" maxlength="1024" placeholder="Find saved messages or files"></label>
+      <label>Source class<select id="history-class">
+        <option value="">all sources</option><option value="live-verified">live, gate passed</option>
+        <option value="live-unverified">live, no gate pass</option><option value="live-redecode">live capture re-decode</option>
+        <option value="synthetic">test fixture / synthetic</option><option value="foreign">foreign origin</option><option value="unknown">source unknown</option>
+      </select></label>
+      <label>Decoder / mode<input id="history-mode" type="search" placeholder="e.g. cw or rtty"></label>
+      <label>Re-decodes<select id="history-redecode"><option value="">all records</option><option value="true">re-decodes only</option><option value="false">exclude re-decodes</option></select></label>
+      <button class="btn" type="submit">Search history</button><button class="chip" id="history-reset" type="button">Reset</button>
+    </form>
+    <p id="history-state" role="status" aria-live="polite">Enter filters and search. Nothing is fetched until you ask.</p>
+    <div id="history-results" class="feed feed-full"></div>
+    <div class="toolbar"><button id="history-prev" class="chip" type="button" hidden>Previous 50</button><button id="history-next" class="chip" type="button" hidden>Next 50</button></div>
+    <p id="history-scope" class="muted"></p>
+  </section>
+
   <section id="view-decodes" class="view" aria-label="Decoder messages">
     <div class="toolbar" role="group" aria-label="Filter by decoder" id="msglog-modes">
       <button class="chip on" data-dmode="">all</button>
@@ -455,5 +476,6 @@
 <script src="/static/vendor/leaflet/leaflet.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/msglog.js"></script>
+<script src="/static/history.js"></script>
 </body>
 </html>
