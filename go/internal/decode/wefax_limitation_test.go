@@ -19,12 +19,14 @@ func TestWEFAXFlatGradientPlateauBiasLimitation(t *testing.T) {
 	// the band order breaks. Measured on this fixture (2026-10-23):
 	// top-of-chart means monotone, bottom-of-chart means
 	// [15 37 198 243 251 28] - order destroyed; the fitted drift is
-	// ~1184 ppm against a true 0, yet the sync-evidence gate still
-	// verifies it (real wedge, contrast 0.94, drift inside the sanity
-	// bound) and the deskew metric reads a vacuous 0.98 on flat
-	// content. A tracker fix makes the bottom means monotone and the
-	// drift honest; when that happens, convert this into a
-	// correctness assertion instead of a limitation pin.
+	// ~1184 ppm against a true 0 and the deskew metric reads a
+	// vacuous 0.98 on flat content. The geometry-quality tier of the
+	// verify.WEFAXImage gate rejects this render via the tracker
+	// wander span (~2961 ppm against the 1500 floor), so it cannot
+	// be published as verified even though the wedge is real.
+	// A tracker fix makes the bottom means monotone and the drift
+	// honest; when that happens, convert this into a correctness
+	// assertion instead of a limitation pin.
 	f := wefaxFixture{rate: 12000, phasingLines: 60, imageLines: 80, startToneSec: 3, flatGradient: true, noiseAmp: 0.15}
 	pngData, _ := decodeWEFAXFixture(t, f)
 	img, err := png.Decode(bytes.NewReader(pngData))

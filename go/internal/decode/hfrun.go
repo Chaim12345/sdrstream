@@ -180,7 +180,7 @@ func decodeHF(ctx context.Context, target HFTarget, server string, samples16 []i
 	case "wefax":
 		if pngData, rep, err := WEFAXImageDetailed(samples, rate, target.LinesPerMin, target.IOC); err == nil {
 			result.ImagePNG = pngData
-			result.Gate = verify.WEFAXImage("wefax", pngData, rep.SyncSource, rep.WedgeContrast, rep.DriftPPM, rep.PeriodScore, rep.DeskewCorr)
+			result.Gate = verify.WEFAXImage("wefax", pngData, rep.SyncSource, rep.WedgeContrast, rep.DriftPPM, rep.DriftMinPPM, rep.DriftMaxPPM, rep.PeriodScore, rep.DeskewCorr)
 		} else {
 			result.Gate = verify.Result{Live: false, Reason: err.Error()}
 		}

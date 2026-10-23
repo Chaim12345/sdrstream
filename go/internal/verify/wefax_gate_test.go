@@ -29,25 +29,26 @@ func wefaxTestPNG(t *testing.T, flat bool) []byte {
 func TestWEFAXImageGate(t *testing.T) {
 	good := wefaxTestPNG(t, false)
 	cases := []struct {
-		name                           string
-		data                           []byte
-		sync                           string
-		wedge, drift, perScore, deskew float64
-		wantLive                       bool
+		name                     string
+		data                     []byte
+		sync                     string
+		wedge, drift, dMin, dMax float64
+		perScore, deskew         float64
+		wantLive                 bool
 	}{
-		{"valid phasing wedge", good, "phasing-wedge", 0.95, -163, 0, 0.27, true},
-		{"valid phasing wedge large drift fixture", good, "phasing-wedge", 0.95, 657, 0, 0.28, true},
-		{"false wedge contrast", good, "phasing-wedge", 0.28, 2981, 0, 0.28, false},
-		{"low wedge contrast inside drift bound", good, "phasing-wedge", 0.30, 1184, 0, 0.98, false},
-		{"good mid-chart line correlation", good, "line-correlation", 0.26, 667, 0.37, 0.38, true},
-		{"biased mid-chart fit", good, "line-correlation", 0.28, 2596, 0.31, 0.29, false},
-		{"weak period score inside drift bound", good, "line-correlation", 0.28, 900, 0.31, 0.40, false},
-		{"unknown sync", good, "", 0.9, 100, 0, 0.5, false},
-		{"flat PNG rejected structurally", wefaxTestPNG(t, true), "phasing-wedge", 0.95, 0, 0, 0.5, false},
-		{"garbage rejected structurally", []byte("not a png"), "phasing-wedge", 0.95, 0, 0, 0.5, false},
+		{"valid phasing wedge", good, "phasing-wedge", 0.95, -163, -170, -159, 0, 0.27, true},
+		{"valid phasing wedge large drift fixture", good, "phasing-wedge", 0.95, 657, 428, 853, 0, 0.28, true},
+		{"false wedge contrast", good, "phasing-wedge", 0.28, 2981, -2204, 1076, 0, 0.28, false},
+		{"real wedge but misaligned tracker", good, "phasing-wedge", 0.94, 1184, -251, 2710, 0, 0.98, false},
+		{"good mid-chart line correlation", good, "line-correlation", 0.26, 667, -25, 763, 0.37, 0.38, true},
+		{"biased mid-chart fit", good, "line-correlation", 0.28, 2596, -2204, 1076, 0.31, 0.29, false},
+		{"weak period score inside drift bound", good, "line-correlation", 0.28, 900, -100, 200, 0.31, 0.40, false},
+		{"unknown sync", good, "", 0.9, 100, 90, 110, 0, 0.5, false},
+		{"flat PNG rejected structurally", wefaxTestPNG(t, true), "phasing-wedge", 0.95, 0, -10, 10, 0, 0.5, false},
+		{"garbage rejected structurally", []byte("not a png"), "phasing-wedge", 0.95, 0, -10, 10, 0, 0.5, false},
 	}
 	for _, tc := range cases {
-		r := WEFAXImage("wefax", tc.data, tc.sync, tc.wedge, tc.drift, tc.perScore, tc.deskew)
+		r := WEFAXImage("wefax", tc.data, tc.sync, tc.wedge, tc.drift, tc.dMin, tc.dMax, tc.perScore, tc.deskew)
 		if r.Live != tc.wantLive {
 			t.Errorf("%s: live=%v want %v (reason %q)", tc.name, r.Live, tc.wantLive, r.Reason)
 		}

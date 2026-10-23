@@ -120,43 +120,61 @@ func Image(kind string, data []byte) Result {
 // phasing wedge, biased period fit) still renders a large, high-variance
 // PNG. The structural Image checks run first and are unchanged.
 //
-// The floors below are decision thresholds derived from fixture
-// measurements on 2026-10-23, not physical constants: valid
-// phasing-wedge fixtures refined to wedge contrast >= 0.86 while a
-// false wedge measured 0.28; a good mid-chart line-correlation fit
-// scored period 0.37 / deskew 0.38 / drift 667 ppm while a biased fit
-// on adversarial content scored 0.31 / 0.29 / 2596 ppm. The drift
-// sanity bound is three times the largest fixture drift. When evidence
-// is ambiguous the verdict is not live.
-func WEFAXImage(kind string, data []byte, syncSource string, wedgeContrast, driftPPM, periodScore, deskewCorr float64) Result {
+// The verdict separates two evidence tiers and Live requires both:
+// reception (a sync was detected: wedge contrast / period fit) and
+// geometry quality (the clock tracker's alignment is trustworthy).
+// A decoded chart that fails geometry is NOT published as verified,
+// however confident the sync. The floors are decision thresholds
+// derived from fixture measurements on 2026-10-23, not physical
+// constants: valid phasing-wedge fixtures refined to wedge contrast
+// >= 0.86 while a false wedge measured 0.28; a good mid-chart
+// line-correlation fit scored period 0.37 / deskew 0.38 while a
+// biased fit scored 0.31 / 0.29; the drift sanity bound is three
+// times the largest fixture drift. When evidence is ambiguous the
+// verdict is not live.
+func WEFAXImage(kind string, data []byte, syncSource string, wedgeContrast, driftPPM, driftMinPPM, driftMaxPPM, periodScore, deskewCorr float64) Result {
 	if r := Image(kind, data); !r.Live {
 		return r
 	}
-	diag := fmt.Sprintf("sync %s, wedge contrast %.2f, drift %+.0f ppm, period score %.2f, deskew %.2f",
-		syncSource, wedgeContrast, driftPPM, periodScore, deskewCorr)
+	wanderSpan := driftMaxPPM - driftMinPPM
+	reception := fmt.Sprintf("reception: %s sync, wedge contrast %.2f, drift %+.0f ppm", syncSource, wedgeContrast, driftPPM)
+	geometry := fmt.Sprintf("geometry: wander span %.0f ppm, deskew %.2f, period score %.2f", wanderSpan, deskewCorr, periodScore)
 	const wedgeContrastMin = 0.5
 	const periodScoreMin = 0.35
 	const deskewMin = 0.30
 	const driftAbsMax = 2000
+	// Geometry-quality tier: plateau or adversarial content makes the
+	// clock tracker's local votes erratic, so the per-pair wander range
+	// blows out (fixture measurements 2026-10-23: valid decodes span
+	// 11-788 ppm, known-misaligned renders 2961-3280 ppm; the floor
+	// sits between, not a physical constant). A real phasing wedge
+	// alone does NOT establish geometry: a tracker that lost alignment
+	// behind a real wedge still renders garbage with a confident sync.
+	const wanderSpanMax = 1500
 	if driftPPM > driftAbsMax || driftPPM < -driftAbsMax {
-		return Result{false, "wefax: fitted drift beyond the sanity bound (" + diag + ")"}
+		return Result{false, "wefax not verified: fitted drift beyond the sanity bound; " + reception + "; " + geometry}
+	}
+	if wanderSpan > wanderSpanMax {
+		return Result{false, "wefax not verified: clock-tracker wander too wide to trust alignment; " + reception + "; " + geometry}
 	}
 	switch syncSource {
 	case "phasing-wedge":
 		if wedgeContrast < wedgeContrastMin {
-			return Result{false, "wefax: refined wedge contrast below floor (" + diag + ")"}
+			return Result{false, "wefax not verified: refined wedge contrast below floor; " + reception + "; " + geometry}
 		}
 	case "line-correlation":
 		if periodScore < periodScoreMin || deskewCorr < deskewMin {
-			return Result{false, "wefax: mid-chart period fit below floor (" + diag + ")"}
+			return Result{false, "wefax not verified: mid-chart period fit below floor; " + reception + "; " + geometry}
 		}
 	default:
-		return Result{false, "wefax: unknown sync evidence (" + diag + ")"}
+		return Result{false, "wefax not verified: unknown sync evidence; " + reception + "; " + geometry}
 	}
-	// The verdict attests the sync evidence above and PNG structure; it
-	// does not certify chart geometry or readability (the deskew metric
-	// itself is content-dependent).
-	return Result{true, "wefax verified: " + diag}
+	// Live attests reception/sync detection AND the geometry-quality
+	// evidence above, plus PNG structure. It does not certify chart
+	// legibility (the deskew metric is content-dependent) and the
+	// floors are scoped to the fixture evidence cited, re-derivable
+	// against real captures.
+	return Result{true, "wefax verified: " + reception + "; " + geometry}
 }
 
 // Live rejects empty, fixture-like, unstructured, or malformed live output.
