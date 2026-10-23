@@ -374,7 +374,8 @@ func DecodeFramesContext(ctx context.Context, saved []Item, dir string) []Item {
 		mode := strings.ToUpper(item.Mode)
 		wantSSTV := strings.Contains(mode, "SSTV")
 		wantAPT := strings.Contains(mode, "APT")
-		if !wantSSTV && !wantAPT {
+		wantAFSK := strings.Contains(mode, "AFSK") || strings.Contains(mode, "APRS") || strings.Contains(mode, "AX25")
+		if !wantSSTV && !wantAPT && !wantAFSK {
 			continue // not an image-payload mode; nothing to report
 		}
 		path := item.Path
@@ -442,6 +443,57 @@ func DecodeFramesContext(ctx context.Context, saved []Item, dir string) []Item {
 		// decoders check it inside their sample loops, so an over-long
 		// or cancelled decode stops instead of monopolising a refresh.
 		dctx, cancel := context.WithTimeout(ctx, maxDecodeWallClock)
+		if wantAFSK {
+			// Packet audio: the HDLC CRC is the binary ground-truth gate,
+			// same honesty bar as the APT sync lock. Decoded AX.25 frames
+			// ship as a text artefact.
+			packets, ferr := decode.AFSKFramesContext(dctx, path)
+			cancel()
+			if ferr != nil {
+				if errors.Is(ferr, context.DeadlineExceeded) {
+					item.DecodeStatus = fmt.Sprintf("frame decode skipped: decode exceeded the %d min limit", int(maxDecodeWallClock.Minutes()))
+				} else if errors.Is(ferr, context.Canceled) {
+					item.DecodeStatus = "frame decode skipped: decode cancelled"
+				} else {
+					item.DecodeStatus = "frame decode skipped: packet decode failed: " + ferr.Error()
+				}
+				continue
+			}
+			if len(packets) == 0 {
+				item.DecodeStatus = "frame decode skipped: no valid AX.25 frames found"
+				continue
+			}
+			var text bytes.Buffer
+			fmt.Fprintf(&text, "%d AX.25 packet(s) decoded from %s by sdrstream\n\n", len(packets), item.Name)
+			for _, f := range packets {
+				text.WriteString(f.String())
+				text.WriteByte('\n')
+			}
+			ext := filepath.Ext(item.Name)
+			name := strings.TrimSuffix(item.Name, ext) + "-sdrstream-decoded.txt"
+			out := filepath.Join(dir, name)
+			if err := os.WriteFile(out, text.Bytes(), 0o644); err != nil {
+				item.DecodeStatus = "packets decoded but could not be saved: " + err.Error()
+				continue
+			}
+			frames = append(frames, Item{
+				Source:         item.Source,
+				ObservationURL: item.ObservationURL,
+				ObservationID:  item.ObservationID,
+				Satellite:      item.Satellite,
+				NoradID:        item.NoradID,
+				Station:        item.Station,
+				Start:          item.Start,
+				Mode:           item.Mode,
+				FrequencyHz:    item.FrequencyHz,
+				Kind:           "text",
+				Name:           name,
+				Path:           out,
+				Size:           int64(text.Len()),
+				DecodedFrom:    item.Name,
+			})
+			continue
+		}
 		var png []byte
 		if wantSSTV {
 			png, err = decode.SSTVImageContext(dctx, samples, rate)

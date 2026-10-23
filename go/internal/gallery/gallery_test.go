@@ -290,7 +290,8 @@ func TestDecodeFramesSkipsUnlabelledModes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, name), []byte("not a wav"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	audio := Item{Kind: "audio", Mode: "AFSK1200", Name: name, Path: filepath.Join(dir, name), Source: "satnogs"}
+	// CW is a mode the gallery does not decode: it must be left untouched.
+	audio := Item{Kind: "audio", Mode: "CW", Name: name, Path: filepath.Join(dir, name), Source: "satnogs"}
 	items := []Item{audio}
 	if frames := DecodeFrames(items, dir); len(frames) != 0 {
 		t.Fatalf("non-image mode produced %d frame(s), want 0", len(frames))

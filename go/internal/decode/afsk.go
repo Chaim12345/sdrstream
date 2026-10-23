@@ -1,6 +1,7 @@
 package decode
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strings"
@@ -315,6 +316,12 @@ func printable(b []byte) string {
 // packets. A power gate skips stretches of silence so the demodulator is
 // not asked to find bits in noise.
 func AFSKFrames(path string) ([]AX25, error) {
+	return AFSKFramesContext(context.Background(), path)
+}
+
+// AFSKFramesContext is AFSKFrames with cancellation checked per burst and
+// per ensemble variant: a cancelled context returns (nil, ctx.Err()).
+func AFSKFramesContext(ctx context.Context, path string) ([]AX25, error) {
 	samples, rate, err := ReadWAV(path)
 	if err != nil {
 		return nil, err
@@ -330,7 +337,14 @@ func AFSKFrames(path string) ([]AX25, error) {
 	}
 	var out []AX25
 	for _, b := range bursts {
-		for _, f := range ensembleFrames(samples[b[0]:b[1]], rate) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		frames, err := ensembleFramesContext(ctx, samples[b[0]:b[1]], rate)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range frames {
 			if ax, ok := parseAX25(f); ok {
 				out = append(out, ax)
 			}
@@ -427,10 +441,18 @@ func ensembleVariants() []fskOpts {
 // frames. A frame seen n times by one variant counts n times in the
 // result, so identical back-to-back transmissions are not collapsed.
 func ensembleFrames(samples []float64, rate int) [][]byte {
+	frames, _ := ensembleFramesContext(context.Background(), samples, rate)
+	return frames
+}
+
+func ensembleFramesContext(ctx context.Context, samples []float64, rate int) ([][]byte, error) {
 	best := map[string]int{}
 	first := map[string][]byte{}
 	var order []string
 	for _, o := range ensembleVariants() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		seen := map[string]int{}
 		for _, f := range hdlcFrames(fskDemodOpt(samples, rate, o)) {
 			k := string(f)
@@ -452,7 +474,7 @@ func ensembleFrames(samples []float64, rate int) [][]byte {
 			out = append(out, first[k])
 		}
 	}
-	return out
+	return out, nil
 }
 
 // APRS parses the packet's information field as APRS.
