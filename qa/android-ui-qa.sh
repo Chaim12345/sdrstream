@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Android UI QA on a booted emulator. Proves what a user can actually reach by
+# touch: login screen, any password control, login with the on-device password
+# (read via run-as in CI only), and app lifecycle. Usage: android-ui-qa.sh <apk> <label>
+set -u
+APK="$1"; LABEL="$2"; PKG=com.chaim12345.sdrstream
+OUT=qa-results; mkdir -p "$OUT"; R="$OUT/$LABEL"
+log() { echo "[qa] $*" | tee -a "$R-steps.txt"; }
+shot() { adb exec-out screencap -p > "$R-$1.png"; log "screenshot $1"; }
+dump() { adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; adb exec-out cat /sdcard/ui.xml > "$R-$1.xml" 2>/dev/null; }
+alive() { adb shell pidof $PKG >/dev/null 2>&1 && echo alive || echo dead; }
+
+adb install -r "$APK" 2>&1 | tee "$R-install.txt"
+grep -q Success "$R-install.txt" || { log "INSTALL FAILED"; exit 1; }
+adb shell pm grant $PKG android.permission.POST_NOTIFICATIONS 2>/dev/null
+adb shell getprop ro.build.version.release | tee "$R-android.txt"
+adb shell input keyevent KEYCODE_WAKEUP; adb shell wm dismiss-keyguard
+adb shell am start -n $PKG/.MainActivity >/dev/null
+sleep 45
+# Dismiss the battery dialog if present ("Not now") by tapping its button via UI dump.
+dump 01-launch
+python3 - "$R-01-launch.xml" <<'PY' > /tmp/notnow.txt
+import re,sys
+x=open(sys.argv[1],errors='ignore').read()
+for m in re.finditer(r'text="Not now"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"',x):
+    a,b,c,d=map(int,m.groups()); print((a+c)//2,(b+d)//2); break
+PY
+if [ -s /tmp/notnow.txt ]; then adb shell input tap $(cat /tmp/notnow.txt); log "dismissed battery dialog"; sleep 2; fi
+shot 02-login-screen; dump 02-login-screen
+log "app process after launch: $(alive)"
+
+# Reachability of password controls by touch only.
+log "--- password-control reachability ---"
+for kw in "Show UI password" "Set UI password" "More options" "Navigate up" "menu" "Menu"; do
+  if grep -qi "$kw" "$R-02-login-screen.xml"; then log "FOUND in UI tree: $kw"; else log "absent from UI tree: $kw"; fi
+done
+adb shell input keyevent KEYCODE_MENU; sleep 2; shot 03-after-menu-key; dump 03-after-menu-key
+if grep -qi "Show UI password" "$R-03-after-menu-key.xml"; then log "MENU REACHABLE via KEYCODE_MENU (not available on gesture-nav phones)"; else log "KEYCODE_MENU opens nothing"; fi
+adb shell input keyevent KEYCODE_BACK 2>/dev/null; sleep 1
+
+# Login with the generated password (read in CI; masked, never printed).
+PW=$(adb shell run-as $PKG cat shared_prefs/sdrstream.xml 2>/dev/null | sed -n 's/.*name="ui_password">\([^<]*\)<.*/\1/p')
+echo "::add-mask::$PW"
+[ -n "$PW" ] && log "on-device password exists (len ${#PW})" || log "NO on-device password found"
+adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 5
+dump 04-pre-login
+python3 - "$R-04-pre-login.xml" <<'PY' > /tmp/field.txt
+import re,sys
+x=open(sys.argv[1],errors='ignore').read()
+best=None
+for m in re.finditer(r'<node[^>]*class="android.widget.EditText"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"',x):
+    a,b,c,d=map(int,m.groups()); best=((a+c)//2,(b+d)//2)
+print("%d %d"%best if best else "")
+PY
+if [ -s /tmp/field.txt ]; then
+  adb shell input tap $(cat /tmp/field.txt); sleep 1
+  # WRONG password first, to prove error handling is visible
+  adb shell input text "wrongpass"; adb shell input keyevent KEYCODE_ENTER; sleep 3
+  shot 05-wrong-password; dump 05-wrong-password
+  log "wrong-password page text: $(grep -oiE 'invalid[^"]*|incorrect[^"]*' $R-05-wrong-password.xml | head -2 | tr '\n' ' ')"
+  dump 05b; python3 - "$R-05b.xml" <<'PY' > /tmp/field.txt
+import re,sys
+x=open(sys.argv[1],errors='ignore').read()
+best=None
+for m in re.finditer(r'<node[^>]*class="android.widget.EditText"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"',x):
+    a,b,c,d=map(int,m.groups()); best=((a+c)//2,(b+d)//2)
+print("%d %d"%best if best else "")
+PY
+  adb shell input tap $(cat /tmp/field.txt); sleep 1
+  adb shell input text "$PW"; adb shell input keyevent KEYCODE_ENTER; sleep 8
+  shot 06-after-login; dump 06-after-login
+  if grep -qiE 'password' "$R-06-after-login.xml" && grep -q 'class="android.widget.EditText"' "$R-06-after-login.xml"; then log "LOGIN RESULT: still on login form"; else log "LOGIN RESULT: left login form"; fi
+  grep -oE 'text="[^"]+"' "$R-06-after-login.xml" | head -40 > "$R-06-visible-text.txt"
+else
+  log "no EditText found on screen (login form not exposed)"
+fi
+
+# Lifecycle: background/foreground, then force-stop and relaunch.
+adb shell input keyevent KEYCODE_HOME; sleep 5
+log "after HOME: $(alive)"
+adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 5; shot 07-resume
+adb shell am force-stop $PKG; sleep 2
+adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 40; shot 08-cold-restart; dump 08-cold-restart
+log "after cold restart: $(alive)"
+adb forward tcp:18080 tcp:8080 >/dev/null
+curl -sS -m 8 http://127.0.0.1:18080/healthz > "$R-healthz.txt" 2>&1; log "healthz: $(cat $R-healthz.txt | head -c 200)"
+adb logcat -d -v threadtime > "$R-logcat.txt" 2>&1
+grep -E 'FATAL EXCEPTION|AndroidRuntime' "$R-logcat.txt" | head -20 > "$R-fatal.txt"; log "fatal lines: $(wc -l < $R-fatal.txt)"
+adb shell run-as $PKG sh -c 'tail -40 files/engine.log 2>/dev/null' | sed "s/$PW/<pw>/g" > "$R-engine-tail.txt" 2>&1
