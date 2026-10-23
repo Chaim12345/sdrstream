@@ -29,7 +29,10 @@ type MetricsPayload struct {
 	Feeds         *feeds.MetricsReport `json:"feeds,omitempty"`
 	Captures      int                  `json:"captures"`
 	ScanStations  int                  `json:"scan_stations"`
-	ScanOutcomes  map[string]int       `json:"scan_outcomes"`
+	// ScanRestored counts rows loaded from saved state at startup, kept
+	// out of the since-boot outcome totals above.
+	ScanRestored int            `json:"scan_restored,omitempty"`
+	ScanOutcomes map[string]int `json:"scan_outcomes"`
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +45,12 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		ScanOutcomes:  map[string]int{},
 	}
 	for _, st := range s.scans {
+		// "Since boot" semantics: rows restored from the saved state file
+		// are history, not this process's scan outcomes.
+		if st.Origin == "restored" {
+			p.ScanRestored++
+			continue
+		}
 		p.ScanStations++
 		p.ScanOutcomes[st.State]++
 	}

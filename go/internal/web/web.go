@@ -170,6 +170,11 @@ type ScanStatus struct {
 	Result       string     `json:"result,omitempty"`
 	BlockedUntil *time.Time `json:"blocked_until,omitempty"`
 	UpdatedAt    time.Time  `json:"updated_at"`
+	// Origin records where this row came from: "live" when a scanner
+	// produced it in this process, "restored" when it was loaded from the
+	// saved state file at startup. Restored rows are history, never
+	// current-session activity.
+	Origin string `json:"origin,omitempty"`
 	// BandCondition is the advisory HF band label (from the cached NOAA
 	// K-index) for scan targets inside an amateur HF band.
 	BandCondition string `json:"band_condition,omitempty"`
@@ -1400,6 +1405,7 @@ func (s *Server) handleFeeds(w http.ResponseWriter, r *http.Request) {
 // construction (New), so a debounced persist firing after a test's
 // SDRSTREAM_STATE_DIR cleanup cannot leak rows into another user's state.
 func scanStateFile() string { return stateFile("sdrstream-scan-state.json") }
+
 // scanStatePathFor returns the Server's pinned scan-state path, resolving
 // it on demand for Servers built directly as &Server{} in tests.
 func (s *Server) scanStatePathFor() string {
@@ -1419,6 +1425,7 @@ func (s *Server) loadScanState() {
 		return
 	}
 	for _, item := range items {
+		item.Origin = "restored"
 		s.UpsertScanStatus(item)
 	}
 }
@@ -1501,6 +1508,9 @@ func (s *Server) SetScanStatuses(scans []ScanStatus) {
 }
 
 func (s *Server) UpsertScanStatus(item ScanStatus) {
+	if item.Origin == "" {
+		item.Origin = "live"
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.scanIndex == nil {

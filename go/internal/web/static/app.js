@@ -359,7 +359,7 @@ function renderHealth() {
   }));
   hbar(el('health-scan-bar'), scanSegs);
   hlegend(el('health-scan-legend'), scanSegs, 'no scan outcomes recorded since boot');
-  el('health-scan-note').textContent = m.scan_stations ? '' : 'scanner not running since boot';
+  el('health-scan-note').textContent = (m.scan_stations ? '' : 'scanner not running since boot') + (m.scan_restored ? ' · ' + m.scan_restored + ' restored history row' + (m.scan_restored > 1 ? 's' : '') + ' excluded' : '');
 
   const caps = (latestStatus && latestStatus.captures) || [];
   const verified = caps.filter(c => c.verified).length;
@@ -1029,21 +1029,28 @@ function renderReceivers(live) {
   // The scanner fleet, aggregated by state, from the same data the scan view polls.
   if (scansData) {
     const items = scansData.stations || [];
+    // Origin honesty: rows restored from the saved state file are history,
+    // not current-session activity; only live rows and real connections
+    // make the fleet look online.
+    const liveRows = items.filter(x => x.origin !== 'restored');
+    const restoredRows = items.length - liveRows.length;
     const counts = {};
-    items.forEach(x => { const s = x.state || 'idle'; counts[s] = (counts[s] || 0) + 1; });
-    const scanning = items.length > 0 || (scansData.active_connections || 0) > 0;
+    liveRows.forEach(x => { const s = x.state || 'idle'; counts[s] = (counts[s] || 0) + 1; });
+    const scanning = liveRows.length > 0 || (scansData.active_connections || 0) > 0;
     const agg = document.createElement('div');
     agg.className = 'rx-card' + (scanning ? ' online' : ' offline');
     const adot = document.createElement('span'); adot.className = 'rx-dot' + ((scansData.active_connections || 0) > 0 ? ' pulse' : '');
     const aname = document.createElement('b'); aname.textContent = 'scanner fleet';
     const astate = document.createElement('span'); astate.className = 'rx-state';
-    astate.textContent = !scanning ? 'offline' : scansData.paused ? 'paused' : (scansData.active_connections || 0) + ' active';
+    astate.textContent = !scanning ? (restoredRows > 0 ? 'offline · restored history' : 'offline') : scansData.paused ? 'paused' : (scansData.active_connections || 0) + ' active';
     const ahead = document.createElement('div'); ahead.className = 'card-title';
     ahead.appendChild(adot); ahead.appendChild(aname); ahead.appendChild(astate);
     agg.appendChild(ahead);
     const ameta = document.createElement('div'); ameta.className = 'card-meta';
     const parts = Object.keys(counts).sort().map(s => s + ' ' + counts[s]);
-    ameta.textContent = scanning ? items.length + ' stations' + (parts.length ? ' · ' + parts.join(' · ') : '') : 'no scan state reported';
+    ameta.textContent = scanning
+      ? liveRows.length + ' live stations' + (parts.length ? ' · ' + parts.join(' · ') : '') + (restoredRows ? ' · ' + restoredRows + ' restored' : '')
+      : (restoredRows > 0 ? restoredRows + ' restored from saved state - not this session' : 'no scan state reported');
     agg.appendChild(ameta);
     grid.appendChild(agg);
   }
@@ -1250,7 +1257,7 @@ function renderDropped(dropped) {
     const card = document.createElement('div'); card.className = 'card dropped';
     const title = document.createElement('div'); title.className = 'card-title';
     const b = document.createElement('b'); b.textContent = String(x.station||'').replace(/[<>\u0000-\u001f]/g,'').slice(0,200);
-    const state = document.createElement('span'); state.className = 'scan-state dropped'; state.textContent = x.state || 'failed';
+    const state = document.createElement('span'); state.className = 'scan-state dropped'; state.textContent = (x.state || 'failed') + (x.origin === 'restored' ? ' · restored' : '');
     title.appendChild(b); title.appendChild(state);
     card.appendChild(title);
     if (x.result) { const meta = document.createElement('div'); meta.className = 'card-meta'; meta.textContent = String(x.result).slice(0, 300); card.appendChild(meta); }
