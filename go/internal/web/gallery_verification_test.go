@@ -127,19 +127,105 @@ func TestGalleryLiveClass(t *testing.T) {
 
 // A decode the monitor reported and the gallery also saved must merge
 // into ONE feed entry: the gallery write truncates the frequency to
-// whole Hz and uses a different kind vocabulary ("sstv" vs "image"),
-// so the dedupe key is start + whole-Hz frequency + detail only.
+// whole Hz and uses a different kind vocabulary ("sstv" becomes
+// "image"), so both sides key through activityKindClass on start +
+// whole-Hz frequency + class + detail. Distinct decodes must never
+// collapse: a text decode and an image of the same signal differ in
+// class, different payloads differ in detail, different frequencies
+// differ after truncation.
 func TestActivityDedupeKeyMatchesGalleryTwin(t *testing.T) {
 	start := time.Now().UTC()
-	a := monitor.Activity{Started: start, FrequencyHz: 14491234.7, Kind: "sstv"}
-	it := LiveGalleryItem{Source: "live", Start: start, FrequencyHz: int64(a.FrequencyHz), Kind: "image", Text: a.Detail}
-	mk := activityDedupeKey(a.Started.UnixNano(), int64(a.FrequencyHz), a.Detail)
-	gk := activityDedupeKey(it.Start.UnixNano(), it.FrequencyHz, it.Text)
+	freq := 14491234.7
+	mk := activityDedupeKey(start.UnixNano(), int64(freq), activityKindClass("sstv", "sstv", ""), "")
+	gk := activityDedupeKey(start.UnixNano(), 14491234, activityKindClass("image", "sstv", ""), "")
 	if mk != gk {
 		t.Errorf("twin keys differ: monitor %q gallery %q", mk, gk)
 	}
-	other := activityDedupeKey(it.Start.UnixNano(), it.FrequencyHz, "different detail")
-	if mk == other {
-		t.Error("distinct decodes collided on the dedupe key")
+	distinct := map[string]string{
+		"text same signal":  activityDedupeKey(start.UnixNano(), 14491234, activityKindClass("text", "cw", "CQ DE R1"), "CQ DE R1"),
+		"voice same signal": activityDedupeKey(start.UnixNano(), 14491234, activityKindClass("voice", "speech", ""), ""),
+		"one Hz away":       activityDedupeKey(start.UnixNano(), 14491235, activityKindClass("image", "sstv", ""), ""),
+		"one second later":  activityDedupeKey(start.Add(time.Second).UnixNano(), 14491234, activityKindClass("image", "sstv", ""), ""),
+		"speech voice call": activityDedupeKey(start.UnixNano(), 14491234, activityKindClass("text", "speech", "hello"), "hello"),
+	}
+	for name, k := range distinct {
+		if k == mk {
+			t.Errorf("%s collapsed onto the twin key", name)
+		}
+	}
+	seen := map[string]string{"twin": mk}
+	for name, k := range distinct {
+		if prev, dup := seen[k]; dup {
+			t.Errorf("%s and %s share a key", name, prev)
+		}
+		seen[k] = name
+	}
+}
+
+// The feed's verdict semantics across every entry class: monitor
+// decodes the gate passed carry their reason, rejections carry a
+// known failure (never verification, never historical), ungated
+// detections carry nothing, gallery entries follow their source
+// class, and a monitor/gallery twin pair merges into ONE entry.
+func TestHandleActivityFeedMatrix(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	m := &monitor.Monitor{}
+	passedID := m.AddActivity(monitor.Activity{Started: now, FrequencyHz: 14491234.7, Kind: "sstv", Mode: "sstv"})
+	m.AddActivity(monitor.Activity{Started: now.Add(-time.Minute), FrequencyHz: 7030e3, Kind: "cw", Mode: "cw", Detail: "CQ DE R1"})
+	m.AddActivity(monitor.Activity{Started: now.Add(-2 * time.Minute), FrequencyHz: 145800000.0, Kind: "unknown"})
+	m.RecordGate(passedID, true, "live gate passed")
+	m.RecordGate(2, false, "text failed plausibility")
+	s := &Server{}
+	s.monitor = m
+	// Twin of the passed SSTV decode: same start, truncated Hz, image.
+	s.liveGallery = []LiveGalleryItem{
+		{Source: "live", Station: "r1", Start: now, Kind: "image", Mode: "sstv", Name: "twin.png", FrequencyHz: 14491234, Verification: "sstv reception verified: test reason"},
+		{Source: "live", Station: "r1", Start: now.Add(-time.Hour), Kind: "image", Mode: "sstv", Name: "legacy.png", FrequencyHz: 14491000},
+		{Source: "test-fixture", Station: "synthetic", Start: now.Add(-2 * time.Hour), Kind: "image", Mode: "sstv", Name: "fixture.png", Verification: "synthetic proof"},
+	}
+	req := httptest.NewRequest("GET", "/api/activity.json", nil)
+	rec := httptest.NewRecorder()
+	s.handleActivity(rec, req)
+	var items []monitor.Activity
+	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	// 4 entries: twin-merged SSTV, rejected CW, ungated unknown,
+	// historical legacy. The test fixture never enters the feed.
+	if len(items) != 4 {
+		t.Fatalf("%d feed items, want 4: %+v", len(items), items)
+	}
+	counted := 0
+	var twin, rejected, ungated, historical *monitor.Activity
+	for i := range items {
+		a := &items[i]
+		if a.Verification != "" && a.Rejected == "" {
+			counted++
+		}
+		switch {
+		case a.FrequencyHz == 14491234.7 && a.Kind == "sstv":
+			twin = a
+		case a.Rejected != "":
+			rejected = a
+		case a.Historical:
+			historical = a
+		default:
+			ungated = a
+		}
+	}
+	if counted != 1 {
+		t.Errorf("%d entries carry a countable verdict, want 1 (the twin, once)", counted)
+	}
+	if twin == nil || twin.Verification != "sstv reception verified: test reason" {
+		t.Errorf("twin: the gallery's gate-owned reason must win, got %+v", twin)
+	}
+	if rejected == nil || rejected.Verification != "" || rejected.Historical {
+		t.Errorf("rejected entry must carry only the rejection: %+v", rejected)
+	}
+	if ungated == nil || ungated.Verification != "" || ungated.Rejected != "" || ungated.Historical {
+		t.Errorf("ungated detection must carry no verdict: %+v", ungated)
+	}
+	if historical == nil || historical.Verification != "" {
+		t.Errorf("historical entry: %+v", historical)
 	}
 }

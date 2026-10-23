@@ -2082,9 +2082,9 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	// merges as current activity; a live or legacy item without a
 	// gate-owned verdict merges as historical; test fixtures and other
 	// non-receiver sources are not activity and never enter the feed.
-	seen := make(map[string]bool, len(items))
-	for _, a := range items {
-		seen[activityDedupeKey(a.Started.UnixNano(), int64(a.FrequencyHz), a.Detail)] = true
+	seen := make(map[string]int, len(items))
+	for i, a := range items {
+		seen[activityDedupeKey(a.Started.UnixNano(), int64(a.FrequencyHz), activityKindClass(a.Kind, a.Mode, a.Detail), a.Detail)] = i
 	}
 	for i, it := range live {
 		class := it.galleryLiveClass()
@@ -2116,10 +2116,18 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 			a.Historical = true
 		}
 		// The monitor twin of this decode keys on the same start,
-		// whole-Hz frequency and detail; the gallery write truncates
-		// the frequency to int64, so the key must too, and the kind
-		// vocabulary differs ("sstv" vs "image") and cannot key.
-		if seen[activityDedupeKey(it.Start.UnixNano(), it.FrequencyHz, it.Text)] {
+		// whole-Hz frequency, kind class and detail; the gallery
+		// write truncates the frequency to int64 and uses a different
+		// kind vocabulary ("sstv" becomes "image"), so both sides key
+		// through activityKindClass.
+		if pos, dup := seen[activityDedupeKey(it.Start.UnixNano(), it.FrequencyHz, activityKindClass(it.Kind, it.Mode, it.Text), it.Text)]; dup {
+			// The monitor twin is already listed. A verified
+			// gallery entry carries the gate-owned provenance
+			// recorded at verification time, which is richer than
+			// the callback's generic pass note: it wins.
+			if class == galleryLiveVerified {
+				items[pos].Verification = it.Verification
+			}
 			continue
 		}
 		items = append(items, a)
@@ -2128,8 +2136,26 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, items)
 }
 
-func activityDedupeKey(startUnixNano, freqHz int64, detail string) string {
-	return fmt.Sprintf("%d|%d|%s", startUnixNano, freqHz, detail)
+func activityDedupeKey(startUnixNano, freqHz int64, class, detail string) string {
+	return fmt.Sprintf("%d|%d|%s|%s", startUnixNano, freqHz, class, detail)
+}
+
+// activityKindClass maps the monitor and gallery kind vocabularies
+// onto the feed's classes so a decode's monitor twin and its gallery
+// entry key alike, while distinct decodes (a text decode and an image
+// of the same signal, different payloads) never collapse: an SSTV
+// decode is "sstv" to the monitor but is saved to the gallery as
+// Kind "image", speech modes are "voice" either way, and everything
+// else is "data".
+func activityKindClass(kind, mode, detail string) string {
+	switch {
+	case kind == "voice" || mode == "speech":
+		return "voice"
+	case kind == "image" || (kind == "sstv" && detail == ""):
+		return "image"
+	default:
+		return "data"
+	}
 }
 
 // handleLive returns the monitor's point-in-time view: receiver identity,

@@ -259,6 +259,20 @@ func (m *Monitor) Activities() []Activity {
 	return out
 }
 
+// AddActivity appends an externally-produced activity (scanner or
+// feed producers, and tests) and returns its assigned ID.
+func (m *Monitor) AddActivity(a Activity) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextID++
+	a.ID = m.nextID
+	m.activities = append(m.activities, a)
+	if len(m.activities) > 200 {
+		m.activities = m.activities[len(m.activities)-200:]
+	}
+	return a.ID
+}
+
 // RecordGate annotates a stored activity with its live quality gate
 // verdict, so the feed and its counters can tell a gate-passed decode
 // from one never gated and from one the gate rejected. Unknown IDs

@@ -913,7 +913,7 @@ async function refreshActivity() {
     // decodes the gate passed and verified live gallery items. Ungated
     // detections, historical entries and rejected decodes are listed
     // but never counted.
-    el('activity-count').textContent = activityItems.filter(a => a.verification).length;
+    el('activity-count').textContent = activityItems.filter(a => a.verification && !a.rejected).length;
     if (activitySeenKey === null && activityItems.length) {
       activitySeenKey = activityKey(activityItems[0]); // no toast storm on first load
     } else {
