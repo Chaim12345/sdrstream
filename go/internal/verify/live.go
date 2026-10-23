@@ -156,8 +156,13 @@ const sstvMaxCoastFraction = 0.05
 // parity-valid VIS header proves a header was heard; it says nothing
 // about frame geometry. The only geometry evidence is the per-line
 // sync-lock count, so the report is mandatory and must be internally
-// consistent: a nil report, a zero VIS, impossible counts, or
-// dimensions that do not match the decoded image all fail. Passing
+// consistent: a nil report, a zero VIS (no mode in the decoder's
+// supported table - Martin 0x2C/0x28, Scottie 0x3C/0x38/0x4C, Robot 36
+// 0x08 - carries VIS code 0, so zero means "no detect"), impossible
+// counts, or dimensions that do not match the decoded image all fail.
+// The struct itself does not authenticate anything: the guarantee is
+// the source-owned call chain, where publication callers pass the
+// report their own SSTVImageDetailed call returned. Passing
 // means coasting is bounded by the fixture-derived ceiling - bounded
 // evidence, never certified geometry. Failing or absent evidence
 // means the geometry is unverified, not necessarily bad.

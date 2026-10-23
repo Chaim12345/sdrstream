@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/chaim12345/sdrstream/go/internal/common"
 )
 
 // writeCaptureFixture lays down a WAV plus optional sidecar body, sized and
@@ -95,5 +97,47 @@ func TestCapturesMaxBytesDefault(t *testing.T) {
 	t.Setenv("SDRSTREAM_CAPTURES_MAX_BYTES", fmt.Sprintf("%d", 1<<20))
 	if got := capturesMaxBytes(); got != 1<<20 {
 		t.Fatalf("override = %d, want 1 MiB", got)
+	}
+}
+
+// A live producer publishes WAV then sidecar; between the atomic
+// rename and the sidecar write the capture reads as "unknown". The
+// new-file grace keeps such fresh captures out of the prunable set
+// without changing the historical policy: once the file ages past the
+// grace, the same capture prunes as unknown exactly as before. Uses
+// isolated temp fixtures only.
+func TestPruneCapturesProtectsInProgressProducer(t *testing.T) {
+	dir := t.TempDir()
+	old := writeCaptureFixture(t, dir, "OLD_145000kHz_voice_x.wav", 600, 96*time.Hour, "mode=voice\n")
+	// Fresh capture with NO sidecar yet: producer is mid-publish.
+	fresh := "FRESH_145000kHz_sstv_x.wav"
+	if err := common.WriteFileAtomic(filepath.Join(dir, fresh), make([]byte, 600), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	removed, _ := pruneCaptures(dir, 500)
+	if removed != 1 {
+		t.Fatalf("removed=%d, want 1 (only the aged unknown)", removed)
+	}
+	if _, err := os.Stat(filepath.Join(dir, old)); !os.IsNotExist(err) {
+		t.Error("aged unknown survived")
+	}
+	if _, err := os.Stat(filepath.Join(dir, fresh)); err != nil {
+		t.Errorf("in-progress capture pruned: %v", err)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(dir, ".tmp-*")); len(matches) != 0 {
+		t.Errorf("atomic write left temp litter: %v", matches)
+	}
+	// Historical policy unchanged: aged past the grace with no sidecar,
+	// the same capture prunes as unknown.
+	past := time.Now().Add(-pruneNewFileGrace - time.Minute)
+	if err := os.Chtimes(filepath.Join(dir, fresh), past, past); err != nil {
+		t.Fatal(err)
+	}
+	removed, _ = pruneCaptures(dir, 500)
+	if removed != 1 {
+		t.Fatalf("after grace removed=%d, want 1", removed)
+	}
+	if _, err := os.Stat(filepath.Join(dir, fresh)); !os.IsNotExist(err) {
+		t.Error("aged unknown capture survived pruning")
 	}
 }

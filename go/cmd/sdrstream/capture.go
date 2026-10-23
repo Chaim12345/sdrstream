@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chaim12345/sdrstream/go/internal/common"
 	"github.com/chaim12345/sdrstream/go/internal/decode"
 	"github.com/chaim12345/sdrstream/go/internal/monitor"
 	"github.com/chaim12345/sdrstream/go/internal/web"
@@ -57,7 +58,10 @@ func writeCaptureWAV(capturesDir string, wav []byte, meta captureMeta) (string, 
 		return "", err
 	}
 	path := filepath.Join(capturesDir, name)
-	if err := os.WriteFile(path, wav, 0o644); err != nil {
+	// Atomic write: the retention pruner and web readers must never see
+	// a half-written WAV. The post-rename, pre-sidecar window is covered
+	// by the pruner's new-file grace, not by this write alone.
+	if err := common.WriteFileAtomic(path, wav, 0o644); err != nil {
 		return "", err
 	}
 	sidecarErr := web.WriteCaptureMetadata(capturesDir, name, web.CaptureMetadata{

@@ -45,11 +45,20 @@ func captureVerified(dir, wavName string) (verified, known bool) {
 	return false, false
 }
 
+// pruneNewFileGrace keeps a just-written capture out of the prunable
+// set. Producers publish WAV then sidecar; between the atomic rename
+// and the sidecar write the capture has no verdict and reads as
+// "unknown". Five minutes covers that window (and a slow producer)
+// without changing the historical policy: unknown captures older than
+// the grace prune exactly as before.
+const pruneNewFileGrace = 5 * time.Minute
+
 // pruneCaptures deletes captures (WAV plus sidecar) until the directory is
 // within maxBytes. Unverified and unknown captures go first, oldest first;
 // verified captures are never pruned, even when that leaves the directory
-// over budget. It returns how many captures were removed and how many bytes
-// that freed.
+// over budget. Captures younger than pruneNewFileGrace are never pruned:
+// their producer may still be between the WAV and sidecar writes. It
+// returns how many captures were removed and how many bytes that freed.
 func pruneCaptures(dir string, maxBytes int64) (removed int, freed int64) {
 	if dir == "" || maxBytes <= 0 {
 		return 0, 0
@@ -76,6 +85,11 @@ func pruneCaptures(dir string, maxBytes int64) (removed int, freed int64) {
 		}
 		total += info.Size()
 		if verified, _ := captureVerified(dir, name); verified {
+			continue
+		}
+		if time.Since(info.ModTime()) < pruneNewFileGrace {
+			// Too new to judge: the producer may not have written the
+			// sidecar yet. Still counted in the budget total.
 			continue
 		}
 		prunable = append(prunable, candidate{name: name, size: info.Size(), modTime: info.ModTime()})
