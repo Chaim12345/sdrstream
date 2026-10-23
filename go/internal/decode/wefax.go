@@ -55,8 +55,15 @@ type WEFAXReport struct {
 	PeriodScore     float64 // line-correlation wrap alignment (best/mean column variance)
 	PhasingStartSec float64 // where the phasing block was found
 	PhasingLines    int     // phasing lines used for the clock fit
-	SamplesPerLine  float64 // fitted line period including clock drift
-	DriftPPM        float64 // (fitted/nominal - 1) * 1e6
+	SamplesPerLine  float64 // line period at the anchor line, including clock drift
+	DriftPPM        float64 // mean local drift over the chart: (per/nominal - 1) * 1e6
+	DriftMinPPM     float64 // smallest local drift seen (recorder wander)
+	DriftMaxPPM     float64 // largest local drift seen
+	StartToneSec    float64 // IOC start-tone alternation start, 0 when absent
+	StartToneEndSec float64 // IOC start-tone alternation end
+	StartToneIOC    int     // IOC signalled by the start tone (576/288), 0 when absent
+	ClockVotes      float64 // line pairs that contributed a clock vote
+	DeskewCorr      float64 // mean adjacent-row correlation of the render (slant honesty)
 	Lines           int     // rendered lines
 	Width           int
 	Height          int
@@ -83,9 +90,6 @@ func WEFAXImageDetailed(samples []float64, rate int, linesPerMinute float64, ioc
 	if linesPerMinute <= 0 {
 		linesPerMinute = 120
 	}
-	if ioc <= 0 {
-		ioc = 576
-	}
 	if rate < 4000 {
 		return nil, rep, fmt.Errorf("wefax: sample rate %d too low", rate)
 	}
@@ -96,8 +100,17 @@ func WEFAXImageDetailed(samples []float64, rate int, linesPerMinute float64, ioc
 	}
 
 	black, white, share, prominence := wefaxLockTonePair(samples, rate)
-	rep.BlackHz, rep.WhiteHz, rep.PairConfidence = black, white, share
 	if prominence < 2.5 || share < 0.05 {
+		// A real weather chart is mostly white: over a long capture
+		// the black tone averages below the lock gate even though it
+		// keys strongly wherever the chart is dark. Retry the lock on
+		// the 60 s window with the most tone-pair energy.
+		if b2, w2, s2, p2, ok := wefaxLockTonePairWindowed(samples, rate, 60); ok {
+			black, white, share, prominence = b2, w2, s2, p2
+		}
+	}
+	rep.BlackHz, rep.WhiteHz, rep.PairConfidence = black, white, share
+	if prominence < 2.0 || share < 0.03 {
 		return nil, rep, fmt.Errorf("wefax: no 1500/2300 Hz tone pair locked (peak prominence %.1fx, pair energy share %.2g)", prominence, share)
 	}
 
@@ -113,30 +126,92 @@ func WEFAXImageDetailed(samples []float64, rate int, linesPerMinute float64, ioc
 	if lineHops < 20 {
 		return nil, rep, fmt.Errorf("wefax: line period %.3f s too short for hop grid", lineSec)
 	}
-	var a, b float64
-	startLine, off, contrast, ok := tr.findPhasing(lineHops)
+
+	// IOC start tone: the 300/675 Hz alternation before the phasing
+	// block. It anchors the transmission start (so a chart feature
+	// cannot fake an earlier phasing block) and selects the IOC when
+	// the caller did not name one.
+	stStart, stEnd, stIOC, stOK := tr.findStartTone(samples, rate, black, white)
+	rep.StartToneSec, rep.StartToneEndSec, rep.StartToneIOC = stStart, stEnd, stIOC
+	if ioc <= 0 {
+		if stOK {
+			ioc = stIOC
+		} else {
+			ioc = 576
+		}
+	}
+
+	// Phasing search. With a start tone the true phasing block sits
+	// right behind it, so the search is bounded there; otherwise the
+	// earliest strong block wins (the chart follows the phasing, so
+	// among look-alikes the earliest is the honest pick).
+	startLine, off, contrast, ok := tr.findPhasing(lineHops, 0, -1)
+	if stOK {
+		// The start tone says where the phasing block must sit; a
+		// restricted search cannot be fooled by chart content. But a
+		// false start tone must not exclude the true block, so the
+		// restricted pick only wins when its contrast is at least 70%
+		// of the unrestricted best.
+		fromL := int(stStart/wefaxHopSec)/lineHops - 10
+		if fromL < 0 {
+			fromL = 0
+		}
+		toL := int(stEnd/wefaxHopSec)/lineHops + 200
+		if s2, o2, c2, ok2 := tr.findPhasing(lineHops, fromL, toL); ok2 && (!ok || c2 >= 0.70*contrast) {
+			startLine, off, contrast, ok = s2, o2, c2, true
+		}
+	}
 	rep.WedgeContrast = contrast
+
+	// Time-varying clock: track the line period through the whole
+	// trace from the anchor, because real captures wander thousands of
+	// ppm and no constant period deskews them. With a phasing block
+	// the wedge-edge fit seeds the absolute phase AND the local period
+	// (wedge edges are hop-precise references content votes are not);
+	// the tracker then follows the wander away from the anchor.
+	anchorLine, anchorStart, anchorPer := 0, 0.0, float64(lineHops)
+	var a0, b0 float64
+	var seedUsed int
+	if ok {
+		anchorLine = startLine
+		anchorStart = float64(startLine*lineHops) + off
+		a0, b0, seedUsed = tr.fitLineClock(startLine, 60, off, lineHops)
+		if seedUsed >= 8 {
+			anchorStart = a0 + b0*float64(startLine)
+			anchorPer = b0
+		}
+	}
+	clk, votes, medPPM, minPPM, maxPPM := tr.trackLineClock(lineHops, anchorLine, anchorStart, anchorPer, 2)
+	rep.ClockVotes = votes
+	rep.DriftPPM, rep.DriftMinPPM, rep.DriftMaxPPM = medPPM, minPPM, maxPPM
+	rep.SamplesPerLine = clk.per[anchorLine] * wefaxHopSec * float64(rate)
+
 	synced := false
 	if ok {
-		// Phasing block present: absolute line phase plus a per-line
-		// wedge-edge clock fit. Chart content can fake a weak wedge,
-		// so a fit that finds no stable edges falls through to the
-		// correlation path.
-		var used int
-		a, b, used = tr.fitLineClock(startLine, 60, off, lineHops)
-		rep.PhasingLines = used
-		if used >= 8 {
+		// Phasing block present: re-measure the wedge edges on the
+		// tracked clock (the deskewed wedge is crisp again) for the
+		// absolute horizontal phase and the report.
+		if shift, c2, used := tr.refinePhaseOnClock(clk, startLine, lineHops); used >= 8 {
+			for l := range clk.start {
+				clk.start[l] += shift
+			}
+			rep.WedgeContrast = c2
+			rep.PhasingLines = used
 			synced = true
 			rep.SyncSource = "phasing-wedge"
-			rep.PhasingStartSec = float64(startLine*lineHops) * wefaxHopSec
-			rep.AntiCorrelation = tr.antiCorrelation(startLine*lineHops, 60*lineHops)
+			rep.PhasingStartSec = clk.start[startLine] * wefaxHopSec
+			rep.AntiCorrelation = tr.antiCorrelation(int(clk.start[startLine]), 60*lineHops)
 		}
 	}
 	if !synced {
-		// Mid-chart capture with no phasing block: recover the exact
-		// line period from the wrap that maximises column variance
-		// (chart structure correlates line to line). The horizontal
-		// phase is unknown, so the chart may be wrapped left/right.
+		// Mid-chart capture with no phasing block: the tracked clock
+		// still deskews, but there is no absolute phase, so the chart
+		// may be wrapped left/right. Gate on chart structure. The
+		// global drift figure comes from the median per-pair wrap
+		// estimator: on wide, plateau-like content (bars, flat
+		// regions) its integer+parabola votes are less biased than
+		// the tracker's plateau-centred local votes, which exist to
+		// follow wander, not to set the global period.
 		rep.SyncSource = "line-correlation"
 		rep.AntiCorrelation = tr.antiCorrelation(0, len(tr.ratio))
 		per, score := tr.fitPeriodByWrap(lineHops)
@@ -144,16 +219,23 @@ func WEFAXImageDetailed(samples []float64, rate int, linesPerMinute float64, ioc
 		if score < 0.20 {
 			return nil, rep, fmt.Errorf("wefax: no phasing wedge (contrast %.2f, %d stable edges) and no line-period lock (score %.2f)", contrast, rep.PhasingLines, score)
 		}
-		a, b, startLine = 0, per, 0
+		rep.DriftPPM = (per/float64(lineHops) - 1) * 1e6
+		// Re-track with the global estimate as the seed so the render
+		// flies global + local-wander rather than the plateau-biased
+		// local votes alone.
+		clk, votes, _, minPPM, maxPPM = tr.trackLineClock(lineHops, 0, 0, per, 2)
+		rep.ClockVotes = votes
+		rep.DriftMinPPM, rep.DriftMaxPPM = minPPM, maxPPM
+		rep.SamplesPerLine = per * wefaxHopSec * float64(rate)
+		startLine = 0
 	}
-	rep.SamplesPerLine = b * wefaxHopSec * float64(rate)
-	rep.DriftPPM = (b/float64(lineHops) - 1) * 1e6
 
 	ppl := int(math.Round(float64(ioc) * math.Pi))
-	img, lines := tr.render(a, b, startLine, lineHops, ppl)
+	img, lines, raw := tr.renderCurve(clk, startLine, ppl)
 	if lines < 5 {
 		return nil, rep, errShortWEFAX
 	}
+	rep.DeskewCorr = deskewCorrelation(raw, ppl, lines)
 	rep.Lines, rep.Width, rep.Height = lines, ppl, lines
 
 	var buf bytes.Buffer
@@ -239,9 +321,31 @@ func wefaxLockTonePair(samples []float64, rate int) (black, white, share, promin
 	return black, white, (pb + pw) / total, prom
 }
 
+// wefaxLockTonePairWindowed retries the tone-pair lock on the secSecs
+// window with the strongest pair energy, for captures whose chart is so
+// white-heavy that the whole-file average hides the black tone.
+func wefaxLockTonePairWindowed(samples []float64, rate int, secSecs int) (black, white, share, prominence float64, ok bool) {
+	winN := secSecs * rate
+	if len(samples) <= winN {
+		black, white, share, prominence = wefaxLockTonePair(samples, rate)
+		ok = prominence >= 2.0 && share >= 0.03
+		return
+	}
+	bestShare := 0.0
+	for w0 := 0; w0+winN <= len(samples); w0 += winN / 6 {
+		b, w, s, p := wefaxLockTonePair(samples[w0:w0+winN], rate)
+		if s > bestShare {
+			bestShare, black, white, share, prominence = s, b, w, s, p
+		}
+	}
+	ok = prominence >= 2.0 && share >= 0.03
+	return
+}
+
 // wefaxTrace is the envelope-ratio demodulation of a capture.
 type wefaxTrace struct {
 	ratio []float64 // brightness 0 (black) .. 1 (white) per hop
+	raw   []float64 // ratio before pedestal subtraction (alignment truth)
 	pb    []float64 // black tone power per hop
 	pw    []float64 // white tone power per hop
 }
@@ -263,6 +367,7 @@ func wefaxDemodRatio(samples []float64, rate int, blackHz, whiteHz float64) *wef
 	}
 	t := &wefaxTrace{
 		ratio: make([]float64, n),
+		raw:   make([]float64, n),
 		pb:    make([]float64, n),
 		pw:    make([]float64, n),
 	}
@@ -273,6 +378,12 @@ func wefaxDemodRatio(samples []float64, rate int, blackHz, whiteHz float64) *wef
 		t.pb[h], t.pw[h] = pb, pw
 		t.ratio[h] = pw / (pw + pb + 1e-12)
 	}
+	// Keep the pre-pedestal ratio for line alignment: the 0.5 s rolling
+	// minimum erases exactly the slow, line-scale structure (phasing
+	// blocks, wide bars, alternating patterns) that clock tracking
+	// correlates. Rendering uses the pedestal-free ratio; alignment
+	// uses the raw one.
+	copy(t.raw, t.ratio)
 	// Pedestal subtraction: a steady co-channel carrier adds the same
 	// pedestal to one tone's bin whether the signal keys or fades. The
 	// rolling minimum over ~0.5 s estimates that pedestal per bin, and
@@ -469,19 +580,28 @@ func (t *wefaxTrace) wedgeMean(from, to int) float64 {
 }
 
 // findPhasing locates the phasing block: the run of lines whose leading
-// white wedge gives the strongest periodic contrast. It returns the
-// block's first line index, the line-clock offset in hops, and the wedge
-// contrast achieved there.
-func (t *wefaxTrace) findPhasing(lineHops int) (startLine int, offset float64, contrast float64, ok bool) {
+// white wedge gives the strongest periodic contrast. The search covers
+// lines [fromLine, toLine) (toLine < 0 means the whole trace); among
+// blocks within 85% of the best score the earliest wins, because the
+// phasing block precedes the chart and chart content can fake a wedge.
+// It returns the block's first line index, the line-clock offset in
+// hops, and the wedge contrast achieved there.
+func (t *wefaxTrace) findPhasing(lineHops, fromLine, toLine int) (startLine int, offset float64, contrast float64, ok bool) {
 	wedge := lineHops / 20
 	if wedge < 4 {
 		wedge = 4
 	}
 	nLines := len(t.ratio) / lineHops
-	if nLines < 10 {
+	if toLine < 0 || toLine > nLines {
+		toLine = nLines
+	}
+	if fromLine < 0 {
+		fromLine = 0
+	}
+	if toLine-fromLine < 10 {
 		return 0, 0, 0, false
 	}
-	const winLines = 60
+	const winLines = 30 // real phasing blocks (DWD) run ~30 lines
 	score := func(off, s int) float64 {
 		acc, n := 0.0, 0
 		for l := s; l < s+winLines && l < nLines; l++ {
@@ -496,31 +616,139 @@ func (t *wefaxTrace) findPhasing(lineHops int) (startLine int, offset float64, c
 		}
 		return acc / float64(n)
 	}
-	best, bestS, bestO := -1.0, 0, 0
+	type cand struct {
+		s int
+		o int
+		v float64
+	}
+	var cands []cand
+	best := -1.0
 	stepLines := 15
-	if nLines < winLines+stepLines {
+	if toLine-fromLine < winLines+stepLines {
 		stepLines = 1
 	}
-	for s := 0; s+10 <= nLines; s += stepLines {
+	for s := fromLine; s+10 <= toLine; s += stepLines {
+		bestO, bestV := 0, -1.0
 		for o := 0; o+wedge < lineHops; o += 2 {
-			if v := score(o, s); v > best {
-				best, bestS, bestO = v, s, o
+			if v := score(o, s); v > bestV {
+				bestV, bestO = v, o
+			}
+		}
+		// Refine the offset to single hops around the coarse winner.
+		for o := bestO - 2; o <= bestO+2; o++ {
+			if o < 0 || o+wedge >= lineHops {
+				continue
+			}
+			if v := score(o, s); v > bestV {
+				bestV, bestO = v, o
+			}
+		}
+		cands = append(cands, cand{s, bestO, bestV})
+		if bestV > best {
+			best = bestV
+		}
+	}
+	// Fine pass: re-score at single-line steps around each coarse
+	// candidate within 98% of the best, so a block that starts between
+	// coarse steps (phasing right after a start tone) is not missed.
+	if stepLines > 1 && len(cands) > 0 {
+		var fine []cand
+		for _, c := range cands {
+			if c.v < 0.98*best {
+				continue
+			}
+			for s := c.s - stepLines + 1; s < c.s+stepLines; s++ {
+				if s < fromLine || s+10 > toLine || s == c.s {
+					continue
+				}
+				bestO, bestV := 0, -1.0
+				for o := 0; o+wedge < lineHops; o += 2 {
+					if v := score(o, s); v > bestV {
+						bestV, bestO = v, o
+					}
+				}
+				for o := bestO - 2; o <= bestO+2; o++ {
+					if o < 0 || o+wedge >= lineHops {
+						continue
+					}
+					if v := score(o, s); v > bestV {
+						bestV, bestO = v, o
+					}
+				}
+				fine = append(fine, cand{s, bestO, bestV})
+			}
+		}
+		cands = append(cands, fine...)
+		sort.Slice(cands, func(i, j int) bool { return cands[i].s < cands[j].s })
+		for _, c := range cands {
+			if c.v > best {
+				best = c.v
 			}
 		}
 	}
-	// Refine the offset to single hops around the coarse winner.
-	for o := bestO - 2; o <= bestO+2; o++ {
-		if o < 0 || o+wedge >= lineHops {
-			continue
-		}
-		if v := score(o, bestS); v > best {
-			best, bestO = v, o
+	if len(cands) == 0 || best < 0.08 {
+		return 0, 0, best, false
+	}
+	// Earliest block within 2% of the best score: effectively the
+	// argmax, preferring the earlier block only on a near-tie (a
+	// clearly weaker early block is chart content faking a wedge).
+	for _, c := range cands {
+		if c.v >= 0.98*best {
+			return c.s, float64(c.o), c.v, true
 		}
 	}
-	if best < 0.08 {
-		return bestS, float64(bestO), best, false
+	return 0, 0, best, false
+}
+
+// refinePhaseOnClock re-measures the phasing wedge's leading edge on the
+// tracked clock. Deskewed, the wedge is crisp again, so the per-line
+// edge positions give the absolute horizontal phase (returned as the
+// shift to apply to the whole clock) and an honest edge count.
+func (t *wefaxTrace) refinePhaseOnClock(clk *wefaxClock, startLine, lineHops int) (shift, contrast float64, used int) {
+	wedge := lineHops / 20
+	if wedge < 4 {
+		wedge = 4
 	}
-	return bestS, float64(bestO), best, true
+	nAvail := len(clk.start)
+	// Coarse: scan +-12 hops around the current phase.
+	best, bestShift := -1.0, 0.0
+	for o := -25; o <= 25; o++ {
+		acc, n := 0.0, 0
+		for l := startLine; l < startLine+30 && l+1 < nAvail; l++ {
+			base := clk.start[l] + float64(o)
+			white := t.wedgeMean(int(base), int(base)+wedge)
+			rest := t.wedgeMean(int(base)+wedge, int(base)+lineHops)
+			acc += white - rest
+			n++
+		}
+		if n > 0 && acc/float64(n) > best {
+			best, bestShift = acc/float64(n), float64(o)
+		}
+	}
+	if best < 0.05 {
+		return 0, best, 0
+	}
+	// Fine: per-line edge positions around the coarse phase, then the
+	// median edge is the phase (robust to faded lines).
+	var edges []float64
+	for l := startLine; l < startLine+40 && l+1 < nAvail; l++ {
+		exp := clk.start[l] + bestShift
+		bestScore, bestP := 0.10, -1.0
+		for p := int(exp) - 5; p <= int(exp)+5; p++ {
+			c := t.wedgeMean(p, p+wedge) - t.wedgeMean(p-wedge, p)
+			if c > bestScore {
+				bestScore, bestP = c, float64(p)
+			}
+		}
+		if bestP >= 0 {
+			edges = append(edges, bestP-clk.start[l])
+		}
+	}
+	if len(edges) < 8 {
+		return 0, best, len(edges)
+	}
+	sort.Float64s(edges)
+	return edges[len(edges)/2], best, len(edges)
 }
 
 // fitLineClock re-measures each phasing line's wedge leading edge to hop

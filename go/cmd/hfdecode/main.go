@@ -53,8 +53,10 @@ func main() {
 		}
 		fmt.Printf("tones %.0f/%.0f Hz, pair %.2f, anticorr %.2f, wedge %.2f at %.1fs\n",
 			rep.BlackHz, rep.WhiteHz, rep.PairConfidence, rep.AntiCorrelation, rep.WedgeContrast, rep.PhasingStartSec)
-		fmt.Printf("clock %.1f samples/line (drift %+.0f ppm), %d lines (%d phasing), %dx%d\n",
-			rep.SamplesPerLine, rep.DriftPPM, rep.Lines, rep.PhasingLines, rep.Width, rep.Height)
+		fmt.Printf("clock %.1f samples/line (drift %+.0f ppm, wander %+.0f..%+.0f ppm), %d lines (%d phasing), %dx%d\n",
+			rep.SamplesPerLine, rep.DriftPPM, rep.DriftMinPPM, rep.DriftMaxPPM, rep.Lines, rep.PhasingLines, rep.Width, rep.Height)
+		fmt.Printf("start tone %.1f-%.1fs (IOC %d), deskew row corr %.2f, sync %s\n",
+			rep.StartToneSec, rep.StartToneEndSec, rep.StartToneIOC, rep.DeskewCorr, rep.SyncSource)
 		fmt.Printf("wrote %s (%d bytes)\n", out, len(pngData))
 	case "sstv":
 		png, err := decode.SSTVImage(samples, rate)
