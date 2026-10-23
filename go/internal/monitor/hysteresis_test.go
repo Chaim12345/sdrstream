@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"math"
 	"context"
 	"errors"
 	"strings"
@@ -210,5 +211,123 @@ func TestWaterfallStatusStrings(t *testing.T) {
 	live := &kiwiSource{wf: &kiwisdr.WaterfallClient{}}
 	if got := live.WaterfallStatus(); got != "waterfall: live panorama" {
 		t.Errorf("live waterfall status %q", got)
+	}
+}
+
+// fineWindow builds a zoomed-window frame at floor with peaks at the
+// given bin offsets; garbage bins are NaN (saturated artifacts).
+func fineWindow(floor float64, peaks map[int]float64, naBins ...int) []float64 {
+	bins := make([]float64, 1024)
+	for i := range bins {
+		bins[i] = floor
+	}
+	for bin, level := range peaks {
+		bins[bin] = floor + level
+	}
+	for _, bin := range naBins {
+		bins[bin] = math.NaN()
+	}
+	return bins
+}
+
+func refineInstance(source *panoSource) *Monitor {
+	m := New(Options{Source: source, ThresholdDB: 10, DwellTime: time.Millisecond})
+	m.mu.Lock()
+	m.lastBinHz = 30e6 / 1024 // coarse Kiwi panorama bin
+	m.mu.Unlock()
+	return m
+}
+
+// TestRefineIgnoresStrongerNeighbour: a peak outside the coarse run's
+// span is a different signal; refinement must not jump to it, even when
+// it is much stronger than the peak that is actually ours.
+func TestRefineIgnoresStrongerNeighbour(t *testing.T) {
+	const coarseBinHz = 30e6 / 1024
+	const fineBinHz = coarseBinHz / 32
+	const coarseFreq = 7.2e6
+	// Our signal: 20 dB, 5 fine bins below the coarse estimate (well
+	// inside the +-1 coarse bin identity span). Neighbour: 60 dB, two
+	// coarse bins away.
+	ourBin := 512 - 5
+	neighbourBin := 512 + 64
+	span := 1024 * fineBinHz
+	centre := coarseFreq - (float64(ourBin)+0.5)*fineBinHz + span/2
+	source := &panoSource{
+		refineBins:   fineWindow(-100, map[int]float64{ourBin: 20, neighbourBin: 60}),
+		refineCentre: centre,
+		refineSpan:   span,
+	}
+	cand := &candidate{frequency: coarseFreq, bandwidth: coarseBinHz, levelDB: 18}
+	refineInstance(source).refine(context.Background(), cand)
+	if !cand.refined {
+		t.Fatal("same-span peak was not accepted")
+	}
+	ourFreq := centre - span/2 + (float64(ourBin)+0.5)*fineBinHz
+	if math.Abs(cand.frequency-ourFreq) > 2*fineBinHz {
+		t.Errorf("refined to %.0f Hz, want our peak near %.0f Hz", cand.frequency, ourFreq)
+	}
+	neighbourFreq := centre - span/2 + (float64(neighbourBin)+0.5)*fineBinHz
+	if math.Abs(cand.frequency-neighbourFreq) < coarseBinHz/2 {
+		t.Errorf("refined jumped to the stronger neighbour at %.0f Hz", neighbourFreq)
+	}
+}
+
+// TestRefineKeepsCoarseWhenOnlyNeighbours: no fine peak inside the
+// identity span means the coarse estimate stands; refining must not
+// invent a frequency from a neighbouring signal.
+func TestRefineKeepsCoarseWhenOnlyNeighbours(t *testing.T) {
+	const coarseBinHz = 30e6 / 1024
+	const fineBinHz = coarseBinHz / 32
+	const coarseFreq = 14.1e6
+	span := 1024 * fineBinHz
+	// Only a strong neighbour three coarse bins away.
+	source := &panoSource{
+		refineBins:   fineWindow(-100, map[int]float64{512 + 96: 50}),
+		refineCentre: coarseFreq,
+		refineSpan:   span,
+	}
+	cand := &candidate{frequency: coarseFreq, bandwidth: coarseBinHz, levelDB: 18}
+	refineInstance(source).refine(context.Background(), cand)
+	if cand.refined {
+		t.Errorf("refined onto a neighbour at %.0f Hz; coarse %.0f should have stood",
+			cand.frequency, coarseFreq)
+	}
+	if cand.frequency != coarseFreq {
+		t.Errorf("frequency moved to %.0f without a same-signal peak", cand.frequency)
+	}
+}
+
+// TestDetectExcludesSaturatedBins: NaN bins (saturated server garbage,
+// e.g. the DC region of a low zoomed window) never form peaks and never
+// poison the noise floor of the real signal next to them.
+func TestDetectExcludesSaturatedBins(t *testing.T) {
+	na := make([]int, 0, 40)
+	for i := 0; i < 40; i++ {
+		na = append(na, i)
+	}
+	bins := fineWindow(-105, map[int]float64{300: 25}, na...)
+	m := New(Options{ThresholdDB: 10})
+	peaks := m.detectGuarded(bins, 468750, 937500, false)
+	if len(peaks) != 1 {
+		t.Fatalf("peaks %v, want exactly the real one", peaks)
+	}
+	if peaks[0].frequency > 500e3 {
+		t.Errorf("peak at %.0f Hz, want the real one near %.0f Hz", peaks[0].frequency, (300.5)*937500/1024)
+	}
+	if peaks[0].levelDB > 40 {
+		t.Errorf("levelDB %.1f inflated by a poisoned floor", peaks[0].levelDB)
+	}
+}
+
+// TestDetectAllSaturatedWindow: a window that is entirely saturated
+// garbage reports nothing at all.
+func TestDetectAllSaturatedWindow(t *testing.T) {
+	bins := make([]float64, 1024)
+	for i := range bins {
+		bins[i] = math.NaN()
+	}
+	m := New(Options{ThresholdDB: 10})
+	if peaks := m.detectGuarded(bins, 468750, 937500, false); len(peaks) != 0 {
+		t.Fatalf("all-saturated window produced %d peaks", len(peaks))
 	}
 }

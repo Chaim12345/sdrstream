@@ -174,3 +174,24 @@ func TestZoomWindowMath(t *testing.T) {
 		t.Errorf("high edge start %d, want %d", start, maxStart)
 	}
 }
+
+func TestParseFrameMarksSaturatedBinsInvalid(t *testing.T) {
+	// Decoded dB = int8(b)+1; the server clamps to [-200, 0] dB, so
+	// bytes that decode above 0 dB are artifacts and must come out NaN.
+	frame := make([]byte, 16+4)
+	copy(frame, "W/F\x00")
+	frame[16] = 0x80 // int8 -128 -> -127 dB, valid
+	frame[17] = 0xC7 // int8 -57  -> -56 dB, valid
+	frame[18] = 0xFF // int8 -1   -> 0 dB, valid (clamped maximum)
+	frame[19] = 0x7F // int8 127  -> +128 dB, impossible -> NaN
+	got, ok := parseFrame(frame, time.Now())
+	if !ok {
+		t.Fatal("frame rejected")
+	}
+	if got.Bins[0] != -127 || got.Bins[1] != -56 || got.Bins[2] != 0 {
+		t.Errorf("valid bins decoded wrong: %v", got.Bins[:3])
+	}
+	if !math.IsNaN(got.Bins[3]) {
+		t.Errorf("saturated bin decoded as %v, want NaN", got.Bins[3])
+	}
+}

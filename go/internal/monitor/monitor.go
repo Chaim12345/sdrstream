@@ -188,6 +188,24 @@ func New(options Options) *Monitor {
 	if options.ThresholdDB <= 0 {
 		options.ThresholdDB = 8
 	}
+	// Bounds on the robustness knobs: averaging beyond eight frames
+	// smears short transmissions away, and hysteresis at or above the
+	// start level would make the stop level meaningless.
+	if options.AverageFrames < 0 {
+		options.AverageFrames = 0
+	}
+	if options.AverageFrames > 8 {
+		options.AverageFrames = 8
+	}
+	if options.HysteresisDB < 0 {
+		options.HysteresisDB = 0
+	}
+	if options.HysteresisDB > 12 {
+		options.HysteresisDB = 12
+	}
+	if options.HysteresisDB >= options.ThresholdDB {
+		options.HysteresisDB = options.ThresholdDB / 2
+	}
 	if options.DwellTime <= 0 {
 		options.DwellTime = 1500 * time.Millisecond
 	}
@@ -624,13 +642,17 @@ func (m *Monitor) averageFrames(bins []float64) ([]float64, bool) {
 	copy(history, m.frameHistory)
 	m.mu.Unlock()
 	avg := make([]float64, len(bins))
+	valid := make([]int, len(bins))
 	count := 0
 	for i := len(history) - 1; i >= 0; i-- {
 		if len(history[i]) != len(bins) {
 			continue
 		}
 		for j, v := range history[i] {
-			avg[j] += v
+			if !math.IsNaN(v) {
+				avg[j] += v
+				valid[j]++
+			}
 		}
 		count++
 	}
@@ -642,7 +664,11 @@ func (m *Monitor) averageFrames(bins []float64) ([]float64, bool) {
 		return nil, false
 	}
 	for j := range avg {
-		avg[j] /= float64(count)
+		if valid[j] == 0 {
+			avg[j] = math.NaN()
+		} else {
+			avg[j] /= float64(valid[j])
+		}
 	}
 	return avg, true
 }
@@ -675,17 +701,35 @@ func (m *Monitor) refine(ctx context.Context, candidate *candidate) {
 	}
 	// The zoomed window is centred on the candidate itself, so the
 	// centre-demod guard would delete exactly what we came for.
-	for _, p := range m.detectGuarded(bins, centre, span, false) {
-		if math.Abs(p.frequency-candidate.frequency) <= binHz {
-			candidate.frequency = p.frequency
-			candidate.bandwidth = p.bandwidth
-			if p.levelDB > candidate.levelDB {
-				candidate.levelDB = p.levelDB
-			}
-			candidate.refined = true
-			return
+	//
+	// Identity bound: the coarse run of above-threshold bins spans
+	// candidate.bandwidth around the centroid; the true signal made
+	// that run, so the fine peak must lie inside the run's span plus
+	// half a coarse bin of centroid rounding on each side. A stronger
+	// peak outside the span is a neighbour, not this signal, and is
+	// never jumped to. Inside the span the strongest fine peak wins:
+	// the coarse run aggregated all of them.
+	halfSpan := candidate.bandwidth/2 + binHz/2
+	peaks := m.detectGuarded(bins, centre, span, false)
+	var match *peak
+	for i := range peaks {
+		p := &peaks[i]
+		if math.Abs(p.frequency-candidate.frequency) > halfSpan {
+			continue
+		}
+		if match == nil || p.levelDB > match.levelDB {
+			match = p
 		}
 	}
+	if match == nil {
+		return
+	}
+	candidate.frequency = match.frequency
+	candidate.bandwidth = match.bandwidth
+	if match.levelDB > candidate.levelDB {
+		candidate.levelDB = match.levelDB
+	}
+	candidate.refined = true
 }
 
 func (m *Monitor) step(ctx context.Context) {
@@ -783,6 +827,24 @@ func (m *Monitor) updateSpectrum() ([]float64, float64, float64, bool) {
 }
 
 // peak is a run of bins above the noise floor.
+// floorQuartile is the lower quartile of the valid (non-NaN) bins in
+// one floor window. Fewer than four valid bins means the window is
+// saturated garbage, and the quartile is NaN so detection goes quiet
+// there instead of trusting a poisoned floor.
+func floorQuartile(bins []float64) float64 {
+	valid := make([]float64, 0, len(bins))
+	for _, v := range bins {
+		if !math.IsNaN(v) {
+			valid = append(valid, v)
+		}
+	}
+	if len(valid) < 4 {
+		return math.NaN()
+	}
+	sort.Float64s(valid)
+	return valid[len(valid)/4]
+}
+
 type peak struct {
 	frequency float64
 	bandwidth float64
@@ -845,20 +907,19 @@ func (m *Monitor) detectThreshold(bins []float64, centre, span float64, allowCen
 			high = len(bins)
 			low = max(0, high-floorWindow)
 		}
-		window := append([]float64(nil), bins[low:high]...)
-		sort.Float64s(window)
-		points = append(points, floorPoint{bin: center, value: window[len(window)/4]})
+		points = append(points, floorPoint{bin: center, value: floorQuartile(bins[low:high])})
 	}
 	if points[len(points)-1].bin != len(bins)-1 {
 		center := len(bins) - 1
 		low := max(0, center-floorWindow/2)
 		high := min(len(bins), low+floorWindow)
 		low = max(0, high-floorWindow)
-		window := append([]float64(nil), bins[low:high]...)
-		sort.Float64s(window)
-		points = append(points, floorPoint{bin: center, value: window[len(window)/4]})
+		points = append(points, floorPoint{bin: center, value: floorQuartile(bins[low:high])})
 	}
 	binHz := span / float64(len(bins))
+	// A point whose whole window was invalid bins is NaN: interpolation
+	// then carries NaN into floors, and bins with a NaN floor can never
+	// be "above" it, so saturated regions go silent instead of peaking.
 	floors := make([]float64, len(bins))
 	point := 0
 	for i := range bins {

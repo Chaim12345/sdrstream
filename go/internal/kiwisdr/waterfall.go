@@ -239,7 +239,16 @@ func parseFrame(data []byte, receivedAt time.Time) (WaterfallFrame, bool) {
 	payload := data[16:]
 	bins := make([]float64, len(payload))
 	for i, b := range payload {
-		bins[i] = float64(int8(b)) + 1
+		v := float64(int8(b)) + 1
+		// The server clamps bin power to [-200, 0] dB before encoding,
+		// so a decoded value above 0 dB is impossible: it is either a
+		// saturated artifact (the DC region of a zoomed window shows
+		// this) or a wrapped very-low value. Mark it invalid instead of
+		// letting it look like the strongest signal on the band.
+		if v > 0 {
+			v = math.NaN()
+		}
+		bins[i] = v
 	}
 	return WaterfallFrame{
 		XBin:       binary.LittleEndian.Uint32(data[4:8]),
