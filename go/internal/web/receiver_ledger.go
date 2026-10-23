@@ -11,7 +11,10 @@ package web
 // Entries carry the decode text, the engine label (sdrstream's own decoders,
 // never a relayed provider), the receiver ID, the UTC recording time and the
 // audio link back into the record-all archive, so the UI proof view can play
-// the clip and show the raw decode for any ledger line.
+// the clip and show the raw decode for any ledger line. Every entry also
+// keeps the live quality gate's verdict as an explicit evidence class
+// (verified / unverified + gate reason), so a rejected clip is never shown
+// as more than it is.
 
 import (
 	"fmt"
@@ -46,7 +49,20 @@ func receiverLedgerEntry(c Capture, fetchedAt time.Time) feeds.LedgerEntry {
 	if kind == "" {
 		kind = "audio"
 	}
-	return feeds.LedgerEntry{
+	evidence := feeds.EvidenceUnverified
+	if c.Verified {
+		evidence = feeds.EvidenceVerified
+	}
+	// The gate and the independent cross-check stay separate facets.
+	// Legacy sidecars recorded only the summary bool: a true Verified
+	// means the live gate passed (that was its documented meaning), so
+	// the gate facet can be inferred; a cross-check can never be
+	// inferred and stays unrecorded.
+	gateVerdict := c.GateVerdict
+	if gateVerdict == "" && c.Verified {
+		gateVerdict = feeds.GatePassed
+	}
+	entry := feeds.LedgerEntry{
 		Source:    ReceiverLedgerSource,
 		Kind:      kind,
 		ID:        c.Path,
@@ -57,7 +73,14 @@ func receiverLedgerEntry(c Capture, fetchedAt time.Time) feeds.LedgerEntry {
 		DecodedBy: feeds.DecodedByUs,
 		Ref:       c.URL,
 		Receiver:  c.Receiver,
+		Evidence:  evidence,
+		Gate:      c.Gate,
 	}
+	entry.GateVerdict = gateVerdict
+	entry.Crosscheck = c.Crosscheck
+	entry.CrosscheckRef = c.CrosscheckRef
+	entry.CrosscheckDetail = c.CrosscheckDetail
+	return entry
 }
 
 // syncReceiverLedger appends one proof-ledger entry per archived capture

@@ -22,7 +22,7 @@
     <span class="pill">receivers <b id="receiver-count">–</b></span>
     <span class="pill">passes <b id="pass-count">–</b></span>
     <span class="pill">captures <b id="capture-count">–</b></span>
-    <span class="pill" title="Verified detections from the monitor and scanner gallery">verified activity <b id="activity-count">–</b></span>
+    <span class="pill" title="Detections that passed the live quality gate (monitor and scanner gallery); independent cross-checks are shown per capture">gate-passed activity <b id="activity-count">–</b></span>
   </div>
   <form method="post" action="/logout" class="logout-form"><button class="logout" type="submit" title="Log out" aria-label="Log out">&#9211;</button></form>
 </header>
@@ -124,7 +124,7 @@
         <div class="stat"><div class="stat-value" id="health-uptime">&ndash;</div><div class="stat-label">uptime</div></div>
         <div class="stat"><div class="stat-value" id="health-stations">&ndash;</div><div class="stat-label">stations seen</div></div>
         <div class="stat"><div class="stat-value" id="health-captures">&ndash;</div><div class="stat-label">captures</div></div>
-        <div class="stat"><div class="stat-value" id="health-success">&ndash;</div><div class="stat-label">verified captures</div></div>
+        <div class="stat"><div class="stat-value" id="health-success">&ndash;</div><div class="stat-label">gate-passed captures</div></div>
       </div>
       <div class="hbar-block">
         <div class="hbar-title">Scan outcomes <span class="muted" id="health-scan-note"></span></div>
@@ -142,6 +142,10 @@
         <div class="hbar-legend" id="health-origin-legend"></div>
       </div>
       <div class="muted health-ledger" id="health-ledger"></div>
+      <div class="hbar-block">
+        <div class="hbar-title">Receiver proof ledger <span class="muted">(own captures: play the clip, read the decode, check the verdict)</span></div>
+        <div id="rxproof-list"></div>
+      </div>
     </div>
     <div class="panel">
       <div class="panel-head">

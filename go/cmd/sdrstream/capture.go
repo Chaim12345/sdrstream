@@ -30,6 +30,10 @@ type captureMeta struct {
 	Target      string
 	DurationSec float64
 	Verified    bool
+	// Crosscheck / CrosscheckRef stay empty until a capture path performs
+	// an independent reference check.
+	Crosscheck    string
+	CrosscheckRef string
 }
 
 // writeCaptureWAV stores one already-encoded WAV plus its sidecar. Every
@@ -57,16 +61,19 @@ func writeCaptureWAV(capturesDir string, wav []byte, meta captureMeta) (string, 
 		return "", err
 	}
 	sidecarErr := web.WriteCaptureMetadata(capturesDir, name, web.CaptureMetadata{
-		FrequencyHz: meta.FrequencyHz,
-		Mode:        meta.Mode,
-		Receiver:    meta.Station,
-		Detail:      meta.Detail,
-		Kind:        meta.Kind,
-		Target:      meta.Target,
-		Gate:        meta.Gate,
-		Started:     meta.Started,
-		DurationSec: meta.DurationSec,
-		Verified:    meta.Verified,
+		FrequencyHz:   meta.FrequencyHz,
+		Mode:          meta.Mode,
+		Receiver:      meta.Station,
+		Detail:        meta.Detail,
+		Kind:          meta.Kind,
+		Target:        meta.Target,
+		Gate:          meta.Gate,
+		Started:       meta.Started,
+		DurationSec:   meta.DurationSec,
+		Verified:      meta.Verified,
+		GateVerdict:   web.GateVerdictFor(meta.Verified),
+		Crosscheck:    meta.Crosscheck,
+		CrosscheckRef: meta.CrosscheckRef,
 	})
 	return path, sidecarErr
 }
@@ -175,6 +182,7 @@ func writeActivitySidecar(server *web.Server, activity monitor.Activity, verifie
 		Started:     activity.Started,
 		DurationSec: activity.DurationSec,
 		Verified:    verified,
+		GateVerdict: web.GateVerdictFor(verified),
 	})
 }
 

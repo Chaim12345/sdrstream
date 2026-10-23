@@ -41,20 +41,28 @@ import (
 
 // Capture is one recording the UI can show.
 type Capture struct {
-	Satellite   string    `json:"satellite"`
-	Receiver    string    `json:"receiver"`
-	FrequencyHz float64   `json:"frequency_hz,omitempty"`
-	Mode        string    `json:"mode,omitempty"`
-	Decode      string    `json:"decode,omitempty"`
-	Kind        string    `json:"kind,omitempty"`   // voice, data, cw, carrier, noise
-	Target      string    `json:"target,omitempty"` // named service the clip was aimed at
-	Verified    bool      `json:"verified"`         // live quality gate verdict
-	Gate        string    `json:"gate,omitempty"`   // gate reason when unverified
-	Start       time.Time `json:"start"`
-	Samples     int       `json:"samples"`
-	Rate        int       `json:"rate"`
-	Path        string    `json:"path"`
-	URL         string    `json:"url,omitempty"`
+	Satellite   string  `json:"satellite"`
+	Receiver    string  `json:"receiver"`
+	FrequencyHz float64 `json:"frequency_hz,omitempty"`
+	Mode        string  `json:"mode,omitempty"`
+	Decode      string  `json:"decode,omitempty"`
+	Kind        string  `json:"kind,omitempty"`   // voice, data, cw, carrier, noise
+	Target      string  `json:"target,omitempty"` // named service the clip was aimed at
+	Verified    bool    `json:"verified"`         // live quality gate verdict (legacy summary flag)
+	Gate        string  `json:"gate,omitempty"`   // gate reason when unverified
+	// GateVerdict and Crosscheck keep the two proof facets separate:
+	// the Go live quality gate's own verdict (feeds.GatePassed /
+	// feeds.GateFailed, empty = not preserved) versus an independent
+	// reference cross-check (feeds.Crosscheck*, empty = never performed).
+	GateVerdict      string    `json:"gate_verdict,omitempty"`
+	Crosscheck       string    `json:"crosscheck,omitempty"`
+	CrosscheckRef    string    `json:"crosscheck_ref,omitempty"`
+	CrosscheckDetail string    `json:"crosscheck_detail,omitempty"`
+	Start            time.Time `json:"start"`
+	Samples          int       `json:"samples"`
+	Rate             int       `json:"rate"`
+	Path             string    `json:"path"`
+	URL              string    `json:"url,omitempty"`
 }
 
 // CaptureMetadata is the provenance written beside a capture. The scanner
@@ -68,9 +76,15 @@ type CaptureMetadata struct {
 	Kind        string
 	Target      string
 	Gate        string
-	Started     time.Time
-	DurationSec float64
-	Verified    bool
+	// GateVerdict / Crosscheck / CrosscheckRef: the separate proof facets
+	// described on Capture. Empty values keep the legacy sidecar format.
+	GateVerdict      string
+	Crosscheck       string
+	CrosscheckRef    string
+	CrosscheckDetail string
+	Started          time.Time
+	DurationSec      float64
+	Verified         bool
 }
 
 // Status is the live snapshot the UI polls.
@@ -400,7 +414,28 @@ func WriteCaptureMetadata(dir, name string, meta CaptureMetadata) error {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "frequency_hz=%.0f\nmode=%s\nreceiver=%s\ndecode=%s\nkind=%s\ntarget=%s\ngate=%s\nstarted=%s\nduration_sec=%.3f\nverified=%t\n", meta.FrequencyHz, clean(meta.Mode), clean(meta.Receiver), clean(meta.Detail), clean(meta.Kind), clean(meta.Target), clean(meta.Gate), meta.Started.UTC().Format(time.RFC3339), meta.DurationSec, meta.Verified)
+	if meta.GateVerdict != "" {
+		fmt.Fprintf(&b, "gate_verdict=%s\n", clean(meta.GateVerdict))
+	}
+	if meta.Crosscheck != "" {
+		fmt.Fprintf(&b, "crosscheck=%s\n", clean(meta.Crosscheck))
+	}
+	if meta.CrosscheckRef != "" {
+		fmt.Fprintf(&b, "crosscheck_ref=%s\n", clean(meta.CrosscheckRef))
+	}
+	if meta.CrosscheckDetail != "" {
+		fmt.Fprintf(&b, "crosscheck_detail=%s\n", clean(meta.CrosscheckDetail))
+	}
 	return common.WriteFileAtomic(filepath.Join(dir, strings.TrimSuffix(name, ".wav")+".txt"), []byte(b.String()), 0o644)
+}
+
+// GateVerdictFor renders the Go live quality gate's boolean outcome as the
+// explicit facet value written to new sidecars.
+func GateVerdictFor(live bool) string {
+	if live {
+		return feeds.GatePassed
+	}
+	return feeds.GateFailed
 }
 
 // AddCapture records a completed capture for the UI.
@@ -481,6 +516,7 @@ func (s *Server) listCaptures() []Capture {
 		var freq float64
 		mode, receiver, detail, kind, target, gate := "", "sdrstream", "", "", "", ""
 		verified := false
+		gateVerdict, crosscheck, crosscheckRef, crosscheckDetail := "", "", "", ""
 		started := info.ModTime().UTC()
 		for _, part := range parts {
 			if strings.HasSuffix(part, "kHz") {
@@ -511,6 +547,14 @@ func (s *Server) listCaptures() []Capture {
 					target = strings.TrimPrefix(line, "target=")
 				case strings.HasPrefix(line, "gate="):
 					gate = strings.TrimPrefix(line, "gate=")
+				case strings.HasPrefix(line, "gate_verdict="):
+					gateVerdict = strings.TrimPrefix(line, "gate_verdict=")
+				case strings.HasPrefix(line, "crosscheck="):
+					crosscheck = strings.TrimPrefix(line, "crosscheck=")
+				case strings.HasPrefix(line, "crosscheck_ref="):
+					crosscheckRef = strings.TrimPrefix(line, "crosscheck_ref=")
+				case strings.HasPrefix(line, "crosscheck_detail="):
+					crosscheckDetail = strings.TrimPrefix(line, "crosscheck_detail=")
 				case line == "verified=true":
 					verified = true
 				case line == "verified=false":
@@ -527,11 +571,118 @@ func (s *Server) listCaptures() []Capture {
 			Receiver:    receiver,
 			FrequencyHz: freq, Mode: mode, Decode: detail,
 			Kind: kind, Target: target, Verified: verified, Gate: gate,
+			GateVerdict: gateVerdict, Crosscheck: crosscheck, CrosscheckRef: crosscheckRef, CrosscheckDetail: crosscheckDetail,
 			Start:   started,
 			Samples: int(dataBytes / 2),
 			Rate:    rate,
 			Path:    name,
 			URL:     "/audio/" + url.PathEscape(name),
+		})
+	}
+	// A sidecar whose WAV is gone is still proof: the decode text survives
+	// even though the audio does not. List it with no URL and no samples so
+	// the UI shows the decode with an "audio unavailable" label instead of
+	// either hiding the proof or offering a player that cannot play.
+	seen := map[string]bool{}
+	for _, c := range out {
+		seen[c.Path] = true
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".txt") {
+			continue
+		}
+		base := strings.TrimSuffix(name, ".txt")
+		if seen[base+".wav"] {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		var freq float64
+		mode, receiver, detail, kind, target, gate := "", "sdrstream", "", "", "", ""
+		verified := false
+		gateVerdict, crosscheck, crosscheckRef, crosscheckDetail := "", "", "", ""
+		started := info.ModTime().UTC()
+		// A surviving sidecar is proof only if it is one of our metadata
+		// files: hfschedule-style archives keep the raw decode text in
+		// <key>.txt and the reference decode in <key>.ref.txt, neither of
+		// which is a key=value sidecar. Require at least one known key so
+		// raw text is never mis-listed as a capture proof.
+		if sidecar, err := os.ReadFile(filepath.Join(s.capturesDir, name)); err == nil {
+			known := false
+			for _, line := range strings.Split(string(sidecar), "\n") {
+				switch {
+				case strings.HasPrefix(line, "frequency_hz="):
+					known = true
+				case strings.HasPrefix(line, "mode="):
+					known = true
+				case strings.HasPrefix(line, "receiver="):
+					known = true
+				case strings.HasPrefix(line, "decode="):
+					known = true
+				case strings.HasPrefix(line, "kind="):
+					known = true
+				case strings.HasPrefix(line, "target="):
+					known = true
+				case strings.HasPrefix(line, "gate="):
+					known = true
+				case strings.HasPrefix(line, "gate_verdict="):
+					known = true
+				case strings.HasPrefix(line, "crosscheck="):
+					known = true
+				case strings.HasPrefix(line, "verified="):
+					known = true
+				case strings.HasPrefix(line, "started="):
+					known = true
+				}
+				switch {
+				case strings.HasPrefix(line, "frequency_hz="):
+					freq, _ = strconv.ParseFloat(strings.TrimPrefix(line, "frequency_hz="), 64)
+				case strings.HasPrefix(line, "mode="):
+					mode = strings.TrimPrefix(line, "mode=")
+				case strings.HasPrefix(line, "receiver="):
+					receiver = strings.TrimPrefix(line, "receiver=")
+				case strings.HasPrefix(line, "decode="):
+					detail = strings.TrimPrefix(line, "decode=")
+				case strings.HasPrefix(line, "kind="):
+					kind = strings.TrimPrefix(line, "kind=")
+				case strings.HasPrefix(line, "target="):
+					target = strings.TrimPrefix(line, "target=")
+				case strings.HasPrefix(line, "gate="):
+					gate = strings.TrimPrefix(line, "gate=")
+				case strings.HasPrefix(line, "gate_verdict="):
+					gateVerdict = strings.TrimPrefix(line, "gate_verdict=")
+				case strings.HasPrefix(line, "crosscheck="):
+					crosscheck = strings.TrimPrefix(line, "crosscheck=")
+				case strings.HasPrefix(line, "crosscheck_ref="):
+					crosscheckRef = strings.TrimPrefix(line, "crosscheck_ref=")
+				case strings.HasPrefix(line, "crosscheck_detail="):
+					crosscheckDetail = strings.TrimPrefix(line, "crosscheck_detail=")
+				case line == "verified=true":
+					verified = true
+				case strings.HasPrefix(line, "started="):
+					if parsed, err := time.Parse(time.RFC3339, strings.TrimPrefix(line, "started=")); err == nil {
+						started = parsed.UTC()
+					}
+				}
+			}
+			if !known {
+				continue
+			}
+		}
+		satellite := base
+		if i := strings.IndexByte(base, '_'); i > 0 {
+			satellite = base[:i]
+		}
+		out = append(out, Capture{
+			Satellite: satellite, Receiver: receiver,
+			FrequencyHz: freq, Mode: mode, Decode: detail,
+			Kind: kind, Target: target, Verified: verified, Gate: gate,
+			GateVerdict: gateVerdict, Crosscheck: crosscheck, CrosscheckRef: crosscheckRef, CrosscheckDetail: crosscheckDetail,
+			Start: started,
+			Path:  name, // the surviving sidecar, as the ledger identity
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
@@ -748,6 +899,19 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 	name, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/audio/"))
 	if err != nil || strings.ContainsAny(name, "/\\") || name == "" {
 		http.NotFound(w, r)
+		return
+	}
+	// Spectrogram evidence is generated offline from the saved WAV and
+	// cached beside it; the audio itself never leaves this directory.
+	if strings.HasSuffix(name, ".wav.spec.png") {
+		pngBytes, err := s.spectrogramFor(strings.TrimSuffix(name, ".spec.png"))
+		if err != nil {
+			http.Error(w, "spectrogram unavailable: "+err.Error(), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		_, _ = w.Write(pngBytes)
 		return
 	}
 	// Only recordings are served; the directory may hold other files.
