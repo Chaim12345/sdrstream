@@ -160,6 +160,10 @@ type LiveGalleryItem struct {
 	// round-trips through disk. Empty on items written before the
 	// field existed: unknown provenance, never re-labeled.
 	Verification string `json:"verification,omitempty"`
+	// DecodedFrom names the recorded capture a user-triggered
+	// re-decode came from (POST /api/captures/decode), so the item is
+	// never mistaken for a fresh reception. Empty on live decodes.
+	DecodedFrom string `json:"decoded_from,omitempty"`
 }
 
 // galleryLiveClass classifies a live-gallery manifest item by
@@ -252,6 +256,7 @@ type ScanMetrics struct {
 
 type Server struct {
 	mu                sync.Mutex
+	decodeMu          sync.Mutex
 	satsched          interface{ StatusesJSON() interface{} }
 	captures          []Capture
 	passes            []PassInfo
@@ -955,6 +960,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/status.json", s.handleStatus)
 	mux.HandleFunc("/api/logs/tail", s.handleLogTail)
 	mux.HandleFunc("/api/captures.json", s.handleCaptures)
+	mux.HandleFunc("/api/captures/decode", s.handleCaptureDecode)
 	mux.HandleFunc("/api/satellites.json", s.handleSatellites)
 	mux.HandleFunc("/api/passes.json", s.handlePasses)
 	mux.HandleFunc("/api/satfollow.json", s.handleSatfollow)
@@ -1127,12 +1133,31 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 
 // AddLiveArtifact saves a verified decoder result with source metadata.
 func (s *Server) AddLiveArtifact(activity monitor.Activity, pngData []byte) error {
+	return s.AddLiveArtifactDecoded(activity, pngData, "")
+}
+
+// AddLiveArtifactDecoded is AddLiveArtifact with an explicit
+// decoded-from provenance note for user-triggered re-decodes of
+// recorded captures. decodedFrom is a bare capture filename, never a
+// path; live decodes pass "".
+func (s *Server) AddLiveArtifactDecoded(activity monitor.Activity, pngData []byte, decodedFrom string) error {
 	verification := ""
 	if len(pngData) > 0 && activity.Kind == "sstv" {
 		// SSTV frames verify on the decode report's sync-lock
 		// evidence carried by the activity; without a report the
 		// frame cannot be verified (no generic PNG bypass).
 		v := verify.SSTVImage(activity.Kind, pngData, activity.SSTVReport)
+		if !v.Live {
+			return fmt.Errorf("live verification rejected content: %s", v.Reason)
+		}
+		verification = v.Reason
+	} else if len(pngData) > 0 && activity.Kind == "wefax" && activity.WEFAXReport != nil {
+		// WEFAX charts verify on the decode report's sync and
+		// geometry evidence, same as SSTV. Callers without a report
+		// (the schedule scanner) keep the legacy generic path below
+		// and record no verdict.
+		rep := activity.WEFAXReport
+		v := verify.WEFAXImage("wefax", pngData, rep.SyncSource, rep.WedgeContrast, rep.DriftPPM, rep.DriftMinPPM, rep.DriftMaxPPM, rep.PeriodScore, rep.DeskewCorr)
 		if !v.Live {
 			return fmt.Errorf("live verification rejected content: %s", v.Reason)
 		}
@@ -1159,7 +1184,7 @@ func (s *Server) AddLiveArtifact(activity monitor.Activity, pngData []byte) erro
 	if station == "" {
 		station = activity.Source
 	}
-	item := LiveGalleryItem{Source: "live", ObservationID: 0, Satellite: "Live reception", Station: station, Start: activity.Started, Mode: activity.Mode, FrequencyHz: int64(activity.FrequencyHz), Kind: kind, Name: name, URL: "/gallery/" + url.PathEscape(name), Size: int64(len(data)), Text: activity.Detail, Verification: verification}
+	item := LiveGalleryItem{Source: "live", ObservationID: 0, Satellite: "Live reception", Station: station, Start: activity.Started, Mode: activity.Mode, FrequencyHz: int64(activity.FrequencyHz), Kind: kind, Name: name, URL: "/gallery/" + url.PathEscape(name), Size: int64(len(data)), Text: activity.Detail, Verification: verification, DecodedFrom: decodedFrom}
 	if activity.AudioPath != "" {
 		audioName := name + ".wav"
 		src, err := os.ReadFile(activity.AudioPath)

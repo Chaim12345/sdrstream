@@ -39,25 +39,26 @@ type Source interface {
 
 // Activity is one detected transmission.
 type Activity struct {
-	ID                 int                `json:"id"`
-	Started            time.Time          `json:"started"`
-	Ended              *time.Time         `json:"ended,omitempty"` // nil when the transmission was not recorded
-	FrequencyHz        float64            `json:"frequency_hz"`
-	BandwidthHz        float64            `json:"bandwidth_hz"`
-	LevelDB            *float64           `json:"level_db,omitempty"`     // nil = no level recorded (gallery merges); a measured 0 dB is a valid non-nil value
-	Kind               string             `json:"kind"`                   // voice, data, cw, carrier, noise, unknown
-	Mode               string             `json:"mode,omitempty"`         // decoder or modulation that produced the detail
-	Detail             string             `json:"detail,omitempty"`       // decoded payload or transcript
-	VerificationAnchor string             `json:"-"`                      // expected callsign/phrase for the live quality gate
-	SSTVReport         *verify.SSTVReport `json:"-"`                      // decode evidence for an SSTV image; nil = no report = unknown. Dropped on any JSON round-trip: re-verification must treat a missing report as unknown (conservative), never as clean.
-	Verification       string             `json:"verification,omitempty"` // gate reason recorded at verification; empty = no recorded proof
-	Historical         bool               `json:"historical,omitempty"`   // gallery-sourced entry with no recorded gate proof: list, never count as current gate-passed
-	Rejected           string             `json:"rejected,omitempty"`     // live quality gate verdict when the gate REJECTED this decode: a known failure, never to be worn as "verification unknown"
-	Label              string             `json:"label,omitempty"`
-	Target             string             `json:"target,omitempty"` // named service a scheduled target was aimed at
-	Source             string             `json:"source"`
-	DurationSec        float64            `json:"duration_sec"`
-	AudioPath          string             `json:"audio_path,omitempty"`
+	ID                 int                 `json:"id"`
+	Started            time.Time           `json:"started"`
+	Ended              *time.Time          `json:"ended,omitempty"` // nil when the transmission was not recorded
+	FrequencyHz        float64             `json:"frequency_hz"`
+	BandwidthHz        float64             `json:"bandwidth_hz"`
+	LevelDB            *float64            `json:"level_db,omitempty"`     // nil = no level recorded (gallery merges); a measured 0 dB is a valid non-nil value
+	Kind               string              `json:"kind"`                   // voice, data, cw, carrier, noise, unknown
+	Mode               string              `json:"mode,omitempty"`         // decoder or modulation that produced the detail
+	Detail             string              `json:"detail,omitempty"`       // decoded payload or transcript
+	VerificationAnchor string              `json:"-"`                      // expected callsign/phrase for the live quality gate
+	SSTVReport         *verify.SSTVReport  `json:"-"`                      // decode evidence for an SSTV image; nil = no report = unknown. Dropped on any JSON round-trip: re-verification must treat a missing report as unknown (conservative), never as clean.
+	WEFAXReport        *decode.WEFAXReport `json:"-"`                      // decode evidence for a WEFAX chart, same contract as SSTVReport: publication re-runs the gate when present; nil = legacy generic path = no recorded verdict.
+	Verification       string              `json:"verification,omitempty"` // gate reason recorded at verification; empty = no recorded proof
+	Historical         bool                `json:"historical,omitempty"`   // gallery-sourced entry with no recorded gate proof: list, never count as current gate-passed
+	Rejected           string              `json:"rejected,omitempty"`     // live quality gate verdict when the gate REJECTED this decode: a known failure, never to be worn as "verification unknown"
+	Label              string              `json:"label,omitempty"`
+	Target             string              `json:"target,omitempty"` // named service a scheduled target was aimed at
+	Source             string              `json:"source"`
+	DurationSec        float64             `json:"duration_sec"`
+	AudioPath          string              `json:"audio_path,omitempty"`
 	// FrequencyRefined marks a coarse-panorama detection whose frequency
 	// was confirmed by a zoomed refinement window. Without it the
 	// frequency is a bin centre with FrequencyUncertaintyHz of error,
