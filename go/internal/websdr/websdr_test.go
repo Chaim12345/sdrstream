@@ -289,3 +289,73 @@ func TestDialRefusesPrivateHost(t *testing.T) {
 		t.Fatal("must fail before dialing, not via ctx")
 	}
 }
+
+// A successful read must reset the reconnect backoff to the initial
+// delay: otherwise one string of drops leaves every later reconnect a
+// full ReconnectMax away for the life of the client.
+func TestReconnectBackoffResetsAfterSuccess(t *testing.T) {
+	var conns atomic.Int32
+	up := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		num := conns.Add(1)
+		if num == 2 {
+			// Second connection streams long enough to prove the link
+			// works, then dies abnormally.
+			for i := 0; i < 6; i++ {
+				if err := conn.WriteMessage(websocket.BinaryMessage, []byte{0x87, 1, 2, 3, 4}); err != nil {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		if num <= 2 {
+			_ = conn.WriteMessage(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "boom"))
+			return
+		}
+		// Later connections just stay open until the test ends.
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+	opts := testOptions()
+	opts.Reconnect = true
+	opts.ReconnectInitial = 25 * time.Millisecond
+	opts.ReconnectMax = 200 * time.Millisecond
+	c, err := New(srv.URL, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var delays []time.Duration
+	deadline := time.After(5 * time.Second)
+	for len(delays) < 2 {
+		select {
+		case event, ok := <-c.Events():
+			if !ok {
+				t.Fatal("events channel closed")
+			}
+			if event.Type == "reconnecting" {
+				if d, ok := event.Value.(time.Duration); ok {
+					delays = append(delays, d)
+				}
+			}
+		case <-deadline:
+			t.Fatalf("saw %d reconnecting events, want 2 (conns=%d)", len(delays), conns.Load())
+		}
+	}
+	if delays[0] != opts.ReconnectInitial || delays[1] != opts.ReconnectInitial {
+		t.Fatalf("reconnecting delays %v, want both %s (backoff must reset after a healthy connection)", delays, opts.ReconnectInitial)
+	}
+}

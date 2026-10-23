@@ -191,9 +191,9 @@ clamp, WebSDR retune-during-reconnect race.
 **Still open** (re-audited against the tree 2026-10-23; several former
 entries were stale and are listed under "Recently closed" below):
 
-- R2 transport remainder: openwebrx auto-reconnect (`Reconnect` option
-  is defined and defaulted but never read by the client), websdr backoff
-  reset + preflight short-read.
+- R2 transport remainder: websdr preflight short-read (the original
+  review note's phrase; no anchor in the tree yet - the backoff-reset
+  half is done, and openwebrx auto-reconnect shipped in a9e606d).
 - `TranscribeASR` not yet under the NIM semaphore.
 - R5 decode coverage: truncated-WAV fuzz, FT8/WSPR audio-level SNR
   fixtures, WEFAX color + mid-chart, AIS eviction tests, block-scan budget

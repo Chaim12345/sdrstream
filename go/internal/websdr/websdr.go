@@ -228,7 +228,16 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
 			_ = conn.SetReadDeadline(time.Now().Add(c.Options.IdleTimeout))
 		}
 		messageType, data, err := conn.ReadMessage()
-		if err != nil {
+		if err == nil {
+			// The connection works, so the next drop starts from the
+			// initial backoff again. Without this reset the delay only
+			// ever grew: one bad afternoon left every later reconnect a
+			// ReconnectMax away for the life of the client.
+			delay = c.Options.ReconnectInitial
+			if delay == 0 {
+				delay = time.Second
+			}
+		} else {
 			select {
 			case <-c.quit:
 				return
