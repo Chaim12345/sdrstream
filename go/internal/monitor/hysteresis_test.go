@@ -421,8 +421,12 @@ func TestReportDispatchesListenAfterRefine(t *testing.T) {
 	if recorded == nil {
 		t.Fatal("no stored activity for the job")
 	}
-	if !recorded.FrequencyRefined || recorded.FrequencyUncertaintyHz != 0 {
-		t.Errorf("refined activity markers wrong: refined=%v uncertainty=%.0f",
-			recorded.FrequencyRefined, recorded.FrequencyUncertaintyHz)
+	if !recorded.FrequencyRefined {
+		t.Error("refined activity not marked refined")
+	}
+	// Refined is not exact: the residual is half a fine bin.
+	if recorded.FrequencyUncertaintyHz != fineBinHz/2 {
+		t.Errorf("refined uncertainty %.1f Hz, want half a fine bin (%.1f)",
+			recorded.FrequencyUncertaintyHz, fineBinHz/2)
 	}
 }

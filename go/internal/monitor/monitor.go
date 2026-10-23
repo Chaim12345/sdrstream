@@ -187,6 +187,9 @@ type candidate struct {
 	// frequency and bandwidth then come from the fine window and the
 	// mode picker may trust them.
 	refined bool
+	// uncertaintyHz is the residual frequency error after refinement:
+	// half a fine bin of centroid rounding. Refined is not exact.
+	uncertaintyHz float64
 }
 
 // New builds a monitor.
@@ -736,6 +739,9 @@ func (m *Monitor) refine(ctx context.Context, candidate *candidate) {
 		candidate.levelDB = match.levelDB
 	}
 	candidate.refined = true
+	// Refined is not exact: the fine-window centroid still carries half
+	// a fine bin of rounding.
+	candidate.uncertaintyHz = span / float64(len(bins)) / 2
 }
 
 func (m *Monitor) step(ctx context.Context) {
@@ -1107,6 +1113,9 @@ func (m *Monitor) report(ctx context.Context, candidate *candidate) {
 	if coarse {
 		if candidate.refined {
 			activity.FrequencyRefined = true
+			// Refined, not exact: keep the fine-bin residual visible
+			// rather than reporting a falsely exact 0.
+			activity.FrequencyUncertaintyHz = candidate.uncertaintyHz
 		} else {
 			// One coarse bin of search radius was refined without a
 			// match: the true signal sits somewhere in the bin, so the
