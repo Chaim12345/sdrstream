@@ -943,9 +943,9 @@ function activityCard(a, fresh) {
     rowEl.appendChild(freq);
   }
   rowEl.appendChild(badge); rowEl.appendChild(time);
-  if (a.frequency_hz) {
+  if (a.level_db) {
     const level = document.createElement('span'); level.className = 'muted';
-    level.textContent = (a.level_db || 0).toFixed(0) + ' dB' + (a.bandwidth_hz ? ' · ' + (a.bandwidth_hz / 1000).toFixed(0) + ' kHz' : '');
+    level.textContent = a.level_db.toFixed(0) + ' dB' + (a.bandwidth_hz ? ' · ' + (a.bandwidth_hz / 1000).toFixed(0) + ' kHz' : '');
     rowEl.appendChild(level);
   }
   card.appendChild(rowEl);

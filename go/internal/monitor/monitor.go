@@ -44,7 +44,7 @@ type Activity struct {
 	Ended              *time.Time         `json:"ended,omitempty"` // nil when the transmission was not recorded
 	FrequencyHz        float64            `json:"frequency_hz"`
 	BandwidthHz        float64            `json:"bandwidth_hz"`
-	LevelDB            float64            `json:"level_db"`
+	LevelDB            float64            `json:"level_db,omitempty"` // absent when the source recorded no level (gallery merges): never invent 0 dB
 	Kind               string             `json:"kind"`                   // voice, data, cw, carrier, noise, unknown
 	Mode               string             `json:"mode,omitempty"`         // decoder or modulation that produced the detail
 	Detail             string             `json:"detail,omitempty"`       // decoded payload or transcript
