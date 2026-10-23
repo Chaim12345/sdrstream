@@ -56,11 +56,14 @@ type LedgerEntry struct {
 	// (CrosscheckVerified / CrosscheckMismatch / CrosscheckNone); empty
 	// means no independent check was ever performed - the common case
 	// today, and shown honestly as "not recorded" in the UI.
-	GateVerdict   string  `json:"gate_verdict,omitempty"`
-	Crosscheck    string  `json:"crosscheck,omitempty"`
-	CrosscheckRef string  `json:"crosscheck_ref,omitempty"`
-	Lat           float64 `json:"lat,omitempty"`
-	Lon           float64 `json:"lon,omitempty"`
+	GateVerdict   string `json:"gate_verdict,omitempty"`
+	Crosscheck    string `json:"crosscheck,omitempty"`
+	CrosscheckRef string `json:"crosscheck_ref,omitempty"`
+	// CrosscheckDetail preserves the checker's own words (for example the
+	// archived "anchor DDK2 in both engines, 9 agreeing lines").
+	CrosscheckDetail string  `json:"crosscheck_detail,omitempty"`
+	Lat              float64 `json:"lat,omitempty"`
+	Lon              float64 `json:"lon,omitempty"`
 }
 
 // Ledger is an append-only JSONL file of first sightings. It rotates to

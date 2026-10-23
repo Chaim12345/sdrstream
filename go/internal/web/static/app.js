@@ -200,7 +200,7 @@ function facetChips(c) {
   const x = document.createElement('span');
   x.className = 'badge ' + (cv === 'verified' ? 'verified' : (cv === 'mismatch' ? 'unverified' : 'blind'));
   x.textContent = 'cross-check: ' + (cv || 'none recorded');
-  if (c.crosscheck_ref) x.title = 'reference: ' + c.crosscheck_ref;
+  if (c.crosscheck_ref) x.title = 'reference: ' + c.crosscheck_ref + (c.crosscheck_detail ? ' - ' + c.crosscheck_detail : '');
   return [g, x];
 }
 
@@ -251,7 +251,7 @@ function captureProof(c) {
   raw.textContent = c.decode || 'no decode text saved for this clip';
   row('raw decode', raw);
   row('live gate (Go)', (gateFacetOf(c) || 'not recorded') + (c.gate ? ' - ' + c.gate : ''));
-  row('cross-check', (c.crosscheck || 'none recorded') + (c.crosscheck_ref ? ' via ' + c.crosscheck_ref : ''));
+  row('cross-check', (c.crosscheck || 'none recorded') + (c.crosscheck_ref ? ' via ' + c.crosscheck_ref : '') + (c.crosscheck_detail ? ' - ' + c.crosscheck_detail : ''));
   row('verdict', c.crosscheck === 'verified' && gateFacetOf(c) === 'passed'
     ? 'verified live - gate passed and independently confirmed'
     : (c.verified ? 'gate passed - no independent cross-check recorded' : 'unverified'));
@@ -265,7 +265,7 @@ function captureProof(c) {
 /* ---------- receiver health & capture success ----------
    Summarises /api/metrics.json (uptime, scan outcomes, feed sources), the
    proof ledger (/api/ledger.json) and the archived captures from
-   status.json: verified vs unverified, scheduled target vs blind scan. */
+   status.json: gate-passed vs unverified, scheduled target vs blind scan. */
 const SCAN_OK_STATES = new Set(['decoded', 'listening', 'recording', 'decoding', 'tuned', 'connecting', 'idle', 'waiting', 'ok']);
 let healthSnapshot = { metrics: null, ledger: null, atMs: 0 };
 
@@ -336,17 +336,19 @@ function renderHealth() {
   const verified = caps.filter(c => c.verified).length;
   const unverified = caps.length - verified;
   el('health-success').textContent = caps.length ? Math.round(verified / caps.length * 100) + '%' : '–';
+  const crossChecked = caps.filter(c => c.crosscheck === 'verified').length;
   hbar(el('health-success-bar'), [
-    { label: 'verified live', count: verified, tone: 'good' },
+    { label: 'gate passed', count: verified, tone: 'good' },
     { label: 'unverified', count: unverified, tone: 'warn' },
   ]);
   const gates = {};
   caps.forEach(c => { if (!c.verified && c.gate) gates[c.gate] = (gates[c.gate] || 0) + 1; });
   const gateText = Object.keys(gates).sort((a, b) => gates[b] - gates[a]).slice(0, 3).map(g => g + ' ×' + gates[g]).join(', ');
   hlegend(el('health-success-legend'), [
-    { label: 'verified live', count: verified, tone: 'good' },
+    { label: 'gate passed', count: verified, tone: 'good' },
     { label: 'unverified', count: unverified, tone: 'warn' },
   ], 'no archived captures yet');
+  if (crossChecked) el('health-success-legend').appendChild(document.createTextNode(' · independently verified: ' + crossChecked));
   if (gateText) el('health-success-legend').appendChild(document.createTextNode(' · gates: ' + gateText));
 
   const scheduled = caps.filter(c => c.target).length;
@@ -396,8 +398,9 @@ function renderCaptures(status) {
       const badges = document.createElement('div'); badges.className = 'badge-row';
       const vb = document.createElement('span');
       vb.className = 'badge ' + (c.verified ? 'verified' : 'unverified');
-      vb.textContent = c.verified ? 'verified live' : 'unverified';
-      if (!c.verified && c.gate) vb.title = 'quality gate: ' + c.gate;
+      vb.textContent = c.verified ? (c.crosscheck === 'verified' ? 'verified live' : 'gate passed') : 'unverified';
+      if (c.verified) vb.title = 'Go live quality gate passed' + (c.crosscheck === 'verified' ? ' and independently cross-checked' : ' - no independent cross-check recorded');
+      else if (c.gate) vb.title = 'quality gate: ' + c.gate;
       badges.appendChild(vb);
       const ob = document.createElement('span');
       ob.className = 'badge ' + (c.target ? 'scheduled' : 'blind');
@@ -475,7 +478,7 @@ function renderGallery() {
   const satnogs = items.filter(it => !live.includes(it));
   const active = document.querySelector('[data-gallery-kind][aria-selected="true"]')?.dataset.galleryKind || 'live';
   const shown = active === 'live' ? live : satnogs;
-  el('gallery-count').textContent = active === 'live' ? live.length + ' verified live decodes' : satnogs.length + ' SatNOGS artefacts';
+  el('gallery-count').textContent = active === 'live' ? live.length + ' gate-passed live decodes' : satnogs.length + ' SatNOGS artefacts';
   box.textContent = '';
   shown.slice(0, 60).forEach(it => {
     const card = document.createElement('div'); card.className = 'gcard';
@@ -494,7 +497,7 @@ function renderGallery() {
   });
   if (!shown.length) {
     const note = document.createElement('div'); note.className = 'empty';
-    note.textContent = active === 'live' ? 'no verified live decodes yet' : 'no SatNOGS artefacts downloaded yet';
+    note.textContent = active === 'live' ? 'no gate-passed live decodes yet' : 'no SatNOGS artefacts downloaded yet';
     box.appendChild(note);
   }
 }
@@ -795,7 +798,7 @@ function renderActivity() {
   if (!full.length) {
     feed.innerHTML = activityItems.length
       ? '<div class="empty">no decode matches the current filters</div>'
-      : '<div class="empty">No verified activity yet. Start the Scan view to check public receivers.</div>';
+      : '<div class="empty">No gate-passed activity yet. Start the Scan view to check public receivers.</div>';
   }
   full.slice(0, limit).forEach(a => feed.appendChild(activityCard(a, false)));
   const more = el('activity-more');
@@ -1836,7 +1839,8 @@ function renderReceiverProof(entries) {
     const badges = document.createElement('div'); badges.className = 'badge-row';
     const ev = document.createElement('span');
     if (e.evidence === 'verified') {
-      ev.className = 'badge verified'; ev.textContent = 'verified live';
+      ev.className = 'badge verified';
+      ev.textContent = e.crosscheck === 'verified' ? 'verified live' : 'gate passed';
       ev.title = 'Go live quality gate passed' + (e.crosscheck === 'verified' ? ' and independently cross-checked' : ' - no independent cross-check recorded');
     } else {
       ev.className = 'badge unverified';
@@ -1852,8 +1856,8 @@ function renderReceiverProof(entries) {
       badges.appendChild(rx);
     }
     facetChips({ gate_verdict: e.gate_verdict || (e.evidence === 'verified' ? 'passed' : ''),
-      crosscheck: e.crosscheck, crosscheck_ref: e.crosscheck_ref, gate: e.gate,
-      verified: e.evidence === 'verified' }).forEach(ch => badges.appendChild(ch));
+      crosscheck: e.crosscheck, crosscheck_ref: e.crosscheck_ref, crosscheck_detail: e.crosscheck_detail,
+      gate: e.gate, verified: e.evidence === 'verified' }).forEach(ch => badges.appendChild(ch));
     card.appendChild(badges);
     if (e.gate) {
       const g = document.createElement('div'); g.className = 'card-meta';

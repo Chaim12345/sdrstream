@@ -54,14 +54,15 @@ type Capture struct {
 	// the Go live quality gate's own verdict (feeds.GatePassed /
 	// feeds.GateFailed, empty = not preserved) versus an independent
 	// reference cross-check (feeds.Crosscheck*, empty = never performed).
-	GateVerdict   string    `json:"gate_verdict,omitempty"`
-	Crosscheck    string    `json:"crosscheck,omitempty"`
-	CrosscheckRef string    `json:"crosscheck_ref,omitempty"`
-	Start         time.Time `json:"start"`
-	Samples       int       `json:"samples"`
-	Rate          int       `json:"rate"`
-	Path          string    `json:"path"`
-	URL           string    `json:"url,omitempty"`
+	GateVerdict      string    `json:"gate_verdict,omitempty"`
+	Crosscheck       string    `json:"crosscheck,omitempty"`
+	CrosscheckRef    string    `json:"crosscheck_ref,omitempty"`
+	CrosscheckDetail string    `json:"crosscheck_detail,omitempty"`
+	Start            time.Time `json:"start"`
+	Samples          int       `json:"samples"`
+	Rate             int       `json:"rate"`
+	Path             string    `json:"path"`
+	URL              string    `json:"url,omitempty"`
 }
 
 // CaptureMetadata is the provenance written beside a capture. The scanner
@@ -77,12 +78,13 @@ type CaptureMetadata struct {
 	Gate        string
 	// GateVerdict / Crosscheck / CrosscheckRef: the separate proof facets
 	// described on Capture. Empty values keep the legacy sidecar format.
-	GateVerdict   string
-	Crosscheck    string
-	CrosscheckRef string
-	Started       time.Time
-	DurationSec   float64
-	Verified      bool
+	GateVerdict      string
+	Crosscheck       string
+	CrosscheckRef    string
+	CrosscheckDetail string
+	Started          time.Time
+	DurationSec      float64
+	Verified         bool
 }
 
 // Status is the live snapshot the UI polls.
@@ -421,6 +423,9 @@ func WriteCaptureMetadata(dir, name string, meta CaptureMetadata) error {
 	if meta.CrosscheckRef != "" {
 		fmt.Fprintf(&b, "crosscheck_ref=%s\n", clean(meta.CrosscheckRef))
 	}
+	if meta.CrosscheckDetail != "" {
+		fmt.Fprintf(&b, "crosscheck_detail=%s\n", clean(meta.CrosscheckDetail))
+	}
 	return common.WriteFileAtomic(filepath.Join(dir, strings.TrimSuffix(name, ".wav")+".txt"), []byte(b.String()), 0o644)
 }
 
@@ -511,7 +516,7 @@ func (s *Server) listCaptures() []Capture {
 		var freq float64
 		mode, receiver, detail, kind, target, gate := "", "sdrstream", "", "", "", ""
 		verified := false
-		gateVerdict, crosscheck, crosscheckRef := "", "", ""
+		gateVerdict, crosscheck, crosscheckRef, crosscheckDetail := "", "", "", ""
 		started := info.ModTime().UTC()
 		for _, part := range parts {
 			if strings.HasSuffix(part, "kHz") {
@@ -548,6 +553,8 @@ func (s *Server) listCaptures() []Capture {
 					crosscheck = strings.TrimPrefix(line, "crosscheck=")
 				case strings.HasPrefix(line, "crosscheck_ref="):
 					crosscheckRef = strings.TrimPrefix(line, "crosscheck_ref=")
+				case strings.HasPrefix(line, "crosscheck_detail="):
+					crosscheckDetail = strings.TrimPrefix(line, "crosscheck_detail=")
 				case line == "verified=true":
 					verified = true
 				case line == "verified=false":
@@ -564,7 +571,7 @@ func (s *Server) listCaptures() []Capture {
 			Receiver:    receiver,
 			FrequencyHz: freq, Mode: mode, Decode: detail,
 			Kind: kind, Target: target, Verified: verified, Gate: gate,
-			GateVerdict: gateVerdict, Crosscheck: crosscheck, CrosscheckRef: crosscheckRef,
+			GateVerdict: gateVerdict, Crosscheck: crosscheck, CrosscheckRef: crosscheckRef, CrosscheckDetail: crosscheckDetail,
 			Start:   started,
 			Samples: int(dataBytes / 2),
 			Rate:    rate,
@@ -596,10 +603,40 @@ func (s *Server) listCaptures() []Capture {
 		var freq float64
 		mode, receiver, detail, kind, target, gate := "", "sdrstream", "", "", "", ""
 		verified := false
-		gateVerdict, crosscheck, crosscheckRef := "", "", ""
+		gateVerdict, crosscheck, crosscheckRef, crosscheckDetail := "", "", "", ""
 		started := info.ModTime().UTC()
+		// A surviving sidecar is proof only if it is one of our metadata
+		// files: hfschedule-style archives keep the raw decode text in
+		// <key>.txt and the reference decode in <key>.ref.txt, neither of
+		// which is a key=value sidecar. Require at least one known key so
+		// raw text is never mis-listed as a capture proof.
 		if sidecar, err := os.ReadFile(filepath.Join(s.capturesDir, name)); err == nil {
+			known := false
 			for _, line := range strings.Split(string(sidecar), "\n") {
+				switch {
+				case strings.HasPrefix(line, "frequency_hz="):
+					known = true
+				case strings.HasPrefix(line, "mode="):
+					known = true
+				case strings.HasPrefix(line, "receiver="):
+					known = true
+				case strings.HasPrefix(line, "decode="):
+					known = true
+				case strings.HasPrefix(line, "kind="):
+					known = true
+				case strings.HasPrefix(line, "target="):
+					known = true
+				case strings.HasPrefix(line, "gate="):
+					known = true
+				case strings.HasPrefix(line, "gate_verdict="):
+					known = true
+				case strings.HasPrefix(line, "crosscheck="):
+					known = true
+				case strings.HasPrefix(line, "verified="):
+					known = true
+				case strings.HasPrefix(line, "started="):
+					known = true
+				}
 				switch {
 				case strings.HasPrefix(line, "frequency_hz="):
 					freq, _ = strconv.ParseFloat(strings.TrimPrefix(line, "frequency_hz="), 64)
@@ -621,6 +658,8 @@ func (s *Server) listCaptures() []Capture {
 					crosscheck = strings.TrimPrefix(line, "crosscheck=")
 				case strings.HasPrefix(line, "crosscheck_ref="):
 					crosscheckRef = strings.TrimPrefix(line, "crosscheck_ref=")
+				case strings.HasPrefix(line, "crosscheck_detail="):
+					crosscheckDetail = strings.TrimPrefix(line, "crosscheck_detail=")
 				case line == "verified=true":
 					verified = true
 				case strings.HasPrefix(line, "started="):
@@ -628,6 +667,9 @@ func (s *Server) listCaptures() []Capture {
 						started = parsed.UTC()
 					}
 				}
+			}
+			if !known {
+				continue
 			}
 		}
 		satellite := base
@@ -638,7 +680,7 @@ func (s *Server) listCaptures() []Capture {
 			Satellite: satellite, Receiver: receiver,
 			FrequencyHz: freq, Mode: mode, Decode: detail,
 			Kind: kind, Target: target, Verified: verified, Gate: gate,
-			GateVerdict: gateVerdict, Crosscheck: crosscheck, CrosscheckRef: crosscheckRef,
+			GateVerdict: gateVerdict, Crosscheck: crosscheck, CrosscheckRef: crosscheckRef, CrosscheckDetail: crosscheckDetail,
 			Start: started,
 			Path:  name, // the surviving sidecar, as the ledger identity
 		})
