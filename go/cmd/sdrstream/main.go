@@ -858,6 +858,8 @@ func cmdMonitor(args []string) error {
 	stepHz := fs.Float64("step", 25000, "sweep step in Hz")
 	stepDwell := fs.Duration("dwell", 400*time.Millisecond, "how long to listen at each sweep step")
 	threshold := fs.Float64("threshold", 10, "dB above the noise floor to call a peak a transmission")
+	averageFrames := fs.Int("average-frames", 1, "average this many spectrum frames before detecting (1 = off, max 8); suppresses one-frame noise spikes")
+	hysteresisDB := fs.Float64("hysteresis-db", 0, "keep tracking a candidate this many dB below the start threshold (0 = off, max 12)")
 	listen := fs.Duration("listen", 8*time.Second, "how much audio to record per transmission (0 = none)")
 	mode := fs.String("mode", "auto", "modulation used when listening (auto picks fm or usb)")
 	voiceOn := fs.Bool("voice", true, "transcribe voice traffic")
@@ -905,6 +907,8 @@ func cmdMonitor(args []string) error {
 		StepHz:          *stepHz,
 		Dwell:           *stepDwell,
 		ThresholdDB:     *threshold,
+		AverageFrames:   *averageFrames,
+		HysteresisDB:    *hysteresisDB,
 		Listen:          *listen,
 		Mode:            *mode,
 		Voice:           *voiceOn,
@@ -1515,6 +1519,8 @@ func cmdWeb(args []string) error {
 	monitorEnd := fs.Float64("monitor-end", 146000000, "monitor sweep end frequency in Hz")
 	monitorStep := fs.Float64("monitor-step", 25000, "monitor sweep step in Hz")
 	monitorThreshold := fs.Float64("monitor-threshold", 10, "monitor threshold in dB above the noise floor")
+	monitorAverageFrames := fs.Int("monitor-average-frames", 1, "average this many spectrum frames before detecting (1 = off, max 8); suppresses one-frame noise spikes")
+	monitorHysteresisDB := fs.Float64("monitor-hysteresis-db", 0, "keep tracking a candidate this many dB below the start threshold (0 = off, max 12)")
 	monitorListen := fs.Duration("monitor-listen", 8*time.Second, "audio to record per transmission")
 	monitorDwell := fs.Duration("monitor-dwell", 400*time.Millisecond, "time to sample each monitor frequency during a sweep")
 	monitorMode := fs.String("monitor-mode", "auto", "modulation used for monitor audio (auto, fm, usb, am, etc.)")
@@ -1728,6 +1734,8 @@ func cmdWeb(args []string) error {
 			EndHz:           *monitorEnd,
 			StepHz:          *monitorStep,
 			ThresholdDB:     *monitorThreshold,
+			AverageFrames:   *monitorAverageFrames,
+			HysteresisDB:    *monitorHysteresisDB,
 			Dwell:           *monitorDwell,
 			Listen:          *monitorListen,
 			Mode:            *monitorMode,

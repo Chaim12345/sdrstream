@@ -21,6 +21,12 @@ license. See `LICENSE` for the GNU Affero General Public License.
   GPL-2.0-or-later. This is explicitly GPL-2.0-or-later, not GPL-2.0-only.
   Source: https://github.com/EliasOenal/multimon-ng .
 
+- `go/internal/monitor/monitor.go`: detection-robustness concepts
+  (hysteresis start/stop threshold levels, frame averaging with a ready gate)
+  ported as original Go code from rtl-sdr-scanner-cpp, Copyright 2020
+  shajen, GPL-3.0-or-later. Source:
+  https://github.com/shajen/rtl-sdr-scanner-cpp .
+
 ## Protocol specifications and independently implemented ACARS
 
 - `go/internal/decode/acars.go`: the MSK demodulator was rewritten as an

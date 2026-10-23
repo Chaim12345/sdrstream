@@ -54,6 +54,12 @@ type Activity struct {
 	Source             string     `json:"source"`
 	DurationSec        float64    `json:"duration_sec"`
 	AudioPath          string     `json:"audio_path,omitempty"`
+	// FrequencyRefined marks a coarse-panorama detection whose frequency
+	// was confirmed by a zoomed refinement window. Without it the
+	// frequency is a bin centre with FrequencyUncertaintyHz of error,
+	// and the detection is a candidate, not a tuned measurement.
+	FrequencyRefined       bool    `json:"frequency_refined,omitempty"`
+	FrequencyUncertaintyHz float64 `json:"frequency_uncertainty_hz,omitempty"`
 	Confidence         float64    `json:"confidence,omitempty"`
 	Language           string     `json:"language,omitempty"`
 	ASRModel           string     `json:"asr_model,omitempty"`
@@ -78,6 +84,19 @@ type Options struct {
 	// Cooldown is how long a frequency is not reported again after it
 	// has been seen.
 	Cooldown time.Duration
+	// AverageFrames smooths the detector input over the last N spectrum
+	// frames, so a single noisy frame cannot start a candidate. 0 or 1
+	// detects on every frame as it arrives. Concept ported from the
+	// sliding-window averager in shajen's rtl-sdr-scanner-cpp (GPL-3.0,
+	// see NOTICE-third-party.md).
+	AverageFrames int
+	// HysteresisDB keeps a candidate alive while its signal stays within
+	// HysteresisDB below the start level: start high, stop low, so a
+	// transmission hovering at the threshold does not flicker in and out
+	// of the log. 0 disables it (start and stop levels are the same).
+	// Two-threshold lifecycle ported from shajen's rtl-sdr-scanner-cpp
+	// (GPL-3.0, see NOTICE-third-party.md).
+	HysteresisDB float64
 	// Listen is how much audio to record per transmission; 0 skips it.
 	Listen time.Duration
 	// Mode is the modulation used when listening ("auto" picks per signal).
@@ -146,6 +165,10 @@ type Monitor struct {
 	centreHz   float64
 	spanHz     float64
 	spectrumOK bool
+	lastBinHz float64 // bin width of the newest spectrum frame, for mode choice
+	// frameHistory is the short sliding window of spectrum frames the
+	// detector averages over when Options.AverageFrames > 1.
+	frameHistory [][]float64
 	tunedHz    float64
 	bc         broadcastState
 }
@@ -160,12 +183,37 @@ type candidate struct {
 	lastSeen   time.Time
 	reported   bool
 	activityID int
+	// refined is set when a coarse panorama detection was zoomed in on:
+	// frequency and bandwidth then come from the fine window and the
+	// mode picker may trust them.
+	refined bool
+	// uncertaintyHz is the residual frequency error after refinement:
+	// half a fine bin of centroid rounding. Refined is not exact.
+	uncertaintyHz float64
 }
 
 // New builds a monitor.
 func New(options Options) *Monitor {
 	if options.ThresholdDB <= 0 {
 		options.ThresholdDB = 8
+	}
+	// Bounds on the robustness knobs: averaging beyond eight frames
+	// smears short transmissions away, and hysteresis at or above the
+	// start level would make the stop level meaningless.
+	if options.AverageFrames < 0 {
+		options.AverageFrames = 0
+	}
+	if options.AverageFrames > 8 {
+		options.AverageFrames = 8
+	}
+	if options.HysteresisDB < 0 {
+		options.HysteresisDB = 0
+	}
+	if options.HysteresisDB > 12 {
+		options.HysteresisDB = 12
+	}
+	if options.HysteresisDB >= options.ThresholdDB {
+		options.HysteresisDB = options.ThresholdDB / 2
 	}
 	if options.DwellTime <= 0 {
 		options.DwellTime = 1500 * time.Millisecond
@@ -315,6 +363,12 @@ func (m *Monitor) Run(ctx context.Context) error {
 	}()
 	defer func() { <-workerDone }()
 	if m.opts.Strategy == "spectrum" {
+		// Surface a missing waterfall as a visible misconfiguration
+		// instead of a silent audio-only scan.
+		type waterfallStatus interface{ WaterfallStatus() string }
+		if s, ok := m.opts.Source.(waterfallStatus); ok {
+			m.opts.Logf("%s", s.WaterfallStatus())
+		}
 		return m.runSpectrum(ctx)
 	}
 	if m.opts.Strategy == "broadcast" {
@@ -577,17 +631,156 @@ func (m *Monitor) runSpectrum(ctx context.Context) error {
 }
 
 // step looks at the current spectrum and updates the activity log.
+// averageFrames smooths the detector input over the last N frames
+// (Options.AverageFrames). A sliding per-bin mean kills one-frame noise
+// spikes that would otherwise start candidates; the concept is ported
+// from the Averager in shajen's rtl-sdr-scanner-cpp (GPL-3.0, see
+// NOTICE-third-party.md). Frames of a different length (a source that
+// changed zoom mid-stream) are skipped.
+func (m *Monitor) averageFrames(bins []float64) ([]float64, bool) {
+	n := m.opts.AverageFrames
+	if n <= 1 {
+		return bins, true
+	}
+	m.mu.Lock()
+	m.frameHistory = append(m.frameHistory, bins)
+	if len(m.frameHistory) > n {
+		m.frameHistory = m.frameHistory[len(m.frameHistory)-n:]
+	}
+	history := make([][]float64, len(m.frameHistory))
+	copy(history, m.frameHistory)
+	m.mu.Unlock()
+	avg := make([]float64, len(bins))
+	valid := make([]int, len(bins))
+	count := 0
+	for i := len(history) - 1; i >= 0; i-- {
+		if len(history[i]) != len(bins) {
+			continue
+		}
+		for j, v := range history[i] {
+			if !math.IsNaN(v) {
+				avg[j] += v
+				valid[j]++
+			}
+		}
+		count++
+	}
+	// Like the source averager's is-ready gate: until the window is
+	// full the mean is just a shorter, noisier frame, so detection
+	// waits. Frames of a different length (zoom change) keep the gate
+	// closed until N matching frames collect.
+	if count < n {
+		return nil, false
+	}
+	for j := range avg {
+		if valid[j] == 0 {
+			avg[j] = math.NaN()
+		} else {
+			avg[j] /= float64(valid[j])
+		}
+	}
+	return avg, true
+}
+
+// refine zooms a coarse panorama detection in for the real frequency
+// and bandwidth before it is reported, when the source supports it
+// (KiwiSDR waterfall). The refined values are what the listener tunes
+// to: a 29 kHz panorama bin is a neighbourhood, not a frequency.
+func (m *Monitor) refine(ctx context.Context, candidate *candidate) {
+	if candidate.refined {
+		return
+	}
+	m.mu.Lock()
+	coarse := m.lastBinHz > coarseBinHz
+	binHz := m.lastBinHz
+	m.mu.Unlock()
+	if !coarse {
+		return
+	}
+	type spectrumRefiner interface {
+		RefineSpectrum(ctx context.Context, freqHz float64) ([]float64, float64, float64, bool)
+	}
+	r, ok := m.opts.Source.(spectrumRefiner)
+	if !ok {
+		return
+	}
+	bins, centre, span, ok := r.RefineSpectrum(ctx, candidate.frequency)
+	if !ok || len(bins) < 8 || span <= 0 {
+		return
+	}
+	// The zoomed window is centred on the candidate itself, so the
+	// centre-demod guard would delete exactly what we came for.
+	//
+	// Identity bound: the coarse run of above-threshold bins spans
+	// candidate.bandwidth around the centroid; the true signal made
+	// that run, so the fine peak must lie inside the run's span plus
+	// half a coarse bin of centroid rounding on each side. A stronger
+	// peak outside the span is a neighbour, not this signal, and is
+	// never jumped to. Inside the span the strongest fine peak wins:
+	// the coarse run aggregated all of them.
+	halfSpan := candidate.bandwidth/2 + binHz/2
+	peaks := m.detectGuarded(bins, centre, span, false)
+	var match *peak
+	for i := range peaks {
+		p := &peaks[i]
+		if math.Abs(p.frequency-candidate.frequency) > halfSpan {
+			continue
+		}
+		if match == nil || p.levelDB > match.levelDB {
+			match = p
+		}
+	}
+	if match == nil {
+		return
+	}
+	candidate.frequency = match.frequency
+	candidate.bandwidth = match.bandwidth
+	if match.levelDB > candidate.levelDB {
+		candidate.levelDB = match.levelDB
+	}
+	candidate.refined = true
+	// Refined is not exact: the fine-window centroid still carries half
+	// a fine bin of rounding.
+	candidate.uncertaintyHz = span / float64(len(bins)) / 2
+}
+
 func (m *Monitor) step(ctx context.Context) {
 	bins, centre, span, ok := m.updateSpectrum()
 	if !ok || len(bins) < 8 || span <= 0 {
 		return
 	}
-	peaks := m.detect(bins, centre, span)
+	detectBins, ready := m.averageFrames(bins)
+	if !ready {
+		return
+	}
+	m.mu.Lock()
+	m.lastBinHz = span / float64(len(detectBins))
+	m.mu.Unlock()
+	// Hysteresis: candidates are born above the start level but stay
+	// alive while they hold the lower stop level, so a transmission
+	// hovering at the threshold does not flicker in and out of the log.
+	var refresh, start []peak
+	if m.opts.HysteresisDB > 0 {
+		refresh = m.detectThreshold(detectBins, centre, span, true, m.thresholdDB()-m.opts.HysteresisDB)
+		start = m.detectThreshold(detectBins, centre, span, true, m.thresholdDB())
+	} else {
+		refresh = m.detectThreshold(detectBins, centre, span, true, m.thresholdDB())
+		start = refresh
+	}
+	startKeys := make(map[string]bool, len(start))
+	for _, p := range start {
+		startKeys[peakKey(p.frequency)] = true
+	}
 	now := time.Now()
-	for _, peak := range peaks {
+	for _, peak := range refresh {
 		key := peakKey(peak.frequency)
 		existing, found := m.active[key]
 		if !found {
+			// A stop-level peak refreshes an existing candidate but
+			// never starts one: only start-level energy creates.
+			if !startKeys[key] {
+				continue
+			}
 			existing = &candidate{key: key, firstSeen: now}
 			m.mu.Lock()
 			m.active[key] = existing
@@ -602,6 +795,12 @@ func (m *Monitor) step(ctx context.Context) {
 		if existing.reported || now.Sub(existing.firstSeen) < m.opts.DwellTime {
 			continue
 		}
+		// Below the start level at report time: the transmission
+		// faded during the dwell, so wait for a real return instead
+		// of reporting threshold noise.
+		if !startKeys[key] {
+			continue
+		}
 		// One transmission, one entry: a transmitter that stays on the
 		// air is reported again only after the cooldown.
 		m.mu.Lock()
@@ -610,6 +809,9 @@ func (m *Monitor) step(ctx context.Context) {
 		if !last.IsZero() && now.Sub(last) < m.opts.Cooldown {
 			continue
 		}
+		// A coarse panorama only spots energy; zoom in for the real
+		// frequency and bandwidth before anyone tunes to it.
+		m.refine(ctx, existing)
 		existing.reported = true
 		m.mu.Lock()
 		m.reported[key] = now
@@ -637,6 +839,24 @@ func (m *Monitor) updateSpectrum() ([]float64, float64, float64, bool) {
 }
 
 // peak is a run of bins above the noise floor.
+// floorQuartile is the lower quartile of the valid (non-NaN) bins in
+// one floor window. Fewer than four valid bins means the window is
+// saturated garbage, and the quartile is NaN so detection goes quiet
+// there instead of trusting a poisoned floor.
+func floorQuartile(bins []float64) float64 {
+	valid := make([]float64, 0, len(bins))
+	for _, v := range bins {
+		if !math.IsNaN(v) {
+			valid = append(valid, v)
+		}
+	}
+	if len(valid) < 4 {
+		return math.NaN()
+	}
+	sort.Float64s(valid)
+	return valid[len(valid)/4]
+}
+
 type peak struct {
 	frequency float64
 	bandwidth float64
@@ -650,6 +870,20 @@ type peak struct {
 // real energy. A per-bin noise tracker would be wrong here: a carrier that
 // never goes away would be absorbed into its own floor.
 func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
+	return m.detectGuarded(bins, centre, span, true)
+}
+
+// detectGuarded is detect with the centre-demod guard switchable: a
+// zoomed refinement window is centred on the very signal being refined,
+// so the guard must not run there.
+func (m *Monitor) detectGuarded(bins []float64, centre, span float64, allowCentreGuard bool) []peak {
+	return m.detectThreshold(bins, centre, span, allowCentreGuard, m.thresholdDB())
+}
+
+// detectThreshold is detectGuarded with an explicit level above the
+// noise floor, so the candidate tracker can refresh on a lower stop
+// level than the start level that creates candidates (hysteresis).
+func (m *Monitor) detectThreshold(bins []float64, centre, span float64, allowCentreGuard bool, thresholdDB float64) []peak {
 	if len(bins) < 8 || span <= 0 {
 		return nil
 	}
@@ -660,7 +894,16 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 	// window, then interpolate between estimates. A lower quartile resists
 	// occupied channels while still tracking receiver roll-off across the
 	// profile. This keeps sorting work bounded instead of sorting per bin.
-	const floorWindow, floorStride = 2048, 512
+	// Scale the window to the frame: on a 1024-bin Kiwi panorama the
+	// 2048-bin window would clamp to the whole band and average the
+	// noisy LF end and the quiet HF end into one wrong global floor.
+	// 16384-bin OpenWebRX frames keep the original 2048/512 sizing,
+	// which the FM-channel test pins.
+	floorWindow, floorStride := 2048, 512
+	if len(bins) < floorWindow*2 {
+		floorWindow = max(64, len(bins)/8)
+		floorStride = max(16, floorWindow/4)
+	}
 	type floorPoint struct {
 		bin   int
 		value float64
@@ -676,20 +919,19 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 			high = len(bins)
 			low = max(0, high-floorWindow)
 		}
-		window := append([]float64(nil), bins[low:high]...)
-		sort.Float64s(window)
-		points = append(points, floorPoint{bin: center, value: window[len(window)/4]})
+		points = append(points, floorPoint{bin: center, value: floorQuartile(bins[low:high])})
 	}
 	if points[len(points)-1].bin != len(bins)-1 {
 		center := len(bins) - 1
 		low := max(0, center-floorWindow/2)
 		high := min(len(bins), low+floorWindow)
 		low = max(0, high-floorWindow)
-		window := append([]float64(nil), bins[low:high]...)
-		sort.Float64s(window)
-		points = append(points, floorPoint{bin: center, value: window[len(window)/4]})
+		points = append(points, floorPoint{bin: center, value: floorQuartile(bins[low:high])})
 	}
 	binHz := span / float64(len(bins))
+	// A point whose whole window was invalid bins is NaN: interpolation
+	// then carries NaN into floors, and bins with a NaN floor can never
+	// be "above" it, so saturated regions go silent instead of peaking.
 	floors := make([]float64, len(bins))
 	point := 0
 	for i := range bins {
@@ -708,7 +950,7 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 	for i := 0; i <= len(bins); i++ {
 		above := false
 		if i < len(bins) {
-			above = bins[i] > floors[i]+m.thresholdDB()
+			above = bins[i] > floors[i]+thresholdDB
 		}
 		if above && start < 0 {
 			start = i
@@ -743,22 +985,28 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 			start = -1
 		}
 	}
-	// The bins at the centre of the profile hold the server's own
+	// The bins at the centre of an OpenWebRX profile hold the server's own
 	// demodulated channel, which shows up as a permanent spike whose
 	// centroid can sit a few kHz off centre on a high-resolution FFT.
 	// Drop the whole neighbourhood, not only the exact bin: a quiet band
 	// with one real signal otherwise reports the demodulator forever.
 	// The guard is never narrower than 3 kHz, the width of the narrowest
 	// demodulator the server can run.
-	guard := math.Max(4*binHz, 3000)
-	kept := peaks[:0]
-	for _, p := range peaks {
-		if math.Abs(p.frequency-centre) < guard {
-			continue
+	// Only narrow profiles get this treatment: a KiwiSDR waterfall spans
+	// the whole 0-30 MHz band and has no demodulator spike at its centre,
+	// so guarding 15 MHz there would delete real signals (WWV lives
+	// exactly there). A refinement window sets allowCentreGuard=false.
+	if allowCentreGuard && span <= wideProfileMaxHz {
+		guard := math.Max(4*binHz, 3000)
+		kept := peaks[:0]
+		for _, p := range peaks {
+			if math.Abs(p.frequency-centre) < guard {
+				continue
+			}
+			kept = append(kept, p)
 		}
-		kept = append(kept, p)
+		peaks = kept
 	}
-	peaks = kept
 	// The first and last bins sit on the edge of the profile, where the
 	// server's filter rolls off and produces phantom peaks.
 	if len(peaks) > 0 && peaks[0].frequency-centre+span/2 < 2*binHz {
@@ -769,6 +1017,17 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 	}
 	return peaks
 }
+
+// wideProfileMaxHz bounds the spans that can carry an OpenWebRX demod
+// spike at their centre. The widest OpenWebRX profiles are a few MHz; a
+// KiwiSDR waterfall panorama is 30+ MHz, far above any profile.
+const wideProfileMaxHz = 6.4e6
+
+// coarseBinHz marks a spectrum whose bins are too wide to measure a
+// signal's real bandwidth (a KiwiSDR zoom-0 waterfall bin is ~29 kHz).
+// A peak there says "energy in this bin", not "the signal is 29 kHz
+// wide", so mode choice must not treat the bin width as the bandwidth.
+const coarseBinHz = 6000.0
 
 // ChooseMode picks a modulation for a transmission: a wide signal is
 // almost always FM voice, a narrow one is a sideband or a data burst.
@@ -791,6 +1050,15 @@ func ChooseModeAt(mode string, bandwidthHz, frequencyHz float64) string {
 	// narrow (a repeater carrier measures a few kHz); HF voice is sideband.
 	if frequencyHz >= 30e6 {
 		return "fm"
+	}
+	// Unknown bandwidth (a panorama bin too coarse to measure the
+	// signal): below the MW band edge the wide signal is AM broadcast,
+	// and sideband is the safer listen everywhere else on HF.
+	if bandwidthHz <= 0 && frequencyHz > 0 {
+		if frequencyHz <= 1.71e6 {
+			return "am"
+		}
+		return "usb"
 	}
 	if bandwidthHz > 12000 {
 		return "fm"
@@ -839,6 +1107,23 @@ func (m *Monitor) report(ctx context.Context, candidate *candidate) {
 		Label:       m.opts.Label,
 	}
 	m.mu.Lock()
+	coarse := m.lastBinHz > coarseBinHz
+	binHz := m.lastBinHz
+	m.mu.Unlock()
+	if coarse {
+		if candidate.refined {
+			activity.FrequencyRefined = true
+			// Refined, not exact: keep the fine-bin residual visible
+			// rather than reporting a falsely exact 0.
+			activity.FrequencyUncertaintyHz = candidate.uncertaintyHz
+		} else {
+			// One coarse bin of search radius was refined without a
+			// match: the true signal sits somewhere in the bin, so the
+			// honest uncertainty is half a bin either way.
+			activity.FrequencyUncertaintyHz = binHz / 2
+		}
+	}
+	m.mu.Lock()
 	m.nextID++
 	activity.ID = m.nextID
 	m.activities = append(m.activities, activity)
@@ -850,6 +1135,18 @@ func (m *Monitor) report(ctx context.Context, candidate *candidate) {
 	m.opts.Logf("activity #%d %.4f MHz (%.0f kHz wide, %.1f dB above the floor)",
 		activity.ID, activity.FrequencyHz/1e6, activity.BandwidthHz/1e3, activity.LevelDB)
 
+	// A coarse candidate that refinement could not match is a
+	// neighbourhood, not a frequency: tuning a narrowband receiver to
+	// its bin centre can miss the signal by half a bin in either
+	// direction. Report the candidate with its uncertainty and skip the
+	// narrowband listen rather than dispatch a wrong-frequency
+	// recording as a success.
+	if coarse && !candidate.refined {
+		m.opts.Logf("activity #%d is an unrefined candidate (+/-%.1f kHz); narrowband listen skipped",
+			activity.ID, activity.FrequencyUncertaintyHz/1e3)
+		m.publish(activity)
+		return
+	}
 	if m.opts.Listen <= 0 {
 		m.publish(activity)
 		return
@@ -859,13 +1156,26 @@ func (m *Monitor) report(ctx context.Context, candidate *candidate) {
 		frequency:  candidate.frequency,
 		bandwidth:  candidate.bandwidth,
 		levelDB:    candidate.levelDB,
-		modes:      []string{ChooseModeAt(m.listenMode(), candidate.bandwidth, candidate.frequency)},
+		modes:      []string{ChooseModeAt(m.listenMode(), m.modeBandwidth(candidate), candidate.frequency)},
 		activityID: activity.ID,
 	}:
 	default:
 		// The worker is busy; report the detection without a recording.
 		m.publish(activity)
 	}
+}
+
+// modeBandwidth is the bandwidth the mode picker may trust. A coarse
+// panorama bin overstates it (one 29 kHz bin is not a 29 kHz wide
+// signal), so the pick falls back to the frequency alone.
+func (m *Monitor) modeBandwidth(candidate *candidate) float64 {
+	m.mu.Lock()
+	coarse := m.lastBinHz > coarseBinHz
+	m.mu.Unlock()
+	if coarse && !candidate.refined {
+		return 0
+	}
+	return candidate.bandwidth
 }
 
 // handleJob records a transmission and works out what it is.
