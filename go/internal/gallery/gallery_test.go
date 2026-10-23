@@ -2,7 +2,10 @@ package gallery
 
 import (
 	"bytes"
+	"context"
+	"encoding/binary"
 	"encoding/json"
+	"os/exec"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -291,5 +294,122 @@ func TestDecodeFramesSkipsUnlabelledModes(t *testing.T) {
 	}
 	if items[0].DecodeStatus != "" {
 		t.Fatalf("non-image mode should not be attempted, got status %q", items[0].DecodeStatus)
+	}
+}
+
+// wavFixture builds a minimal PCM WAV: fmt chunk (mono, rate, 16-bit) and
+// a data chunk whose DECLARED size can differ from the payload written.
+func wavFixture(declaredData uint32, payloadBytes int, rate uint32) []byte {
+	var b bytes.Buffer
+	b.WriteString("RIFF")
+	_ = binary.Write(&b, binary.LittleEndian, uint32(36+declaredData))
+	b.WriteString("WAVE")
+	b.WriteString("fmt ")
+	_ = binary.Write(&b, binary.LittleEndian, uint32(16))
+	_ = binary.Write(&b, binary.LittleEndian, uint16(1))      // PCM
+	_ = binary.Write(&b, binary.LittleEndian, uint16(1))      // mono
+	_ = binary.Write(&b, binary.LittleEndian, rate)           // sample rate
+	_ = binary.Write(&b, binary.LittleEndian, rate*2)         // byte rate
+	_ = binary.Write(&b, binary.LittleEndian, uint16(2))      // block align
+	_ = binary.Write(&b, binary.LittleEndian, uint16(16))     // bits
+	b.WriteString("data")
+	_ = binary.Write(&b, binary.LittleEndian, declaredData)
+	b.Write(make([]byte, payloadBytes))
+	return b.Bytes()
+}
+
+func TestProbeWAVDurationClampsToActualPayload(t *testing.T) {
+	dir := t.TempDir()
+	// Header declares 80000 data bytes (5s at 8kHz mono 16-bit) but the
+	// file only holds 8000 (0.5s): the actual payload sets the duration.
+	p := filepath.Join(dir, "padded.wav")
+	if err := os.WriteFile(p, wavFixture(80000, 8000, 8000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, err := probeWAVDuration(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d < 0.49 || d > 0.51 {
+		t.Fatalf("duration = %v, want ~0.5 from the actual payload, not 5 from the declaration", d)
+	}
+	// A truthful header still measures correctly.
+	p2 := filepath.Join(dir, "honest.wav")
+	if err := os.WriteFile(p2, wavFixture(80000, 80000, 8000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, err = probeWAVDuration(p2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d < 4.9 || d > 5.1 {
+		t.Fatalf("duration = %v, want ~5", d)
+	}
+}
+
+func TestBoundedConversionCapsOutputDuringWrite(t *testing.T) {
+	if !decode.FFmpegAvailable() {
+		t.Skip("ffmpeg not installed")
+	}
+	dir := t.TempDir()
+	ogg := filepath.Join(dir, "tone.ogg")
+	mk := exec.Command(decode.FFmpegBinary(""), "-y", "-v", "error",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=3:sample_rate=8000", ogg)
+	if out, err := mk.CombinedOutput(); err != nil {
+		t.Skipf("cannot make ogg fixture: %v: %s", err, out)
+	}
+	dst := filepath.Join(dir, "out.wav")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	// 4KB cap: ffmpeg stops writing packets once it is crossed, so the
+	// file lands within a small flush/trailer slop rather than at the
+	// uncapped size. The production post-check tolerates this via slack.
+	if err := runFFmpeg(ctx, decode.FFmpegBinary(""), "-y", "-v", "error", "-i", ogg, "-ac", "1", "-fs", "4096", dst); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := filepath.Join(dir, "full.wav")
+	if err := runFFmpeg(ctx, decode.FFmpegBinary(""), "-y", "-v", "error", "-i", ogg, "-ac", "1", full); err != nil {
+		t.Fatal(err)
+	}
+	fiFull, err := os.Stat(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() > 4096+16384 {
+		t.Fatalf("capped conversion wrote %d bytes, far over the 4KB cap", fi.Size())
+	}
+	if fi.Size()*2 >= fiFull.Size() {
+		t.Fatalf("cap did not bound the output: capped %d, uncapped %d", fi.Size(), fiFull.Size())
+	}
+}
+
+func TestDecodeFramesOversizedCompressedSkipped(t *testing.T) {
+	if !decode.FFmpegAvailable() {
+		t.Skip("ffmpeg not installed")
+	}
+	dir := t.TempDir()
+	ogg := filepath.Join(dir, "7-tone.ogg")
+	mk := exec.Command(decode.FFmpegBinary(""), "-y", "-v", "error",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=3:sample_rate=8000", ogg)
+	if out, err := mk.CombinedOutput(); err != nil {
+		t.Skipf("cannot make ogg fixture: %v: %s", err, out)
+	}
+	old := maxWAVBytes
+	maxWAVBytes = 1024 // 3s of 8kHz mono PCM is ~48KB: over this cap
+	t.Cleanup(func() { maxWAVBytes = old })
+	audio := Item{Kind: "audio", Mode: "SSTV", Name: "7-tone.ogg", Path: ogg, Source: "satnogs"}
+	items := []Item{audio}
+	if frames := DecodeFrames(items, dir); len(frames) != 0 {
+		t.Fatalf("over-cap compressed audio produced %d frame(s), want 0", len(frames))
+	}
+	if !strings.Contains(items[0].DecodeStatus, "over the") {
+		t.Fatalf("over-limit reason missing: %q", items[0].DecodeStatus)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, "*.wav")); len(left) != 0 {
+		t.Fatalf("over-cap conversion left WAV files behind: %v", left)
 	}
 }

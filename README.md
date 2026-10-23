@@ -510,7 +510,11 @@ audio artefacts: an SSTV payload becomes a decoded frame saved next to
 the recording, listed in the manifest with `decoded_from` pointing at
 the audio it came from, so derived images are never confused with what
 the ground station itself published. OGG payloads convert through
-ffmpeg when needed; an artefact that yields no frame is left as it is.
+ffmpeg when needed; an artefact that yields no frame is left as it is,
+and its card says why (no ffmpeg, over the size or duration cap, no
+verified decode). Decode work is bounded: conversion stops writing at
+64MB, audio over 480s is rejected from a header probe that measures
+the payload actually present, and decoding runs sequentially.
 
 Every run writes an `index.json` manifest next to the artefacts. Each entry
 carries its source (`satnogs` - live station decodes are filed as `live`

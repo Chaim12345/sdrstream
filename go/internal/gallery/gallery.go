@@ -8,11 +8,13 @@ package gallery
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os/exec"
 
 	"github.com/chaim12345/sdrstream/go/internal/decode"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -218,6 +220,86 @@ var (
 	maxDecodeDurationSec = 480.0
 )
 
+// runFFmpeg executes one bounded conversion command.
+func runFFmpeg(ctx context.Context, binary string, args ...string) error {
+	cmd := exec.CommandContext(ctx, binary, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// probeWAVDuration reads a WAV header and returns the payload duration in
+// seconds. The data chunk length is clamped to the bytes the file actually
+// holds, so a header declaring more (or less) than the real payload does
+// not set the bound alone.
+func probeWAVDuration(path string) (float64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	header := make([]byte, 12)
+	if _, err := io.ReadFull(f, header); err != nil {
+		return 0, fmt.Errorf("short file")
+	}
+	if string(header[0:4]) != "RIFF" || string(header[8:12]) != "WAVE" {
+		return 0, fmt.Errorf("not a RIFF/WAVE file")
+	}
+	var rate, channels, bits int64
+	var dataBytes, dataOffset int64
+	for {
+		chunk := make([]byte, 8)
+		if _, err := io.ReadFull(f, chunk); err != nil {
+			break
+		}
+		size := int64(binary.LittleEndian.Uint32(chunk[4:8]))
+		pos, _ := f.Seek(0, io.SeekCurrent)
+		switch string(chunk[0:4]) {
+		case "fmt ":
+			if size < 16 {
+				return 0, fmt.Errorf("short fmt chunk")
+			}
+			fmtbuf := make([]byte, 16)
+			if _, err := io.ReadFull(f, fmtbuf); err != nil {
+				return 0, err
+			}
+			channels = int64(binary.LittleEndian.Uint16(fmtbuf[2:4]))
+			rate = int64(binary.LittleEndian.Uint32(fmtbuf[4:8]))
+			bits = int64(binary.LittleEndian.Uint16(fmtbuf[14:16]))
+			if _, err := f.Seek(pos+size+(size&1), io.SeekStart); err != nil {
+				return 0, err
+			}
+		case "data":
+			dataBytes = size
+			dataOffset = pos
+			if actual := fi.Size() - dataOffset; dataBytes > actual {
+				dataBytes = actual
+			}
+		default:
+			if _, err := f.Seek(pos+size+(size&1), io.SeekStart); err != nil {
+				return 0, err
+			}
+		}
+		if dataBytes > 0 && rate > 0 {
+			break
+		}
+	}
+	if rate <= 0 || channels <= 0 || bits <= 0 {
+		return 0, fmt.Errorf("missing or invalid fmt chunk")
+	}
+	bytesPerSec := rate * channels * (bits / 8)
+	if bytesPerSec <= 0 {
+		return 0, fmt.Errorf("invalid PCM parameters")
+	}
+	return float64(dataBytes) / float64(bytesPerSec), nil
+}
+
 // DecodeFrames runs the project's own decoders over downloaded audio
 // artefacts and returns new image items for the frames they extract.
 // Mode-matched: SSTV and APT observations are attempted; APT pictures
@@ -250,8 +332,13 @@ func DecodeFrames(saved []Item, dir string) []Item {
 				continue
 			}
 			tmp.Close()
+			// -fs caps the output file DURING conversion: a small
+			// compressed payload cannot expand past the cap on disk.
+			// The 1MB slack lets the post-check tell "hit the cap" from
+			// "legitimately small"; over-cap output is skipped, not decoded.
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			err = decode.ConvertToWAV(ctx, "", path, tmp.Name())
+			err = runFFmpeg(ctx, decode.FFmpegBinary(""), "-y", "-v", "error", "-i", path, "-ac", "1",
+				"-fs", fmt.Sprintf("%d", maxWAVBytes+(1<<20)), tmp.Name())
 			cancel()
 			if err != nil {
 				os.Remove(tmp.Name())
@@ -269,13 +356,22 @@ func DecodeFrames(saved []Item, dir string) []Item {
 			item.DecodeStatus = fmt.Sprintf("frame decode skipped: WAV over the %d MB limit", maxWAVBytes>>20)
 			continue
 		}
-		samples, rate, err := decode.ReadWAV(path)
+		// Duration check probes the header first, with the data chunk
+		// clamped to the bytes actually present: a padded or truncated
+		// file is measured by its real payload, not its declaration, and
+		// over-limit audio is rejected before the full sample load.
+		duration, err := probeWAVDuration(path)
 		if err != nil {
 			item.DecodeStatus = "frame decode skipped: unreadable audio: " + err.Error()
 			continue
 		}
-		if rate > 0 && float64(len(samples))/float64(rate) > maxDecodeDurationSec {
+		if duration > maxDecodeDurationSec {
 			item.DecodeStatus = fmt.Sprintf("frame decode skipped: audio longer than the %d s decode limit", int(maxDecodeDurationSec))
+			continue
+		}
+		samples, rate, err := decode.ReadWAV(path)
+		if err != nil {
+			item.DecodeStatus = "frame decode skipped: unreadable audio: " + err.Error()
 			continue
 		}
 		var png []byte
