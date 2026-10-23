@@ -263,6 +263,16 @@ const fmtDuration = sec => {
   return (m ? m + 'm ' : '') + r + 's';
 };
 
+// One honest provenance label per capture, shared by the card line
+// and the proof panel: the explicit sidecar class verbatim, unknown
+// stated plainly, never guessed.
+function captureProvenance(c) {
+  return c.source === 'live' ? 'recorded by this receiver'
+    : c.source === 'test-fixture' ? 'test fixture (synthetic - not a reception)'
+    : c.source ? c.source
+    : 'source not recorded';
+}
+
 function captureProof(c) {
   const wrap = document.createElement('div');
   const pb = document.createElement('button');
@@ -307,6 +317,7 @@ function captureProof(c) {
     ? 'verified live - gate passed and independently confirmed'
     : (c.verified ? 'gate passed - no independent cross-check recorded' : 'unverified'));
   row('origin', c.kind === 'archive' ? 'archive import' + (c.target ? ' - original target "' + c.target + '"' : '') : (c.target ? 'scheduled target "' + c.target + '"' : 'blind scan (no named target)'));
+  row('provenance', captureProvenance(c));
   row('archive', c.samples + ' samples at ' + c.rate + ' Hz' + (c.samples && c.rate ? ' (' + fmtDuration(c.samples / c.rate) + ')' : ''));
   pb.onclick = () => { pf.hidden = !pf.hidden; };
   wrap.append(pb, pf);
@@ -519,10 +530,7 @@ function renderCaptures(status) {
       facetChips(c).forEach(ch => badges.appendChild(ch));
       card.appendChild(badges);
       const prov = document.createElement('div'); prov.className = 'muted capture-provenance';
-      prov.textContent = c.source === 'live' ? 'provenance: recorded by this receiver'
-        : c.source === 'test-fixture' ? 'provenance: test fixture (synthetic - not a reception)'
-        : c.source ? 'provenance: ' + c.source
-        : 'provenance: not recorded (pre-field sidecar)';
+      prov.textContent = 'provenance: ' + captureProvenance(c);
       card.appendChild(prov);
       if (c.decode) { const d=document.createElement('div'); d.className='detail'; d.textContent=c.decode; card.appendChild(d); }
       if (c.url) {
