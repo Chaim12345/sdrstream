@@ -146,6 +146,7 @@ type Monitor struct {
 	centreHz   float64
 	spanHz     float64
 	spectrumOK bool
+	lastBinHz float64 // bin width of the newest spectrum frame, for mode choice
 	tunedHz    float64
 	bc         broadcastState
 }
@@ -583,6 +584,9 @@ func (m *Monitor) step(ctx context.Context) {
 		return
 	}
 	peaks := m.detect(bins, centre, span)
+	m.mu.Lock()
+	m.lastBinHz = span / float64(len(bins))
+	m.mu.Unlock()
 	now := time.Now()
 	for _, peak := range peaks {
 		key := peakKey(peak.frequency)
@@ -660,7 +664,16 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 	// window, then interpolate between estimates. A lower quartile resists
 	// occupied channels while still tracking receiver roll-off across the
 	// profile. This keeps sorting work bounded instead of sorting per bin.
-	const floorWindow, floorStride = 2048, 512
+	// Scale the window to the frame: on a 1024-bin Kiwi panorama the
+	// 2048-bin window would clamp to the whole band and average the
+	// noisy LF end and the quiet HF end into one wrong global floor.
+	// 16384-bin OpenWebRX frames keep the original 2048/512 sizing,
+	// which the FM-channel test pins.
+	floorWindow, floorStride := 2048, 512
+	if len(bins) < floorWindow*2 {
+		floorWindow = max(64, len(bins)/8)
+		floorStride = max(16, floorWindow/4)
+	}
 	type floorPoint struct {
 		bin   int
 		value float64
@@ -743,22 +756,28 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 			start = -1
 		}
 	}
-	// The bins at the centre of the profile hold the server's own
+	// The bins at the centre of an OpenWebRX profile hold the server's own
 	// demodulated channel, which shows up as a permanent spike whose
 	// centroid can sit a few kHz off centre on a high-resolution FFT.
 	// Drop the whole neighbourhood, not only the exact bin: a quiet band
 	// with one real signal otherwise reports the demodulator forever.
 	// The guard is never narrower than 3 kHz, the width of the narrowest
 	// demodulator the server can run.
-	guard := math.Max(4*binHz, 3000)
-	kept := peaks[:0]
-	for _, p := range peaks {
-		if math.Abs(p.frequency-centre) < guard {
-			continue
+	// Only narrow profiles get this treatment: a KiwiSDR waterfall spans
+	// the whole 0-30 MHz band and has no demodulator spike at its centre,
+	// so guarding 15 MHz there would delete real signals (WWV lives
+	// exactly there).
+	if span <= wideProfileMaxHz {
+		guard := math.Max(4*binHz, 3000)
+		kept := peaks[:0]
+		for _, p := range peaks {
+			if math.Abs(p.frequency-centre) < guard {
+				continue
+			}
+			kept = append(kept, p)
 		}
-		kept = append(kept, p)
+		peaks = kept
 	}
-	peaks = kept
 	// The first and last bins sit on the edge of the profile, where the
 	// server's filter rolls off and produces phantom peaks.
 	if len(peaks) > 0 && peaks[0].frequency-centre+span/2 < 2*binHz {
@@ -769,6 +788,17 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 	}
 	return peaks
 }
+
+// wideProfileMaxHz bounds the spans that can carry an OpenWebRX demod
+// spike at their centre. The widest OpenWebRX profiles are a few MHz; a
+// KiwiSDR waterfall panorama is 30+ MHz, far above any profile.
+const wideProfileMaxHz = 6.4e6
+
+// coarseBinHz marks a spectrum whose bins are too wide to measure a
+// signal's real bandwidth (a KiwiSDR zoom-0 waterfall bin is ~29 kHz).
+// A peak there says "energy in this bin", not "the signal is 29 kHz
+// wide", so mode choice must not treat the bin width as the bandwidth.
+const coarseBinHz = 6000.0
 
 // ChooseMode picks a modulation for a transmission: a wide signal is
 // almost always FM voice, a narrow one is a sideband or a data burst.
@@ -791,6 +821,15 @@ func ChooseModeAt(mode string, bandwidthHz, frequencyHz float64) string {
 	// narrow (a repeater carrier measures a few kHz); HF voice is sideband.
 	if frequencyHz >= 30e6 {
 		return "fm"
+	}
+	// Unknown bandwidth (a panorama bin too coarse to measure the
+	// signal): below the MW band edge the wide signal is AM broadcast,
+	// and sideband is the safer listen everywhere else on HF.
+	if bandwidthHz <= 0 && frequencyHz > 0 {
+		if frequencyHz <= 1.71e6 {
+			return "am"
+		}
+		return "usb"
 	}
 	if bandwidthHz > 12000 {
 		return "fm"
@@ -859,13 +898,26 @@ func (m *Monitor) report(ctx context.Context, candidate *candidate) {
 		frequency:  candidate.frequency,
 		bandwidth:  candidate.bandwidth,
 		levelDB:    candidate.levelDB,
-		modes:      []string{ChooseModeAt(m.listenMode(), candidate.bandwidth, candidate.frequency)},
+		modes:      []string{ChooseModeAt(m.listenMode(), m.modeBandwidth(candidate), candidate.frequency)},
 		activityID: activity.ID,
 	}:
 	default:
 		// The worker is busy; report the detection without a recording.
 		m.publish(activity)
 	}
+}
+
+// modeBandwidth is the bandwidth the mode picker may trust. A coarse
+// panorama bin overstates it (one 29 kHz bin is not a 29 kHz wide
+// signal), so the pick falls back to the frequency alone.
+func (m *Monitor) modeBandwidth(candidate *candidate) float64 {
+	m.mu.Lock()
+	coarse := m.lastBinHz > coarseBinHz
+	m.mu.Unlock()
+	if coarse {
+		return 0
+	}
+	return candidate.bandwidth
 }
 
 // handleJob records a transmission and works out what it is.

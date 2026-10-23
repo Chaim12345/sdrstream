@@ -265,7 +265,11 @@ func (s *webSDRSource) Close() error {
 // this client, so it can only listen.
 type kiwiSource struct {
 	client *kiwisdr.Client
-	name   string
+	// wf is the companion /W/F waterfall connection when the server
+	// accepted one; it gives the monitor the full-band panorama. Nil
+	// when the waterfall dial failed - the source can still listen.
+	wf   *kiwisdr.WaterfallClient
+	name string
 }
 
 // KiwiSource connects to a KiwiSDR server.
@@ -283,11 +287,28 @@ func dialKiwi(ctx context.Context, server string, allowPrivate bool) (Source, er
 	if err := client.Connect(ctx); err != nil {
 		return nil, err
 	}
-	return &kiwiSource{client: client, name: server}, nil
+	source := &kiwiSource{client: client, name: server}
+	// The waterfall is a second connection on the same receiver. It is
+	// best-effort: a server with no free waterfall channel still makes
+	// a perfectly good audio source.
+	if wf, err := kiwisdr.NewWaterfall(server, options); err == nil {
+		if err := wf.Connect(ctx); err == nil {
+			source.wf = wf
+		} else {
+			wf.Close()
+		}
+	}
+	return source, nil
 }
 
-// Spectrum reports that this source has no spectrum.
-func (s *kiwiSource) Spectrum() ([]float64, float64, float64, bool) { return nil, 0, 0, false }
+// Spectrum returns the waterfall panorama when the companion /W/F
+// connection is live, and reports no spectrum otherwise.
+func (s *kiwiSource) Spectrum() ([]float64, float64, float64, bool) {
+	if s.wf == nil {
+		return nil, 0, 0, false
+	}
+	return s.wf.Spectrum()
+}
 
 // Listen retunes and records.
 func (s *kiwiSource) Listen(ctx context.Context, hz float64, mode string, dur time.Duration) ([]float64, int, error) {
@@ -309,6 +330,9 @@ func (s *kiwiSource) Listen(ctx context.Context, hz float64, mode string, dur ti
 // Close shuts the connection.
 func (s *kiwiSource) Close() error {
 	s.client.Close()
+	if s.wf != nil {
+		s.wf.Close()
+	}
 	return nil
 }
 
