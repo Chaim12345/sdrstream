@@ -39,6 +39,17 @@ if [ "$INSTALL_OK" = 1 ]; then
   sleep 8
   adb exec-out screencap -p > "$OUT/$LABEL-final.png" || true
 
+  # The app may be in the background here (the KEYCODE_BACK above reaches
+  # onBackPressed -> moveTaskToBack when no dialog is showing). Relaunch and
+  # wait until sdrstream actually has window focus before dumping the UI.
+  for i in $(seq 1 10); do
+    adb shell am start -n com.chaim12345.sdrstream/.MainActivity >/dev/null 2>&1 || true
+    sleep 2
+    FOCUS=$(adb shell dumpsys window 2>/dev/null | grep -o 'mCurrentFocus[^}]*' || true)
+    case "$FOCUS" in *com.chaim12345.sdrstream*) break;; esac
+  done
+  echo "focus after relaunch: $FOCUS" | tee "$OUT/$LABEL-focus.txt"
+
   # Menu-reachability proof (the 0.1.1 bug: the options menu existed in code
   # but no on-screen control could open it). Find a UI node by attribute
   # value in the uiautomator dump, tap its center, and screenshot the result.
