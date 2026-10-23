@@ -1,0 +1,238 @@
+{
+  "version": 1,
+  "created": "2026-10-24",
+  "purpose": "Regression manifest for the voice ASR eval harness (TestASREvalCorpus). WER values measured on the harness branch tip; gates are absolute percentage-point margins declared at creation time and are never loosened to make a failure pass - a breach is reported.",
+  "code_revision_measured": "5ac9e01450409c135c9fc456424478f117bbc71b (merged; harness branch off integration 200edeb31252658c0b12d34fa04018d0439ba676, identical voice tree)",
+  "whisper_cpp_commit": "231638a0717b7822784297e5980965ffcec05810",
+  "models": {
+    "primary": {
+      "file": "ggml-tiny.en.bin",
+      "sha256": "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
+      "source": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin"
+    },
+    "fallback": {
+      "file": "ggml-base.en.bin",
+      "sha256": "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
+      "source": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
+      "min_confidence": 0.8
+    }
+  },
+  "corpus": {
+    "source": "LibriSpeech dev-clean, CC BY 4.0, https://www.openslr.org/12",
+    "attribution": "LibriSpeech (c) 2014 Vassil Panayotov, CC BY 4.0",
+    "selection": "first 28 utterances by sorted flac path, ffmpeg -ar 16000 -ac 1",
+    "fetch_script": "scripts/fetch-asr-eval-corpus.sh",
+    "env": "SDRSTREAM_ASR_EVAL_DIR"
+  },
+  "files": [
+    {
+      "name": "1272-128104-0000",
+      "wav_sha256": "075ecae972a6cef014ce8a80bd17e8962444d196566893d5472ed13d169625e3",
+      "txt_sha256": "c1a46943d4665aac8d39edfa6aed9f345141a9894e352fce1ff540f7725d5506",
+      "ref_words": 17
+    },
+    {
+      "name": "1272-128104-0001",
+      "wav_sha256": "847a5fb74cf5d14511ed91d34a3bad20821dcf78e6d8db8403f3b7093c23f75d",
+      "txt_sha256": "57fd5069e26a0368445eccc756f50ce2250bcfb5e54ead36f4a1e53b19f6d0a8",
+      "ref_words": 10
+    },
+    {
+      "name": "1272-128104-0002",
+      "wav_sha256": "54c87a7acf32f76a57286e5833e605c72c360c6cd2156598650a74c24b9f7415",
+      "txt_sha256": "89dead1f9103b9011014a693ef94ef7d23a4e265d15a3b960f1d88f59731c4c9",
+      "ref_words": 32
+    },
+    {
+      "name": "1272-128104-0003",
+      "wav_sha256": "6999fcb9fa77e4286d6e8eea2b860bc91d057bc1d0d2da3e830d9f870b81cf7b",
+      "txt_sha256": "14b4bd22e1c19a9a0e1c005ef2768ce29ee34fb34e6453d753cc7139eb493704",
+      "ref_words": 24
+    },
+    {
+      "name": "1272-128104-0004",
+      "wav_sha256": "90699036a5778016fa95d548524d236e2c8d285fd28bf4005d08bef19e01fc41",
+      "txt_sha256": "6dcce93e8565255340eb3fdbbc78144f045d184792f0f5b54b05eebed692ff32",
+      "ref_words": 68
+    },
+    {
+      "name": "1272-128104-0005",
+      "wav_sha256": "dcb45eccdacdd2ac01d73f1a23f9a7115b9a18118c3ab897043704786bb447fa",
+      "txt_sha256": "f49c7c48bf6ec19057fc833f74f9ee66e5d55e9f2dc3cb491c6b09f361df6231",
+      "ref_words": 18
+    },
+    {
+      "name": "1272-128104-0006",
+      "wav_sha256": "0df34e05d1eada189fc85d53fe2446896d2f4c5a60b8a1f10d1a176b9d285d5f",
+      "txt_sha256": "703bca5918ca2f83c20d5569793d0e6efb7a891f7b22cdd7069f651cc41ca930",
+      "ref_words": 12
+    },
+    {
+      "name": "1272-128104-0007",
+      "wav_sha256": "35694797412f3e57d93f67bfa5105f6e408f7daa7ac5cbe8a3fc397a83ebae74",
+      "txt_sha256": "e26aa37b83ffa2c919574c9bf75e51787dbd6b0bbd9e0472b0ec3f28ea8e84db",
+      "ref_words": 19
+    },
+    {
+      "name": "1272-128104-0008",
+      "wav_sha256": "6f57a19a08cfe651e6011cd9456a17bc79c5b433a40af0ff98f20f3b97691e78",
+      "txt_sha256": "30d38ed2877b2b0c85ab6f6c4ada1a68ac218c4f6ab5efa45446c133013a4bfc",
+      "ref_words": 11
+    },
+    {
+      "name": "1272-128104-0009",
+      "wav_sha256": "fc0ad210d83dba2459449ce4c4c236a3fa5902e3fa79a03b58ed59f9fb809999",
+      "txt_sha256": "728145bcf21633654d3b236feb36dd3a822dfd74bc768fc107a7c9069686410b",
+      "ref_words": 43
+    },
+    {
+      "name": "1272-128104-0010",
+      "wav_sha256": "a06f65df3ec81d5dc900592fbee058ec2a3ce9a9b0fcf238aef19974f0da7033",
+      "txt_sha256": "d8afa3a85e34276337e029ba1fbdc01cdeef7dca2f4c8d1994425d4163202982",
+      "ref_words": 15
+    },
+    {
+      "name": "1272-128104-0011",
+      "wav_sha256": "d4a4247fb7142cb0debaa8bf3e2a0d40ffca3bb9355c4d94c1bde7dcaeb2cef7",
+      "txt_sha256": "8b081ad66e5f1080b096400dc7ae25adc1f0b1392a0ede013e3db67747cfd800",
+      "ref_words": 34
+    },
+    {
+      "name": "1272-128104-0012",
+      "wav_sha256": "ef3196af4a05da3327b6347e3fb3b02765aaeb1cc2b787ad21425d1180f849fd",
+      "txt_sha256": "f41637996dde7c3c71d7be1b0e9aef62a7e66544c346abdaa6e5dc5d6ec4dc2f",
+      "ref_words": 9
+    },
+    {
+      "name": "1272-128104-0013",
+      "wav_sha256": "53a21a88fa84761fe3fca607b48d121aacae9d1b96bbc1a7695857438cbecfe1",
+      "txt_sha256": "174dae3f829cb5b31110b51698ba3ee1f664b758929a559b9c5cb29d13ea2bd4",
+      "ref_words": 18
+    },
+    {
+      "name": "1272-128104-0014",
+      "wav_sha256": "81bd23199a842e696184ee871750567ee2bdf384d66a29e00f5a1476185c7974",
+      "txt_sha256": "b5f686f326250f5a92604561743f1526e48bba0d3ad294b4b897bfa04a2bc344",
+      "ref_words": 5
+    },
+    {
+      "name": "1272-135031-0000",
+      "wav_sha256": "930ecc6611b9b0304d7159f514a304fedf4deefdf88423bdbf6987185a89195f",
+      "txt_sha256": "848e7a6dfddcbc40af9054397026fac428956e66b948b9d58bf478acc69d2827",
+      "ref_words": 26
+    },
+    {
+      "name": "1272-135031-0001",
+      "wav_sha256": "7d838433411b9136a82b0f4f862dfb704e6d8a899c8a6040e434b8b683d65c03",
+      "txt_sha256": "dfdfa6821944e5073f3b42fa0fe5887913ce587504ca39b87b4fa0b1e9b950a4",
+      "ref_words": 28
+    },
+    {
+      "name": "1272-135031-0002",
+      "wav_sha256": "6bc8ce4f2f0b48863343d3262fc8e2863aa5ff40bcc46ef5b3fd3f68bfe653f4",
+      "txt_sha256": "8f5d2f5cae06922c7b5596ef86c6e32d796c45b1e77105a84d062979839f51ad",
+      "ref_words": 31
+    },
+    {
+      "name": "1272-135031-0003",
+      "wav_sha256": "137640a3ec7dfe14ff8495aaf81423cefd5fb2ad96073129592fad37b1606af6",
+      "txt_sha256": "68eb0d00aaab5beff6e244ce577ac5eada9d1610c10a18cddf43597c14a4bb92",
+      "ref_words": 15
+    },
+    {
+      "name": "1272-135031-0004",
+      "wav_sha256": "b659b4d912fbebe9dc955dc7d19e1c8db95a19595f49a5a6f08fe49c22d135bb",
+      "txt_sha256": "aa5f5c47760bc56c89f0ad50a78aa98a5c0c19de292d2e8c92705561b2fe524b",
+      "ref_words": 13
+    },
+    {
+      "name": "1272-135031-0005",
+      "wav_sha256": "02226933a570eb7dd04d41e2a678e35a03bf68f4304605e5994e97bed16ed56c",
+      "txt_sha256": "0a3a2ce9475ab864d311806ca74b366de54f910f15fa277229302fb95ca702ca",
+      "ref_words": 15
+    },
+    {
+      "name": "1272-135031-0006",
+      "wav_sha256": "54b93a5289570e25188e42684c6f8978c05dc605a56bbcbbbbe9539b0911dcd4",
+      "txt_sha256": "dbfeb64d28a2ca5d4ea139aea05cccbc5cf4c56aa961acfd012c217e8eed665a",
+      "ref_words": 14
+    },
+    {
+      "name": "1272-135031-0007",
+      "wav_sha256": "612ecd4d4960e2cfd88ebe8558eeef293198f81bf20a37aeb941334cd7d57138",
+      "txt_sha256": "f5a5bc0cf375235b80ecab851677530ea69ca6b805007ae97a49ca5b21645087",
+      "ref_words": 10
+    },
+    {
+      "name": "1272-135031-0008",
+      "wav_sha256": "f3ca9e9d07983e820f0c163e368354b67b20fd0d1c4b678b9ac7f05bac20230c",
+      "txt_sha256": "cd651a2d6ba4fe57c8143878e967c24e1ca9e11ffada9005639d83262930368b",
+      "ref_words": 9
+    },
+    {
+      "name": "1272-135031-0009",
+      "wav_sha256": "9bb59b6dd8dd53002cbde5ff16739df0a8c1570cd69221b90975f1f7857f4ba2",
+      "txt_sha256": "4ba49561b8873d48254ec5f0f8ac99c3d0923bf40a4b7ea24838a2665d50f606",
+      "ref_words": 5
+    },
+    {
+      "name": "1272-135031-0010",
+      "wav_sha256": "447a987764c5d9570aaa5bf574b3a663910920290ad4eaecc22de8f1af59fdd2",
+      "txt_sha256": "4c57d849753a230974d6f626c56d24dcd497f7cd532bab755eb0412f7da32e63",
+      "ref_words": 30
+    },
+    {
+      "name": "1272-135031-0011",
+      "wav_sha256": "20d2f71971c495bf62298bb71696744bfa8954dd9725783e6832b79ca1a2b8f3",
+      "txt_sha256": "0a50f817cb7b645bfde1b60c5007a2ffe9ae1544b9097596b4127771fc292ba0",
+      "ref_words": 4
+    },
+    {
+      "name": "1272-135031-0012",
+      "wav_sha256": "515f60527edefd0a690faaf579dee3c09e010e51c498ae0e7f54996e7a437799",
+      "txt_sha256": "8f8d07887c716bab7257210ad8f6ab0a2b7b0b4bc9e91900e4fd00d14629173d",
+      "ref_words": 5
+    }
+  ],
+  "conditions": [
+    {
+      "name": "clean",
+      "snr_db": null,
+      "gap_s": 0,
+      "measured": {
+        "baseline_wer_pct": 8.5,
+        "asr_wer_pct": 9.3,
+        "words": 540,
+        "baseline_errs": 46,
+        "asr_errs": 50
+      },
+      "gate_abs_pts": 1.5
+    },
+    {
+      "name": "radio+8dB",
+      "snr_db": 8,
+      "gap_s": 3,
+      "measured": {
+        "baseline_wer_pct": 27.8,
+        "asr_wer_pct": 21.3,
+        "words": 540,
+        "baseline_errs": 150,
+        "asr_errs": 115
+      },
+      "gate_abs_pts": 2.5
+    },
+    {
+      "name": "radio+12dB",
+      "snr_db": 12,
+      "gap_s": 15,
+      "measured": {
+        "baseline_wer_pct": 33.1,
+        "asr_wer_pct": 16.9,
+        "words": 540,
+        "baseline_errs": 179,
+        "asr_errs": 91
+      },
+      "gate_abs_pts": 2.5
+    }
+  ]
+}
