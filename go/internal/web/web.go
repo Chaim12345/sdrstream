@@ -162,6 +162,44 @@ type LiveGalleryItem struct {
 	Verification string `json:"verification,omitempty"`
 }
 
+// galleryLiveClass classifies a live-gallery manifest item by
+// source-owned provenance. The live writer records Source "live" and
+// the gate reason in a single write when a decode passes the
+// publication gate, so only that pair is a current gate-passed
+// verdict: a reason string on any other item is just a string, never
+// a verdict.
+type galleryLiveClass int
+
+const (
+	// galleryLiveVerified is receiver-decoded and gate-passed: the
+	// only class that counts as current live activity.
+	galleryLiveVerified galleryLiveClass = iota
+	// galleryLiveHistorical is live-sourced (or a legacy manifest
+	// entry from before the source field) without a gate-owned
+	// verdict: shown for completeness, never counted as current.
+	galleryLiveHistorical
+	// galleryForeign is any other source in the manifest (test
+	// fixtures, imports): not receiver activity at all.
+	galleryForeign
+)
+
+func (it LiveGalleryItem) galleryLiveClass() galleryLiveClass {
+	switch it.Source {
+	case "live":
+		if it.Verification != "" {
+			return galleryLiveVerified
+		}
+		return galleryLiveHistorical
+	case "":
+		// Manifest entries from before the source field: live
+		// provenance unknown, so the item is historical regardless
+		// of any verification string it carries.
+		return galleryLiveHistorical
+	default:
+		return galleryForeign
+	}
+}
+
 // obsCacheEntry is one cached SatNOGS observations lookup.
 type obsCacheEntry struct {
 	observations []satnogs.Observation
@@ -2028,14 +2066,19 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	// Scanner and feed decodes only live in the gallery, so merge them in
 	// (skipping anything the monitor already reported; monitor decodes are
 	// also saved to the gallery and would otherwise be counted twice).
-	// Gallery entries carry their recorded gate proof; entries without one
-	// are marked historical so the pill counts only current gate-passed
-	// traffic.
+	// Classification is source-owned: only a gate-verified live item
+	// merges as current activity; a live or legacy item without a
+	// gate-owned verdict merges as historical; test fixtures and other
+	// non-receiver sources are not activity and never enter the feed.
 	seen := make(map[string]bool, len(items))
 	for _, a := range items {
 		seen[activityDedupeKey(a)] = true
 	}
 	for i, it := range live {
+		class := it.galleryLiveClass()
+		if class == galleryForeign {
+			continue
+		}
 		kind := "data"
 		switch {
 		case it.Kind == "image":
@@ -2044,18 +2087,21 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 			kind = "voice"
 		}
 		a := monitor.Activity{
-			ID:           i + 1,
-			Started:      it.Start,
-			FrequencyHz:  float64(it.FrequencyHz),
-			Kind:         kind,
-			Mode:         it.Mode,
-			Detail:       it.Text,
-			Source:       it.Station,
-			Verification: it.Verification,
-			// A gallery item without a recorded gate reason is
-			// historical: listed for completeness, never counted as
-			// current gate-passed traffic.
-			Historical: it.Verification == "",
+			ID:          i + 1,
+			Started:     it.Start,
+			FrequencyHz: float64(it.FrequencyHz),
+			Kind:        kind,
+			Mode:        it.Mode,
+			Detail:      it.Text,
+			Source:      it.Station,
+		}
+		if class == galleryLiveVerified {
+			a.Verification = it.Verification
+		} else {
+			// A gallery item without a gate-owned verdict is
+			// historical: listed for completeness, never counted
+			// as current gate-passed traffic.
+			a.Historical = true
 		}
 		if seen[activityDedupeKey(a)] {
 			continue

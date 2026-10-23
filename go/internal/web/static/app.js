@@ -594,15 +594,18 @@ function galleryCard(it) {
     const lin = document.createElement('div'); lin.className = 'muted';
     lin.textContent = it.decode_status; body.appendChild(lin);
   }
-  // Gate provenance recorded at verification time (live items). A
-  // recorded reason renders verbatim; a live item WITHOUT one is
-  // historical - verification unknown - and says so, instead of
-  // borrowing the header's gate-passed claim. SatNOGS and test
-  // fixture items carry their own provenance and get neither label.
-  if (it.verification) {
+  // Gate provenance is source-owned: a reason recorded by the live
+  // writer (source "live") renders verbatim, and so does provenance
+  // text on non-live tabs (test fixtures carry their own honest
+  // strings). A live-tab item WITHOUT a gate-owned verdict is
+  // historical - verification unknown - including legacy source-less
+  // items, whose verification string alone is not a verdict.
+  const legacyLive = !it.source && ((it.kind === 'image' && it.observation_id === 0) || it.satellite === 'Live reception');
+  const liveTab = it.source ? it.source === 'live' : legacyLive;
+  if (it.verification && !legacyLive) {
     const lin = document.createElement('div'); lin.className = 'muted verification';
     lin.textContent = it.verification; body.appendChild(lin);
-  } else if (it.source ? it.source === 'live' : ((it.kind === 'image' && it.observation_id === 0) || it.satellite === 'Live reception')) {
+  } else if (liveTab) {
     const lin = document.createElement('div'); lin.className = 'muted verification';
     lin.textContent = 'historical - verification unknown (no gate proof recorded)';
     body.appendChild(lin);
@@ -652,11 +655,11 @@ function renderGallery() {
   const active = document.querySelector('[data-gallery-kind][aria-selected="true"]')?.dataset.galleryKind || 'live';
   if (active === 'test') return; // the test tab owns its own rendering and meta
   const shown = active === 'live' ? live : satnogs;
-  // Only items with a RECORDED gate reason count as gate-passed. Items
-  // saved before reasons were recorded (or reloaded without one) are
-  // historical with unknown verification - shown, but never re-labeled
-  // as current gate-passed.
-  const proven = live.filter(it => it.verification).length;
+  // A gate verdict is source-owned: only an item the live writer
+  // marked source "live" with a recorded reason counts as gate-passed.
+  // Legacy (source-less) items display on this tab but stay historical
+  // even if a string sits in their verification field.
+  const proven = live.filter(it => it.source === 'live' && it.verification).length;
   const unknown = live.length - proven;
   el('gallery-count').textContent = active === 'live'
     ? proven + ' gate-passed live decode' + (proven === 1 ? '' : 's') + (unknown ? ' · ' + unknown + ' historical (verification unknown)' : '')
@@ -929,12 +932,20 @@ function activityCard(a, fresh) {
   const card = document.createElement('div');
   card.className = 'card-activity ' + (a.kind || '') + (fresh ? ' fresh' : '');
   const rowEl = document.createElement('div'); rowEl.className = 'row';
-  const freq = document.createElement('span'); freq.className = 'freq'; freq.textContent = mhz(a.frequency_hz);
   const badge = document.createElement('span'); badge.className = 'badge ' + (a.kind || ''); badge.textContent = a.kind || 'unknown';
   const time = document.createElement('span'); time.className = 'muted'; time.textContent = relTime(a.started); time.title = fmtDate(a.started);
-  const level = document.createElement('span'); level.className = 'muted';
-  level.textContent = (a.level_db || 0).toFixed(0) + ' dB' + (a.bandwidth_hz ? ' · ' + (a.bandwidth_hz / 1000).toFixed(0) + ' kHz' : '');
-  rowEl.appendChild(freq); rowEl.appendChild(badge); rowEl.appendChild(time); rowEl.appendChild(level);
+  // Only real detections carry a measured frequency and level; a
+  // gallery-merged entry without one must not render invented values.
+  if (a.frequency_hz) {
+    const freq = document.createElement('span'); freq.className = 'freq'; freq.textContent = mhz(a.frequency_hz);
+    rowEl.appendChild(freq);
+  }
+  rowEl.appendChild(badge); rowEl.appendChild(time);
+  if (a.frequency_hz) {
+    const level = document.createElement('span'); level.className = 'muted';
+    level.textContent = (a.level_db || 0).toFixed(0) + ' dB' + (a.bandwidth_hz ? ' · ' + (a.bandwidth_hz / 1000).toFixed(0) + ' kHz' : '');
+    rowEl.appendChild(level);
+  }
   card.appendChild(rowEl);
   if (a.mode) {
     const meta = document.createElement('div'); meta.className = 'meta';
