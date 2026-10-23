@@ -2,6 +2,7 @@ package decode
 
 import (
 	"context"
+	"github.com/chaim12345/sdrstream/go/internal/testutil/wefaxfixture"
 	"testing"
 )
 
@@ -21,7 +22,7 @@ func TestDecodeHFWEFAXGateSemantics(t *testing.T) {
 	}
 	cases := []struct {
 		name     string
-		fixture  wefaxFixture
+		fixture  wefaxfixture.Fixture
 		wantLive bool
 	}{
 		// Charts need 240+ rendered lines to pass the structural
@@ -32,12 +33,12 @@ func TestDecodeHFWEFAXGateSemantics(t *testing.T) {
 		// they are gate-rejected here not because the chart is bad
 		// but because the tracker cannot hold it yet; the gate
 		// verdicts below hold either way.
-		{"good mid-chart capture", wefaxFixture{rate: 12000, imageLines: 280, bars: true, lineSec: 0.5004, noiseAmp: 0.3}, true},
-		{"misaligned flat gradient, real wedge", wefaxFixture{rate: 12000, phasingLines: 60, imageLines: 260, startToneSec: 3, flatGradient: true, noiseAmp: 0.15}, false},
-		{"biased mid-chart gray bars", wefaxFixture{rate: 12000, imageLines: 280, bars: true, barGradient: true, gradBands: 4, lineSec: 0.5004, noiseAmp: 0.3}, false},
+		{"good mid-chart capture", wefaxfixture.Fixture{Rate: 12000, ImageLines: 280, Bars: true, LineSec: 0.5004, NoiseAmp: 0.3}, true},
+		{"misaligned flat gradient, real wedge", wefaxfixture.Fixture{Rate: 12000, PhasingLines: 60, ImageLines: 260, StartToneSec: 3, FlatGradient: true, NoiseAmp: 0.15}, false},
+		{"biased mid-chart gray bars", wefaxfixture.Fixture{Rate: 12000, ImageLines: 280, Bars: true, BarGradient: true, GradBands: 4, LineSec: 0.5004, NoiseAmp: 0.3}, false},
 	}
 	for _, tc := range cases {
-		samples := encodeWEFAX(tc.fixture)
+		samples := wefaxfixture.Encode(tc.fixture)
 		res := decodeHF(context.Background(), target, "probe:8073", to16(samples), 12000)
 		if res.Gate.Live != tc.wantLive {
 			t.Errorf("%s: live=%v want %v (reason %q)", tc.name, res.Gate.Live, tc.wantLive, res.Gate.Reason)

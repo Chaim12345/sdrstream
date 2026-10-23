@@ -2,6 +2,7 @@ package decode
 
 import (
 	"bytes"
+	"github.com/chaim12345/sdrstream/go/internal/testutil/wefaxfixture"
 	"image/png"
 	"math"
 	"testing"
@@ -27,7 +28,7 @@ func TestWEFAXFlatGradientPlateauBiasLimitation(t *testing.T) {
 	// A tracker fix makes the bottom means monotone and the drift
 	// honest; when that happens, convert this into a correctness
 	// assertion instead of a limitation pin.
-	f := wefaxFixture{rate: 12000, phasingLines: 60, imageLines: 80, startToneSec: 3, flatGradient: true, noiseAmp: 0.15}
+	f := wefaxfixture.Fixture{Rate: 12000, PhasingLines: 60, ImageLines: 80, StartToneSec: 3, FlatGradient: true, NoiseAmp: 0.15}
 	pngData, _ := decodeWEFAXFixture(t, f)
 	img, err := png.Decode(bytes.NewReader(pngData))
 	if err != nil {
@@ -65,7 +66,7 @@ func TestWEFAXMidChartFalseWedgeFixed(t *testing.T) {
 	// (0.35), which is what keeps it out of the verified gallery. If a
 	// better period estimator lands, the score rises and this test
 	// says to convert to a correctness assertion.
-	f := wefaxFixture{rate: 12000, imageLines: 120, bars: true, barGradient: true, gradBands: 4, lineSec: 0.5004, noiseAmp: 0.3}
+	f := wefaxfixture.Fixture{Rate: 12000, ImageLines: 120, Bars: true, BarGradient: true, GradBands: 4, LineSec: 0.5004, NoiseAmp: 0.3}
 	_, rep := decodeWEFAXFixture(t, f)
 	if rep.SyncSource == "phasing-wedge" {
 		t.Error("false phasing-wedge sync is back: the rest-of-line blackness gate regressed")
@@ -91,7 +92,7 @@ func TestWEFAXLongChartSlowDiagonalCorrectness(t *testing.T) {
 	// content-run veto in trackLineClock rejects the diagonal's long
 	// same-sign vote run, so the clock fit now stays on the anchor:
 	// measured drift -163 ppm, wander span 11 ppm.
-	f := wefaxFixture{rate: 12000, phasingLines: 60, imageLines: 260, startToneSec: 3}
+	f := wefaxfixture.Fixture{Rate: 12000, PhasingLines: 60, ImageLines: 260, StartToneSec: 3}
 	_, rep := decodeWEFAXFixture(t, f)
 	span := rep.DriftMaxPPM - rep.DriftMinPPM
 	if math.Abs(rep.DriftPPM) > 300 {
