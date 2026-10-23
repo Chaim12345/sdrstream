@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,15 +163,30 @@ func sessionCookie(value string, maxAge int, secure bool) *http.Cookie {
 }
 
 // sameOriginPOST reports whether a POST came from a page this server served.
-// An absent Origin header (curl, old clients) is tolerated on the login form
-// because SameSite=Strict cookies already block cross-site use of a session;
-// a present-but-foreign Origin is always refused.
+// A present, non-null Origin decides directly. An absent Origin (curl, old
+// clients) is tolerated because SameSite=Strict cookies already block
+// cross-site use of a session. An Origin of "null" - sent by
+// privacy-hardened browsers and by sandboxed documents - falls back to the
+// Sec-Fetch-Site fetch-metadata header (set by the browser, not forgeable
+// from a cross-site page) and then to the Referer; a null Origin with no
+// corroborating signal is refused, since that is the signature of a
+// sandboxed cross-site document.
 func sameOriginPOST(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
-	if origin == "" {
-		return true
+	if origin != "" && origin != "null" {
+		return origin == "https://"+r.Host || origin == "http://"+r.Host
 	}
-	return origin == "https://"+r.Host || origin == "http://"+r.Host
+	if sfs := r.Header.Get("Sec-Fetch-Site"); sfs != "" {
+		return sfs == "same-origin" || sfs == "same-site" || sfs == "none"
+	}
+	if ref := r.Header.Get("Referer"); ref != "" {
+		u, err := url.Parse(ref)
+		if err != nil {
+			return false
+		}
+		return u.Host == r.Host && (u.Scheme == "https" || u.Scheme == "http")
+	}
+	return origin == ""
 }
 
 // handleLogin serves the password form and creates sessions. Wrong

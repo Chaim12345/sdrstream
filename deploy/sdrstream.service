@@ -1,0 +1,27 @@
+[Unit]
+Description=sdrstream all-station monitor
+Documentation=https://github.com/Chaim12345/sdrstream
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sdrstream
+Group=sdrstream
+EnvironmentFile=-/etc/sdrstream/sdrstream.env
+ExecStart=/usr/local/bin/sdrstream web \
+  --host 127.0.0.1 --port 8000 \
+  --scan-open-directory --scan-kiwi-directory --scan-record-all
+Restart=on-failure
+RestartSec=5
+# Hardening: the monitor only needs outbound network and its state dir.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/sdrstream
+StateDirectory=sdrstream
+ConfigurationDirectory=sdrstream
+
+[Install]
+WantedBy=multi-user.target
