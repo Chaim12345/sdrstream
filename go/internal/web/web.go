@@ -210,7 +210,13 @@ func (it LiveGalleryItem) galleryLiveClass() galleryLiveClass {
 		}
 		return galleryLiveHistorical
 	case "":
-		// Manifest entries from before the source field: live
+		// A re-decode of a capture with unknown provenance keeps its
+		// measured decoder verdict - it describes the decoded
+		// artefact, not live reception - but is never counted.
+		if it.Verification != "" && it.DecodedFrom != "" {
+			return galleryLiveRedecode
+		}
+		// Other manifest entries from before the source field: live
 		// provenance unknown, so the item is historical regardless
 		// of any verification string it carries.
 		return galleryLiveHistorical
@@ -1151,18 +1157,18 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 
 // AddLiveArtifact saves a verified decoder result with source metadata.
 func (s *Server) AddLiveArtifact(activity monitor.Activity, pngData []byte) error {
-	return s.AddLiveArtifactDecoded(activity, pngData, "", "", "", false)
+	return s.AddLiveArtifactDecoded(activity, pngData, "", "live", "Live reception")
 }
 
 // AddLiveArtifactDecoded is AddLiveArtifact with explicit shaping for
 // user-triggered re-decodes of recorded captures: decodedFrom names
 // the capture (bare filename, never a path), source is the capture's
-// own provenance class ("" keeps the default live write), title
-// replaces the "Live reception" heading, and suppressVerdict keeps a
-// gate-passed image from recording a verdict when the capture's
-// provenance is unknown - the gate still runs; only the record is
-// withheld. Live decodes pass ("", "", "", false).
-func (s *Server) AddLiveArtifactDecoded(activity monitor.Activity, pngData []byte, decodedFrom, source, title string, suppressVerdict bool) error {
+// own provenance class verbatim ("" is unknown provenance: the
+// measured decoder verdict is kept - it describes the decoded
+// artefact - but the item is never counted as live reception), and
+// title replaces the "Live reception" heading. Live decodes pass
+// ("", "live", "Live reception").
+func (s *Server) AddLiveArtifactDecoded(activity monitor.Activity, pngData []byte, decodedFrom, source, title string) error {
 	verification := ""
 	if len(pngData) > 0 && activity.Kind == "sstv" {
 		// SSTV frames verify on the decode report's sync-lock
@@ -1205,15 +1211,6 @@ func (s *Server) AddLiveArtifactDecoded(activity monitor.Activity, pngData []byt
 	station := activity.Label
 	if station == "" {
 		station = activity.Source
-	}
-	if source == "" {
-		source = "live"
-	}
-	if title == "" {
-		title = "Live reception"
-	}
-	if suppressVerdict {
-		verification = ""
 	}
 	item := LiveGalleryItem{Source: source, ObservationID: 0, Satellite: title, Station: station, Start: activity.Started, Mode: activity.Mode, FrequencyHz: int64(activity.FrequencyHz), Kind: kind, Name: name, URL: "/gallery/" + url.PathEscape(name), Size: int64(len(data)), Text: activity.Detail, Verification: verification, DecodedFrom: decodedFrom}
 	if activity.AudioPath != "" {

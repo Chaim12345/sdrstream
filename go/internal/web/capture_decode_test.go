@@ -307,7 +307,7 @@ func TestCaptureDecodeSourceClassPlacement(t *testing.T) {
 	}{
 		{"CAP_src_live.wav", "live", "live", true},
 		{"CAP_src_fix.wav", "test-fixture", "test-fixture", true},
-		{"CAP_src_unk.wav", "", "live", false},          // listed historically, no verdict
+		{"CAP_src_unk.wav", "", "", true},               // unknown provenance: measured verdict kept, never counted
 		{"CAP_src_ext.wav", "satnogs", "satnogs", true}, // foreign class preserved
 	}
 	for _, tc := range cases {
@@ -346,8 +346,8 @@ func TestCaptureDecodeSourceClassPlacement(t *testing.T) {
 		if tc.source == "live" && item.galleryLiveClass() != galleryLiveRedecode {
 			t.Errorf("%s: class %v, want galleryLiveRedecode", tc.name, item.galleryLiveClass())
 		}
-		if tc.source == "" && item.galleryLiveClass() != galleryLiveHistorical {
-			t.Errorf("%s: class %v, want galleryLiveHistorical", tc.name, item.galleryLiveClass())
+		if tc.source == "" && item.galleryLiveClass() != galleryLiveRedecode {
+			t.Errorf("%s: class %v, want galleryLiveRedecode (verdict kept, never counted)", tc.name, item.galleryLiveClass())
 		}
 		if tc.source != "" && tc.source != "live" && tc.source != "test-fixture" && item.galleryLiveClass() != galleryForeign {
 			t.Errorf("%s: class %v, want galleryForeign", tc.name, item.galleryLiveClass())

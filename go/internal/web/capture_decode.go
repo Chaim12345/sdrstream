@@ -187,20 +187,21 @@ func (s *Server) handleCaptureDecode(w http.ResponseWriter, r *http.Request) {
 	// reception and never counted as one; a synthetic capture stays
 	// on the test-fixture tab with an honest string; any other
 	// explicit class is preserved as foreign. An UNKNOWN source (all
-	// pre-field sidecars) stays historical: the image publishes only
-	// if the gate passed, but no verdict is recorded - unknown
-	// provenance is never upgraded by a reason string.
+	// pre-field sidecars) keeps its measured decoder verdict - it
+	// describes the decoded artefact, not live reception - but the
+	// item is never counted, and the UI frames it as "source
+	// unknown, not verified as live reception".
 	source := strings.ToLower(strings.TrimSpace(meta.Source))
-	gallerySource, title, suppressVerdict := source, "Recorded capture re-decode", false
+	title := "Recorded capture re-decode"
 	switch source {
 	case "live":
 		// galleryLiveRedecode class: listed with verdict, not counted.
 	case "test-fixture":
 		title = "Test fixture re-decode (synthetic - not a reception)"
 	case "":
-		gallerySource, title, suppressVerdict = "live", "Recorded capture re-decode (source unknown)", true
+		title = "Recorded capture re-decode (source unknown)"
 	}
-	if err := s.AddLiveArtifactDecoded(activity, pngData, name, gallerySource, title, suppressVerdict); err != nil {
+	if err := s.AddLiveArtifactDecoded(activity, pngData, name, source, title); err != nil {
 		http.Error(w, "gallery publication rejected the decode: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -450,6 +450,9 @@ function renderCaptures(status) {
       meta.textContent = shortURL(c.receiver) + ' · ' + c.samples + ' samples · ' + c.rate + ' Hz' + (c.samples && c.rate ? ' · ' + fmtDuration(c.samples / c.rate) : '') + (c.frequency_hz ? ' · ' + mhz(c.frequency_hz) : '') + (c.mode ? ' · ' + c.mode : '');
       card.appendChild(meta);
       const badges = document.createElement('div'); badges.className = 'badge-row';
+      const btime = document.createElement('span'); btime.className = 'muted badge-record-time';
+      btime.textContent = 'status at record time:';
+      badges.appendChild(btime);
       const vb = document.createElement('span');
       vb.className = 'badge ' + (c.verified ? 'verified' : 'unverified');
       vb.textContent = c.verified ? (c.crosscheck === 'verified' ? 'verified live' : 'gate passed') : 'unverified';
@@ -637,7 +640,13 @@ function galleryCard(it) {
   // items, whose verification string alone is not a verdict.
   const legacyLive = !it.source && ((it.kind === 'image' && it.observation_id === 0) || it.satellite === 'Live reception');
   const liveTab = it.source ? it.source === 'live' : legacyLive;
-  if (it.verification && !legacyLive) {
+  if (it.decoded_from && it.verification && !it.source) {
+    // A re-decode of a capture with unknown provenance: the measured
+    // decoder verdict describes the decoded artefact only.
+    const lin = document.createElement('div'); lin.className = 'muted verification';
+    lin.textContent = 'decoded artefact passed quality gate: ' + it.verification + ' - source unknown, not verified as live reception';
+    body.appendChild(lin);
+  } else if (it.verification && !legacyLive) {
     const lin = document.createElement('div'); lin.className = 'muted verification';
     lin.textContent = it.verification; body.appendChild(lin);
   } else if (liveTab) {
@@ -696,7 +705,7 @@ function renderGallery() {
   // even if a string sits in their verification field.
   // Re-decodes of recorded captures carry a real verdict but are not
   // fresh reception: tallied separately, never in the live count.
-  const redecodes = live.filter(it => it.source === 'live' && it.verification && it.decoded_from).length;
+  const redecodes = live.filter(it => it.verification && it.decoded_from).length;
   const proven = live.filter(it => it.source === 'live' && it.verification && !it.decoded_from).length;
   const unknown = live.length - proven - redecodes;
   el('gallery-count').textContent = active === 'live'
