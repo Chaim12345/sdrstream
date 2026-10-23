@@ -42,6 +42,19 @@ func TestSimulatedFeedUIServer(t *testing.T) {
 	m.AddActivity(monitor.Activity{Started: now.Add(-2 * time.Minute), FrequencyHz: 145800000, Kind: "unknown", LevelDB: f64(6.1), Source: "simulated"})
 	m.RecordGate(passedID, true, "live gate passed")
 	m.RecordGate(rejectedID, false, "text failed plausibility (simulated)")
+	// A populated message log: twelve recent decodes spread across three
+	// modes, then a slow trickle of new ones so paused/frozen versus live
+	// behavior is observable in the browser. All simulated and labeled.
+	modes := []string{"rtty", "cw", "psk31"}
+	for i := 0; i < 12; i++ {
+		m.AddActivity(monitor.Activity{Started: now.Add(time.Duration(-30-i) * time.Second), FrequencyHz: 14070000 + float64(i)*1000, Kind: "data", Mode: modes[i%3], LevelDB: f64(8 + float64(i%5)), Detail: fmt.Sprintf("CQ DE SIM%02d", i), Source: "simulated"})
+	}
+	go func() {
+		for n := 12; ; n++ {
+			time.Sleep(2500 * time.Millisecond)
+			m.AddActivity(monitor.Activity{Started: time.Now().UTC(), FrequencyHz: 14070000 + float64(n%40)*1000, Kind: "data", Mode: modes[n%3], LevelDB: f64(9), Detail: fmt.Sprintf("CQ DE SIM%02d LIVE", n), Source: "simulated"})
+		}
+	}()
 	s := &Server{}
 	s.monitor = m
 	// A decodable capture exercises POST /api/captures/decode from the
