@@ -219,6 +219,7 @@ type Server struct {
 	feeds             *feeds.Manager
 	scans             []ScanStatus
 	scanIndex         map[string]int
+	scanStatePath     string
 	scanMetrics       ScanMetrics
 	scanLog           []ScanStatus
 	scanLogSeq        uint64
@@ -272,7 +273,7 @@ func New(capturesDir, galleryDir string) *Server {
 	if galleryDir == "" {
 		galleryDir = filepath.Join(satnogs.CacheDir, "gallery")
 	}
-	s := &Server{capturesDir: capturesDir, galleryDir: galleryDir, scanIndex: make(map[string]int)}
+	s := &Server{capturesDir: capturesDir, galleryDir: galleryDir, scanIndex: make(map[string]int), scanStatePath: scanStateFile()}
 	if capturesDir != "" {
 		go s.retentionLoop()
 	}
@@ -1395,9 +1396,21 @@ func (s *Server) handleFeeds(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, m.Snapshot(500))
 }
 
+// scanStateFile resolves the scan-state path. Each Server pins it once at
+// construction (New), so a debounced persist firing after a test's
+// SDRSTREAM_STATE_DIR cleanup cannot leak rows into another user's state.
 func scanStateFile() string { return stateFile("sdrstream-scan-state.json") }
+// scanStatePathFor returns the Server's pinned scan-state path, resolving
+// it on demand for Servers built directly as &Server{} in tests.
+func (s *Server) scanStatePathFor() string {
+	if s.scanStatePath != "" {
+		return s.scanStatePath
+	}
+	return scanStateFile()
+}
+
 func (s *Server) loadScanState() {
-	b, err := os.ReadFile(scanStateFile())
+	b, err := os.ReadFile(s.scanStatePathFor())
 	if err != nil {
 		return
 	}
@@ -1438,7 +1451,7 @@ func (s *Server) writeScanStateLocked() {
 		return
 	}
 	s.lastScanPersist = time.Now()
-	writeStateFile(scanStateFile(), b)
+	writeStateFile(s.scanStatePathFor(), b)
 }
 
 // ScanStatuses returns a copy of the current scan board rows, including the

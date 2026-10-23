@@ -106,6 +106,7 @@ func TestScanConfigTargetLimits(t *testing.T) {
 }
 
 func TestScanStatusIndexesRemainStablePastDisplayWindow(t *testing.T) {
+	t.Setenv("SDRSTREAM_STATE_DIR", t.TempDir())
 	scansMu.Lock()
 	old := scans
 	scans = nil
