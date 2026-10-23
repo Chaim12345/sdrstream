@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chaim12345/sdrstream/go/internal/decode"
 	"github.com/chaim12345/sdrstream/go/internal/satnogs"
 )
 
@@ -198,5 +199,49 @@ func TestDecodeFramesFromSSTVAudio(t *testing.T) {
 	}
 	if len(png) < 8 || !bytes.Equal(png[:8], []byte("\x89PNG\r\n\x1a\n")) {
 		t.Fatalf("decoded artefact is not a PNG (%d bytes)", len(png))
+	}
+}
+
+func TestDecodeFramesSkipsUnverifiableAPT(t *testing.T) {
+	// SSTV audio labelled APT must not produce a picture: the APT gate
+	// rejects it, and the artefact is left untouched.
+	fixture := filepath.Join("..", "decode", "testdata", "sstv_robot36.wav")
+	if _, err := os.Stat(fixture); err != nil {
+		t.Skip("sstv fixture not present:", err)
+	}
+	dir := t.TempDir()
+	name := "9-noaa-apt.wav"
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	audio := Item{Kind: "audio", Mode: "APT", Name: name, Path: filepath.Join(dir, name), Source: "satnogs"}
+	if frames := DecodeFrames([]Item{audio}, dir); len(frames) != 0 {
+		t.Fatalf("unverifiable APT audio produced %d frame(s), want 0", len(frames))
+	}
+}
+
+func TestDecodeFramesWithoutFFmpegSkipsOGG(t *testing.T) {
+	// No ffmpeg (the Android case): compressed payloads are skipped
+	// quietly and the call returns promptly instead of failing or hanging.
+	t.Setenv("PATH", t.TempDir())
+	if decode.FFmpegAvailable() {
+		t.Fatal("ffmpeg unexpectedly available with an empty PATH")
+	}
+	dir := t.TempDir()
+	name := "1-audio.ogg"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("OggS fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	audio := Item{Kind: "audio", Mode: "SSTV", Name: name, Path: filepath.Join(dir, name), Source: "satnogs"}
+	start := time.Now()
+	if frames := DecodeFrames([]Item{audio}, dir); len(frames) != 0 {
+		t.Fatalf("compressed audio without ffmpeg produced %d frame(s), want 0", len(frames))
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("ffmpeg-less skip took %v, should be immediate", elapsed)
 	}
 }

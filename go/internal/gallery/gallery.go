@@ -206,13 +206,20 @@ func WriteManifest(items []Item, dir string) error {
 
 // DecodeFrames runs the project's own decoders over downloaded audio
 // artefacts and returns new image items for the frames they extract.
-// Mode-matched: only observations whose mode names SSTV are attempted.
-// OGG/MP3 payloads convert through ffmpeg; WAV decodes directly. An
-// audio item that yields no frame is left as it is, without a placeholder.
+// Mode-matched: SSTV and APT observations are attempted; APT pictures
+// ship only when the decode verifies. OGG/MP3 payloads convert through
+// ffmpeg; WAV decodes directly. An audio item that yields no verified
+// frame is left as it is, without a placeholder.
 func DecodeFrames(saved []Item, dir string) []Item {
 	var frames []Item
 	for _, item := range saved {
-		if item.Kind != "audio" || !strings.Contains(strings.ToUpper(item.Mode), "SSTV") {
+		if item.Kind != "audio" {
+			continue
+		}
+		mode := strings.ToUpper(item.Mode)
+		wantSSTV := strings.Contains(mode, "SSTV")
+		wantAPT := strings.Contains(mode, "APT")
+		if !wantSSTV && !wantAPT {
 			continue
 		}
 		path := item.Path
@@ -237,7 +244,22 @@ func DecodeFrames(saved []Item, dir string) []Item {
 		if err != nil {
 			continue
 		}
-		png, err := decode.SSTVImage(samples, rate)
+		var png []byte
+		if wantSSTV {
+			png, err = decode.SSTVImage(samples, rate)
+		} else {
+			// APT pictures ship only when the sync-lock gate verifies the
+			// decode, same honesty bar as the decode command.
+			r := decode.APTDecode(samples, rate)
+			if r == nil {
+				continue
+			}
+			ok, _ := r.Verified()
+			if !ok {
+				continue
+			}
+			png, err = r.PNG()
+		}
 		if err != nil {
 			continue
 		}
