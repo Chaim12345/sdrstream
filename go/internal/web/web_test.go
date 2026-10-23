@@ -1095,3 +1095,111 @@ func TestLoginFailureRendersFormWithInlineError(t *testing.T) {
 		t.Fatalf("429 page must contain the form and the lockout message, got: %q", body)
 	}
 }
+
+func TestLiveGalleryPersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("live-20261023T070000Z-1.txt", "CQ TEST JO02")
+	write("live-20261023T070000Z-1.txt.wav", "RIFF-fake-audio-bytes")
+	write("live-20261023T070100Z-2.txt", "no audio clip")
+	// An orphan file with no index entry must NOT become reachable.
+	write("live-orphan.txt", "not indexed")
+
+	first := &Server{galleryDir: dir}
+	first.liveGallery = []LiveGalleryItem{
+		{Name: "live-20261023T070000Z-1.txt", URL: "/gallery/live-20261023T070000Z-1.txt", AudioURL: "/audio/live/live-20261023T070000Z-1.txt.wav", Text: "CQ TEST JO02"},
+		{Name: "live-20261023T070100Z-2.txt", URL: "/gallery/live-20261023T070100Z-2.txt", AudioURL: "/audio/live/live-20261023T070100Z-2.txt.wav", Text: "no audio clip"},
+	}
+	if err := first.persistLiveGalleryLocked(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate an engine restart: a fresh Server over the same dir.
+	restarted := &Server{galleryDir: dir}
+	restarted.loadLiveGallery()
+	if len(restarted.liveGallery) != 2 {
+		t.Fatalf("reloaded %d items, want 2", len(restarted.liveGallery))
+	}
+	// The clip with its WAV keeps audio_url.
+	if restarted.liveGallery[0].AudioURL == "" {
+		t.Fatalf("audio_url lost for item with existing WAV: %+v", restarted.liveGallery[0])
+	}
+	// The clip whose WAV is missing keeps the text but loses audio_url -
+	// the UI must show "audio unavailable", not a player that 404s.
+	if restarted.liveGallery[1].AudioURL != "" {
+		t.Fatalf("audio_url kept for missing WAV: %+v", restarted.liveGallery[1])
+	}
+	// The routes now serve the restored items.
+	req := httptest.NewRequest(http.MethodGet, "/audio/live/live-20261023T070000Z-1.txt.wav", nil)
+	rec := httptest.NewRecorder()
+	restarted.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Body.String() != "RIFF-fake-audio-bytes" {
+		t.Fatalf("restored audio: status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/gallery/live-20261023T070100Z-2.txt", nil)
+	rec = httptest.NewRecorder()
+	restarted.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("restored artifact: status=%d", rec.Code)
+	}
+	// The orphan stays unreachable.
+	req = httptest.NewRequest(http.MethodGet, "/gallery/live-orphan.txt", nil)
+	rec = httptest.NewRecorder()
+	restarted.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("orphan file: status=%d, want 404", rec.Code)
+	}
+}
+
+func TestLogTailEndpoint(t *testing.T) {
+	ring := NewLogRing(3)
+	_, _ = ring.Write([]byte("line one\nline two\n"))
+	_, _ = ring.Write([]byte("line three\nline four\n"))
+	server := &Server{}
+	server.SetLogRing(ring)
+	req := httptest.NewRequest(http.MethodGet, "/api/logs/tail?lines=2", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	var out struct {
+		Lines []string `json:"lines"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Lines) != 2 || out.Lines[0] != "line three" || out.Lines[1] != "line four" {
+		t.Fatalf("tail = %v", out.Lines)
+	}
+	// Ring cap honoured: line one was evicted.
+	req = httptest.NewRequest(http.MethodGet, "/api/logs/tail?lines=500", nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	out.Lines = nil
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Lines) != 3 || out.Lines[0] != "line two" {
+		t.Fatalf("capped tail = %v", out.Lines)
+	}
+	// Out-of-range lines param rejected.
+	req = httptest.NewRequest(http.MethodGet, "/api/logs/tail?lines=9999", nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("lines=9999: status=%d, want 400", rec.Code)
+	}
+	// No ring configured: honest 404.
+	bare := &Server{}
+	req = httptest.NewRequest(http.MethodGet, "/api/logs/tail", nil)
+	rec = httptest.NewRecorder()
+	bare.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unconfigured: status=%d, want 404", rec.Code)
+	}
+}

@@ -396,8 +396,15 @@ func TestLiveGalleryCappedAndPrunesFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(remaining) != liveGalleryCap {
-		t.Fatalf("gallery dir holds %d files, want %d", len(remaining), liveGalleryCap)
+	// live-index.json (the restart-survival manifest) is metadata, not a clip.
+	files := 0
+	for _, entry := range remaining {
+		if entry.Name() != liveGalleryIndexFile {
+			files++
+		}
+	}
+	if files != liveGalleryCap {
+		t.Fatalf("gallery dir holds %d clip files, want %d", files, liveGalleryCap)
 	}
 }
 

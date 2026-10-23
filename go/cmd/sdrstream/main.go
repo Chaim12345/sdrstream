@@ -1473,6 +1473,7 @@ func awaitConfig(ctx context.Context, client *openwebrx.Client, timeout time.Dur
 func cmdWeb(args []string) error {
 	fs := flag.NewFlagSet("web", flag.ExitOnError)
 	host := fs.String("host", "127.0.0.1", "address to bind")
+	hostExtra := fs.String("host-extra", "", "additional address:port to serve the UI on (e.g. the device's Tailscale IP); refused without SDRSTREAM_UI_PASSWORD")
 	port := fs.Int("port", 8000, "port to bind")
 	capturesDir := fs.String("captures-dir", "../captures", "directory of saved WAV captures to list and serve")
 	capturesMaxGB := fs.Float64("captures-max-gb", 0, "prune oldest captures above this size in GiB (0 = no size limit)")
@@ -1713,6 +1714,10 @@ func cmdWeb(args []string) error {
 		Multimon:      *monitorMultimon,
 		Direwolf:      *monitorDirewolf,
 	}
+	logRing := web.NewLogRing(500)
+	log.SetOutput(io.MultiWriter(os.Stderr, logRing))
+	server.SetLogRing(logRing)
+
 	go runStartupNetworkCheck(ctx, server)
 
 	runtimeMon := &runtimeMonitor{server: server, cfg: monitorCfg}
@@ -1740,6 +1745,16 @@ func cmdWeb(args []string) error {
 		}
 
 		fmt.Printf("monitoring %s (%s)\n", *monitorServer, *monitorKind)
+	}
+	if *hostExtra != "" {
+		extraHost, _, splitErr := net.SplitHostPort(*hostExtra)
+		extraIP := net.ParseIP(extraHost)
+		extraLoopback := splitErr == nil && ((extraIP != nil && extraIP.IsLoopback()) || strings.EqualFold(extraHost, "localhost"))
+		if !extraLoopback && os.Getenv("SDRSTREAM_UI_PASSWORD") == "" {
+			log.Printf("web: refusing --host-extra %s without SDRSTREAM_UI_PASSWORD (would expose an open UI beyond loopback)", *hostExtra)
+		} else if err := server.ServeExtra(ctx, *hostExtra); err != nil {
+			log.Printf("web: --host-extra %s: %v", *hostExtra, err)
+		}
 	}
 	return server.ServeContext(ctx, fmt.Sprintf("%s:%d", *host, *port))
 }

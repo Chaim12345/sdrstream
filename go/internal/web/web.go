@@ -200,6 +200,7 @@ type Server struct {
 	monitorHooks      MonitorHooks
 	networkOK         *bool
 	networkDetail     string
+	logRing           *LogRing
 	feeds             *feeds.Manager
 	scans             []ScanStatus
 	scanIndex         map[string]int
@@ -262,6 +263,7 @@ func New(capturesDir, galleryDir string) *Server {
 	}
 	s.loadScanState()
 	s.loadGallery()
+	s.loadLiveGallery()
 	go s.galleryLoop()
 	s.loadPasses()
 	go s.passesLoop()
@@ -819,6 +821,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/NOTICE", handleLegal("NOTICE"))
 	mux.HandleFunc("/NOTICE-third-party.md", handleLegal("NOTICE-third-party.md"))
 	mux.HandleFunc("/api/status.json", s.handleStatus)
+	mux.HandleFunc("/api/logs/tail", s.handleLogTail)
 	mux.HandleFunc("/api/captures.json", s.handleCaptures)
 	mux.HandleFunc("/api/satellites.json", s.handleSatellites)
 	mux.HandleFunc("/api/observations.json", s.handleObservations)
@@ -1019,6 +1022,9 @@ func (s *Server) AddLiveArtifact(activity monitor.Activity, pngData []byte) erro
 		pruned = append([]LiveGalleryItem(nil), s.liveGallery[liveGalleryCap:]...)
 		s.liveGallery = s.liveGallery[:liveGalleryCap]
 	}
+	if err := s.persistLiveGalleryLocked(); err != nil {
+		log.Printf("gallery: persist live index: %v", err)
+	}
 	hook := s.rdioHook
 	s.mu.Unlock()
 	for _, old := range pruned {
@@ -1046,6 +1052,167 @@ func (s *Server) SetRdioHook(hook func(monitor.Activity)) {
 
 // liveGalleryCap bounds how many verified live artefacts the gallery keeps.
 const liveGalleryCap = 200
+
+// liveGalleryIndexFile is the on-disk manifest that lets live artifacts
+// survive an engine restart (files alone were unreachable: the serving
+// routes gate on the in-memory list).
+const liveGalleryIndexFile = "live-index.json"
+
+// persistLiveGalleryLocked writes the live gallery manifest atomically.
+// Callers must hold s.mu.
+func (s *Server) persistLiveGalleryLocked() error {
+	if s.galleryDir == "" {
+		return nil
+	}
+	data, err := json.Marshal(s.liveGallery)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(s.galleryDir, 0o755); err != nil {
+		return err
+	}
+	return common.WriteFileAtomic(filepath.Join(s.galleryDir, liveGalleryIndexFile), data, 0o644)
+}
+
+// loadLiveGallery restores the live gallery manifest written by previous
+// runs. Items whose artifact file vanished are dropped; items whose audio
+// file vanished keep their text/image but lose audio_url so the UI shows
+// "audio unavailable" instead of a player that 404s.
+func (s *Server) loadLiveGallery() {
+	if s.galleryDir == "" {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(s.galleryDir, liveGalleryIndexFile))
+	if err != nil {
+		return
+	}
+	var items []LiveGalleryItem
+	if err := json.Unmarshal(data, &items); err != nil {
+		log.Printf("gallery: read live index: %v", err)
+		return
+	}
+	kept := make([]LiveGalleryItem, 0, len(items))
+	for _, item := range items {
+		if item.Name == "" || filepath.Base(item.Name) != item.Name {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(s.galleryDir, item.Name)); err != nil {
+			continue
+		}
+		if item.AudioURL != "" {
+			audioName := item.Name + ".wav"
+			if _, err := os.Stat(filepath.Join(s.galleryDir, audioName)); err != nil {
+				item.AudioURL = ""
+			}
+		}
+		kept = append(kept, item)
+		if len(kept) >= liveGalleryCap {
+			break
+		}
+	}
+	s.mu.Lock()
+	s.liveGallery = kept
+	s.mu.Unlock()
+}
+
+// ServeExtra serves the same authenticated handler on a second address,
+// e.g. a tailnet-only IP for remote access without exposing the UI on
+// every interface. It refuses empty/loopback-duplicate addresses; the
+// caller is responsible for requiring a password before binding a
+// non-loopback address.
+func (s *Server) ServeExtra(ctx context.Context, addr string) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	server := s.newHTTPServer(addr)
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	go func() { _ = server.Serve(listener) }()
+	log.Printf("web UI also on http://%s (password required)", addr)
+	return nil
+}
+
+// LogRing is a capped ring of recent log lines, teed from the engine's
+// log output so /api/logs/tail can serve diagnostics over the same
+// authenticated UI - on a phone there is no other way to read them.
+type LogRing struct {
+	mu    sync.Mutex
+	lines []string
+	max   int
+}
+
+// NewLogRing returns a ring holding the last max lines.
+func NewLogRing(max int) *LogRing {
+	if max <= 0 {
+		max = 500
+	}
+	return &LogRing{max: max}
+}
+
+// Write implements io.Writer; each write appends whole lines, truncated
+// to 500 chars so one noisy line cannot dominate the tail.
+func (r *LogRing) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+		if len(line) > 500 {
+			line = line[:500]
+		}
+		r.lines = append(r.lines, line)
+	}
+	if len(r.lines) > r.max {
+		r.lines = r.lines[len(r.lines)-r.max:]
+	}
+	r.mu.Unlock()
+	return len(p), nil
+}
+
+// Tail returns up to n most recent lines, oldest first.
+func (r *LogRing) Tail(n int) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if n <= 0 || n > len(r.lines) {
+		n = len(r.lines)
+	}
+	out := make([]string, n)
+	copy(out, r.lines[len(r.lines)-n:])
+	return out
+}
+
+// SetLogRing wires the engine log ring into the server.
+func (s *Server) SetLogRing(ring *LogRing) {
+	s.mu.Lock()
+	s.logRing = ring
+	s.mu.Unlock()
+}
+
+// handleLogTail serves recent engine log lines. Like every route but
+// /login it sits behind the session gate, and the engine never logs
+// passwords or tokens (verified: only receiver URLs and decode text).
+func (s *Server) handleLogTail(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	ring := s.logRing
+	s.mu.Unlock()
+	if ring == nil {
+		http.Error(w, "log tail not configured", http.StatusNotFound)
+		return
+	}
+	n := 100
+	if raw := r.URL.Query().Get("lines"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil {
+			n = v
+		}
+	}
+	if n < 1 || n > 500 {
+		http.Error(w, "lines must be 1..500", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]interface{}{"lines": ring.Tail(n)})
+}
 
 func (s *Server) handleLiveAudio(w http.ResponseWriter, r *http.Request) {
 	name, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/audio/live/"))

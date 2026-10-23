@@ -13,6 +13,12 @@ import android.os.PowerManager;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -104,15 +110,37 @@ public class EngineService extends Service {
         // rude to shared public receivers and to a phone's radio, battery
         // and data plan. Keep the same pipeline with a small footprint.
         // Captures are capped so a long run cannot fill phone storage.
-        ProcessBuilder pb = new ProcessBuilder(enginePath, "web",
-                "--host", "127.0.0.1", "--port", String.valueOf(PORT),
-                "--scan-open-directory", "--scan-kiwi-directory",
-                "--scan-start-connections", "4",
-                "--scan-max-connections", "8",
-                "--scan-ramp", "4,8",
-                "--scan-bandwidth-limit-mbps", "5",
-                "--scan-target-limit", "8",
-                "--captures-max-gb", "1");
+        List<String> args = new ArrayList<>();
+        args.add(enginePath);
+        args.add("web");
+        args.add("--host");
+        args.add("127.0.0.1");
+        args.add("--port");
+        args.add(String.valueOf(PORT));
+        // Reachable from the user's own tailnet (e.g. for remote UI and
+        // log diagnostics) when Tailscale is up: bind additionally to the
+        // device's CGNAT address - never 0.0.0.0, and the engine refuses
+        // it without a UI password. Loopback stays the primary bind.
+        String tailnetIp = tailnetAddress();
+        if (tailnetIp != null) {
+            args.add("--host-extra");
+            args.add(tailnetIp + ":" + PORT);
+        }
+        args.add("--scan-open-directory");
+        args.add("--scan-kiwi-directory");
+        args.add("--scan-start-connections");
+        args.add("4");
+        args.add("--scan-max-connections");
+        args.add("8");
+        args.add("--scan-ramp");
+        args.add("4,8");
+        args.add("--scan-bandwidth-limit-mbps");
+        args.add("5");
+        args.add("--scan-target-limit");
+        args.add("8");
+        args.add("--captures-max-gb");
+        args.add("1");
+        ProcessBuilder pb = new ProcessBuilder(args);
         // Give the engine a real working directory: without this the child
         // inherits "/" and relative paths (e.g. the default captures dir)
         // resolve outside the sandbox and fail.
@@ -218,4 +246,33 @@ public class EngineService extends Service {
     public IBinder onBind(Intent intent) {
         return null;
     }
+
+    /**
+     * Returns this device's Tailscale (CGNAT 100.64.0.0/10) IPv4 address,
+     * or null when Tailscale is not running. Tailnet addresses are stable
+     * per node, so the UI URL does not churn the way the wireless
+     * debugging port does.
+     */
+    static String tailnetAddress() {
+        try {
+            Enumeration<NetworkInterface> ifs = NetworkInterface.getNetworkInterfaces();
+            while (ifs != null && ifs.hasMoreElements()) {
+                NetworkInterface ni = ifs.nextElement();
+                Enumeration<InetAddress> addrs = ni.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress addr = addrs.nextElement();
+                    if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
+                        byte[] b = addr.getAddress();
+                        if ((b[0] & 0xff) == 100 && (b[1] & 0xc0) == 0x40) {
+                            return addr.getHostAddress();
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // No network access or interfaces unavailable: loopback only.
+        }
+        return null;
+    }
 }
+
