@@ -85,7 +85,7 @@ func TestHistorySearchMergesStoresAndKeepsProvenance(t *testing.T) {
 		t.Fatal("unknown re-decode promoted or hidden")
 	}
 	for _, it := range page.Items {
-		if it.Store == "activity" && (it.SourceClass != historyUnknown || it.Source != "" || it.Receiver != "https://receiver.test") {
+		if it.Store == "activity" && (it.SourceClass != historyLiveVerified || it.Source != "live" || it.Receiver != "https://receiver.test") {
 			t.Fatal(it)
 		}
 	}
@@ -213,4 +213,81 @@ func TestHistorySearchSnapshotConcurrentUpdates(t *testing.T) {
 		historyRequest(t, s, "?source-class=synthetic&limit=5")
 	}
 	<-done
+}
+
+func TestActivitySerializesConfirmedSourceClassesWithoutNewRows(t *testing.T) {
+	s := newTestServer(t)
+	now := time.Now().UTC()
+	m := &monitor.Monitor{}
+	s.monitor = m
+	passed := m.AddActivity(monitor.Activity{Started: now, Mode: "cw", Kind: "cw", Detail: "PASS", Source: "receiver"})
+	rejected := m.AddActivity(monitor.Activity{Started: now.Add(-time.Second), Mode: "cw", Kind: "cw", Detail: "FAIL", Source: "receiver"})
+	m.AddActivity(monitor.Activity{Started: now.Add(-2 * time.Second), Mode: "cw", Kind: "cw", Detail: "UNGATED", Source: "receiver"})
+	m.RecordGate(passed, true, "monitor pass")
+	m.RecordGate(rejected, false, "specific rejection")
+	s.liveGallery = []LiveGalleryItem{
+		{Name: "twin.txt", Start: now, Mode: "cw", Kind: "text", Text: "PASS", Source: "live", Verification: "gallery pass"},
+		{Name: "old.txt", Start: now.Add(-3 * time.Second), Mode: "cw", Text: "LEGACY"},
+		{Name: "synthetic.txt", Source: "test-fixture", Verification: "not live", Text: "FIXTURE"},
+		{Name: "foreign.txt", Source: "satnogs", Verification: "not live", Text: "FOREIGN"},
+	}
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/api/activity.json", nil))
+	var rows []struct {
+		monitor.Activity
+		SourceClass string `json:"source_class"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 4 {
+		t.Fatal("included foreign/fixture or duplicated twin", len(rows))
+	}
+	for _, r := range rows {
+		switch r.Detail {
+		case "PASS":
+			if r.SourceClass != historyLiveVerified || r.Verification != "gallery pass" {
+				t.Fatal(r)
+			}
+		case "FAIL":
+			if r.SourceClass != historyLiveUnverified || r.Rejected != "specific rejection" {
+				t.Fatal(r)
+			}
+		case "UNGATED":
+			if r.SourceClass != historyLiveUnverified {
+				t.Fatal(r)
+			}
+		case "LEGACY":
+			if r.SourceClass != historyUnknown || !r.Historical {
+				t.Fatal(r)
+			}
+		default:
+			t.Fatal(r)
+		}
+	}
+}
+
+func TestShellWiresHistorySearch(t *testing.T) {
+	page, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Index(string(page), `<script src="/static/history.js"></script>`) < strings.Index(string(page), `<script src="/static/app.js"></script>`) {
+		t.Fatal("history must load after app")
+	}
+	for _, marker := range []string{`id="history-form"`, `id="history-results"`, `data-view="history"`} {
+		if !strings.Contains(string(page), marker) {
+			t.Fatal(marker)
+		}
+	}
+	sw, err := staticFS.ReadFile("static/sw.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sw), "'/static/history.js'") || !strings.Contains(string(sw), "sdrstream-shell-v4") {
+		t.Fatal("history shell cache not updated")
+	}
+	if _, err := staticFS.ReadFile("static/history.js"); err != nil {
+		t.Fatal(err)
+	}
 }

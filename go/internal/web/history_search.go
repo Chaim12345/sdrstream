@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"github.com/chaim12345/sdrstream/go/internal/monitor"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -84,6 +85,14 @@ func historyCaptureClass(c Capture) string {
 	return historyGalleryClass(LiveGalleryItem{Source: c.Source, Verification: verdict})
 }
 
+// Monitor rows are this instance's receiver pipeline, not legacy imports.
+func historyMonitorClass(a monitor.Activity) string {
+	if a.Rejected != "" || a.Historical || a.Verification == "" {
+		return historyLiveUnverified
+	}
+	return historyLiveVerified
+}
+
 func historyLocalURL(prefix, name string) string {
 	if name == "" || filepath.Base(name) != name || strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
 		return ""
@@ -158,10 +167,10 @@ func (s *Server) historyRecords() []HistoryResult {
 			if a.Detail == "" {
 				continue
 			}
-			// Activity.Source names the receiver, not provenance. Do not promote it.
+			// Own monitor provenance follows pipeline ownership; Source remains the receiver identity.
 			out = append(out, HistoryResult{ID: fmt.Sprintf("activity:%d:%d", a.ID, a.Started.UnixNano()), Store: "activity",
 				Started: a.Started, Mode: a.Mode, Kind: a.Kind, Text: a.Detail, Receiver: a.Source, FrequencyHz: a.FrequencyHz,
-				SourceClass: historyUnknown, Verification: a.Verification, Rejected: a.Rejected, Historical: a.Historical})
+				SourceClass: historyMonitorClass(a), Source: "live", Verification: a.Verification, Rejected: a.Rejected, Historical: a.Historical})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -243,5 +252,5 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, historyPage{Items: matches[offset:end], Total: total, Available: len(records), Limit: limit, Offset: offset, NextOffset: next,
-		Scope: "Current metadata snapshot only; archive listing capped at 5000 captures. Pages may change as stores update; records across stores are not observation counts."})
+		Scope: "Current metadata snapshot only; WAV metadata listing capped at 5000 files. Pages may change as stores update; records across stores are not observation counts."})
 }
