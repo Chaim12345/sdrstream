@@ -196,10 +196,20 @@ entries were stale and are listed under "Recently closed" below):
   short-read" phrase has no anchor in the tree and the original review
   note is unrecoverable (both sides searched) - treated as unverifiable,
   no fix invented.
-- R5 decode coverage: truncated-WAV fuzz, FT8/WSPR audio-level SNR
-  fixtures, WEFAX color + mid-chart, AIS eviction tests, block-scan budget
-  reduction.
-- openwebrx readLoop writes Config/Profiles without mu (minor race).
+- openwebrx readLoop Config/Profiles data race: fixed in a9e606d (the
+  handleText mutations now run under the client mutex).
+
+Section 6 is now fully closed. The R5 decode-coverage list was audited
+(2026-10-23) and every anchored item already exists in the tree -
+truncated-WAV fuzz (`fuzz_wav_test.go`: FuzzReadWAV, FuzzDecodeTornWAV),
+FT8/WSPR audio-level SNR fixtures (`ft8_snr_test.go`, `wspr_snr_test.go`),
+WEFAX mid-chart (`TestWEFAXMidChartFalseWedgeFixed`,
+`TestWEFAXMidChartCorrelationSync`), AIS eviction tests
+(`aisnmea_eviction_test.go`, `TestAISAssemblerEvictsOrphanedFragments`).
+Two fragments have no anchor: "WEFAX color" (the decoder is monochrome,
+as HF WEFAX is) and "block-scan budget reduction" (no block-scan site;
+nearest is WSPR's already-bounded Fano cycle budget). Treated as
+unverifiable, no work invented.
 
 **Recently closed (previously listed as open):**
 
