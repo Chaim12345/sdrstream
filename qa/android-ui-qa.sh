@@ -3,7 +3,7 @@
 # touch: login screen, any password control, login with the on-device password
 # (read via run-as in CI only), and app lifecycle. Usage: android-ui-qa.sh <apk> <label>
 set -u
-adb() { timeout 40 command adb "$@"; }
+ADB_BIN="$(command -v adb)"; adb() { timeout 40 "$ADB_BIN" "$@"; }
 APK="$1"; LABEL="$2"; PKG=com.chaim12345.sdrstream
 OUT=qa-results; mkdir -p "$OUT"; export PATH=$PATH; R="$OUT/$LABEL"
 log() { echo "[qa] $*" | tee -a "$R-steps.txt"; }

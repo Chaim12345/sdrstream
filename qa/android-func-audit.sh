@@ -5,7 +5,7 @@
 # screenshots, and re-sweeps after a settle period to see whether live data
 # ever appears. Usage: android-func-audit.sh <label> [settle_seconds]
 set -u
-adb() { timeout 40 command adb "$@"; }
+ADB_BIN="$(command -v adb)"; adb() { timeout 40 "$ADB_BIN" "$@"; }
 LABEL="$1"; SETTLE="${2:-240}"; APK="${3:-}"; PKG=com.chaim12345.sdrstream
 OUT=qa-results; mkdir -p "$OUT"; R="$OUT/$LABEL"
 log() { echo "[audit] $*" | tee -a "$R-audit.txt"; }
