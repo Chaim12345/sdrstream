@@ -73,3 +73,29 @@ func TestMorseDecodeContextCancel(t *testing.T) {
 		t.Fatalf("reference CW read should pass its own plausibility gate, got %+v", res)
 	}
 }
+
+// Cancellation must also land mid-decode for Morse: cancel while the
+// analysis-window loop is running, not only before it starts.
+func TestMorseDecodeContextCancelInFlight(t *testing.T) {
+	start := time.Now()
+	if _, err := MorseDecodeContext(context.Background(), refAPRS); err != nil {
+		t.Fatalf("baseline decode: %v", err)
+	}
+	base := time.Since(start)
+	for _, frac := range []time.Duration{4, 8, 16} {
+		ctx, cancel := context.WithCancel(context.Background())
+		go func(d time.Duration) {
+			time.Sleep(d)
+			cancel()
+		}(base / frac)
+		_, err := MorseDecodeContext(ctx, refAPRS)
+		cancel()
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	t.Fatalf("decode never observed in-flight cancellation (baseline %s)", base)
+}

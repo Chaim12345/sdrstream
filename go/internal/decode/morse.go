@@ -120,15 +120,25 @@ func (r MorseResult) Plausible() bool {
 // morseEnvelope tracks the keyed-on/off envelope at one tone frequency
 // using 10 ms Goertzel magnitude windows.
 func morseEnvelope(samples []float64, rate int, tone float64) []float64 {
+	env, _ := morseEnvelopeContext(context.Background(), samples, rate, tone)
+	return env
+}
+
+func morseEnvelopeContext(ctx context.Context, samples []float64, rate int, tone float64) ([]float64, error) {
 	win := rate / 100
 	if win < 1 {
 		win = 1
 	}
 	var env []float64
 	for start := 0; start+win <= len(samples); start += win {
+		if len(env)%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		env = append(env, goertzel(samples[start:start+win], rate, tone))
 	}
-	return env
+	return env, nil
 }
 
 // morseSecondTone finds the strongest tone at least 80 Hz away from the
@@ -198,7 +208,10 @@ func morseFromSamplesContext(ctx context.Context, samples []float64, rate int) (
 		return MorseResult{Text: ""}, 0, bestSNR, nil
 	}
 
-	env := morseEnvelope(samples, rate, bestTone)
+	env, err := morseEnvelopeContext(ctx, samples, rate, bestTone)
+	if err != nil {
+		return MorseResult{}, 0, 0, err
+	}
 	if len(env) < 3 {
 		return MorseResult{Text: ""}, bestTone, bestSNR, nil
 	}
@@ -212,7 +225,10 @@ func morseFromSamplesContext(ctx context.Context, samples []float64, rate int) (
 	// elements. Combine both envelopes and try again with a wider tone
 	// ceiling. Only a strictly better read replaces the first attempt.
 	if tone2 := morseSecondTone(samples[bestStart:bestStart+chunk], rate, bestTone); tone2 > 0 {
-		env2 := morseEnvelope(samples, rate, tone2)
+		env2, err := morseEnvelopeContext(ctx, samples, rate, tone2)
+		if err != nil {
+			return MorseResult{}, 0, 0, err
+		}
 		if len(env2) == len(env) {
 			comb := make([]float64, len(env))
 			for i := range comb {
