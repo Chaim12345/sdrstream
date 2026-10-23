@@ -176,22 +176,35 @@ func WriteWAVFile(path string, samples []int16, samplerate int) error {
 // Directories listing for a specific extension must skip ".tmp*" names
 // while a write is in flight.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-"+filepath.Base(path)+"-*")
-	if err != nil {
-		return err
+	// Unique temp name + O_EXCL creation: concurrent writers never share
+	// a temp file. The perm flows through the process umask exactly like
+	// os.WriteFile, so a restrictive umask keeps tightening (0644 -> 0600
+	// under 077) and nothing is ever widened by an explicit chmod.
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	for attempt := 0; attempt < 100; attempt++ {
+		tmpName := filepath.Join(dir, fmt.Sprintf(".tmp-%s-%d-%d", base, os.Getpid(), attempt))
+		tmp, err := os.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+		if err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return err
+		}
+		if _, err := tmp.Write(data); err != nil {
+			tmp.Close()
+			os.Remove(tmpName)
+			return err
+		}
+		if err := tmp.Close(); err != nil {
+			os.Remove(tmpName)
+			return err
+		}
+		if err := os.Rename(tmpName, path); err != nil {
+			os.Remove(tmpName)
+			return err
+		}
+		return nil
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once the rename lands
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return fmt.Errorf("write %s: no free temp name", path)
 }

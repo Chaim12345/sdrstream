@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -79,12 +80,83 @@ func TestWriteFileAtomicConcurrentReaders(t *testing.T) {
 	if len(left) > 0 {
 		t.Errorf("temp files leaked: %v", left)
 	}
-	// The write wins its requested permissions (CreateTemp is 0600).
+}
+
+// The requested perm flows through the process umask exactly like
+// os.WriteFile: a restrictive umask tightens, and the helper never
+// widens beyond what the caller's umask would have produced.
+func TestWriteFileAtomicRespectsUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+	path := filepath.Join(t.TempDir(), "private.json")
+	if err := WriteFileAtomic(path, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("perm under umask 077 = %o, want 600 (0644 tightened, not widened)", info.Mode().Perm())
+	}
+}
+
+// Replacing an existing file takes the requested perm (masked by
+// umask), like the previous os.WriteFile implementation: the old file's
+// mode is not preserved across a rename.
+func TestWriteFileAtomicReplaceUsesRequestedPerm(t *testing.T) {
+	old := syscall.Umask(0o022)
+	defer syscall.Umask(old)
+	path := filepath.Join(t.TempDir(), "index.json")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(path, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if info.Mode().Perm() != 0o644 {
-		t.Errorf("perm = %v, want 644", info.Mode().Perm())
+		t.Errorf("perm = %o, want 644 (requested perm, umask 022)", info.Mode().Perm())
+	}
+}
+
+// A symlink at the target path is replaced, never followed: the file it
+// pointed at keeps its content and its mode.
+func TestWriteFileAtomicDoesNotFollowSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	if err := os.WriteFile(target, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(link, []byte("replacement"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "original" {
+		t.Errorf("symlink target overwritten: %q", data)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("path is still a symlink; rename should have replaced it")
+	}
+	data, err = os.ReadFile(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "replacement" {
+		t.Errorf("new content = %q", data)
 	}
 }
