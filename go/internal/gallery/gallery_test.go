@@ -238,10 +238,58 @@ func TestDecodeFramesWithoutFFmpegSkipsOGG(t *testing.T) {
 	}
 	audio := Item{Kind: "audio", Mode: "SSTV", Name: name, Path: filepath.Join(dir, name), Source: "satnogs"}
 	start := time.Now()
-	if frames := DecodeFrames([]Item{audio}, dir); len(frames) != 0 {
+	items := []Item{audio}
+	if frames := DecodeFrames(items, dir); len(frames) != 0 {
 		t.Fatalf("compressed audio without ffmpeg produced %d frame(s), want 0", len(frames))
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("ffmpeg-less skip took %v, should be immediate", elapsed)
+	}
+	if !strings.Contains(items[0].DecodeStatus, "ffmpeg not installed") {
+		t.Fatalf("skip reason not reported on the artefact: %q", items[0].DecodeStatus)
+	}
+}
+
+func TestDecodeFramesRejectsOversizedAudio(t *testing.T) {
+	fixture := filepath.Join("..", "decode", "testdata", "sstv_robot36.wav")
+	if _, err := os.Stat(fixture); err != nil {
+		t.Skip("sstv fixture not present:", err)
+	}
+	dir := t.TempDir()
+	name := "5-long.wav"
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Shrink the duration bound so the 36 s fixture exceeds it.
+	old := maxDecodeDurationSec
+	maxDecodeDurationSec = 10
+	t.Cleanup(func() { maxDecodeDurationSec = old })
+	audio := Item{Kind: "audio", Mode: "SSTV", Name: name, Path: filepath.Join(dir, name), Source: "satnogs"}
+	items := []Item{audio}
+	if frames := DecodeFrames(items, dir); len(frames) != 0 {
+		t.Fatalf("over-limit audio produced %d frame(s), want 0", len(frames))
+	}
+	if !strings.Contains(items[0].DecodeStatus, "decode limit") {
+		t.Fatalf("duration limit reason missing: %q", items[0].DecodeStatus)
+	}
+}
+
+func TestDecodeFramesSkipsUnlabelledModes(t *testing.T) {
+	dir := t.TempDir()
+	name := "6-aprs.wav"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("not a wav"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	audio := Item{Kind: "audio", Mode: "AFSK1200", Name: name, Path: filepath.Join(dir, name), Source: "satnogs"}
+	items := []Item{audio}
+	if frames := DecodeFrames(items, dir); len(frames) != 0 {
+		t.Fatalf("non-image mode produced %d frame(s), want 0", len(frames))
+	}
+	if items[0].DecodeStatus != "" {
+		t.Fatalf("non-image mode should not be attempted, got status %q", items[0].DecodeStatus)
 	}
 }

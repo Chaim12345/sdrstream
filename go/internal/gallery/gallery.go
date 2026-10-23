@@ -45,6 +45,7 @@ type Item struct {
 	Source        string    `json:"source,omitempty"` // "satnogs"; live decodes use "live"
 	ObservationURL string   `json:"observation_url,omitempty"`
 	DecodedFrom   string    `json:"decoded_from,omitempty"` // artefact this image was decoded from by sdrstream
+	DecodeStatus  string    `json:"decode_status,omitempty"` // set on audio items when frame decoding was skipped, with the reason
 	ObservationID int       `json:"observation_id"`
 	Satellite     string    `json:"satellite"`
 	NoradID       int       `json:"norad_id"`
@@ -204,15 +205,30 @@ func WriteManifest(items []Item, dir string) error {
 	return os.WriteFile(filepath.Join(dir, "index.json"), data, 0o644)
 }
 
+// Decode bounds, kept tight so a small compressed payload cannot expand
+// into work that monopolises the single gallery refresh pass. Conversion
+// already carries a 2-minute ffmpeg timeout; these caps reject oversize
+// input BEFORE decoding starts (the pure-Go decoders have no mid-decode
+// cancellation, so the bound is applied at the input).
+var (
+	// maxWAVBytes caps a converted or source WAV for frame decoding.
+	maxWAVBytes int64 = 64 << 20
+	// maxDecodeDurationSec caps the audio length handed to a decoder;
+	// decode time is linear in samples, so this bounds CPU per artefact.
+	maxDecodeDurationSec = 480.0
+)
+
 // DecodeFrames runs the project's own decoders over downloaded audio
 // artefacts and returns new image items for the frames they extract.
 // Mode-matched: SSTV and APT observations are attempted; APT pictures
 // ship only when the decode verifies. OGG/MP3 payloads convert through
-// ffmpeg; WAV decodes directly. An audio item that yields no verified
-// frame is left as it is, without a placeholder.
+// ffmpeg; WAV decodes directly. Every attempted artefact that does not
+// yield a frame gets its DecodeStatus set to the concrete skip reason,
+// so a missing tool or an oversized input is reported, not silent.
 func DecodeFrames(saved []Item, dir string) []Item {
 	var frames []Item
-	for _, item := range saved {
+	for i := range saved {
+		item := &saved[i]
 		if item.Kind != "audio" {
 			continue
 		}
@@ -220,28 +236,46 @@ func DecodeFrames(saved []Item, dir string) []Item {
 		wantSSTV := strings.Contains(mode, "SSTV")
 		wantAPT := strings.Contains(mode, "APT")
 		if !wantSSTV && !wantAPT {
-			continue
+			continue // not an image-payload mode; nothing to report
 		}
 		path := item.Path
 		if !strings.HasSuffix(strings.ToLower(path), ".wav") {
 			if !decode.FFmpegAvailable() {
+				item.DecodeStatus = "frame decode skipped: ffmpeg not installed, cannot convert " + filepath.Ext(path)
 				continue
 			}
 			tmp, err := os.CreateTemp("", "sdrstream-gallery-*.wav")
 			if err != nil {
+				item.DecodeStatus = "frame decode skipped: " + err.Error()
 				continue
 			}
 			tmp.Close()
-			defer os.Remove(tmp.Name())
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			if err := decode.ConvertToWAV(ctx, "", path, tmp.Name()); err != nil {
+			err = decode.ConvertToWAV(ctx, "", path, tmp.Name())
+			cancel()
+			if err != nil {
+				os.Remove(tmp.Name())
+				item.DecodeStatus = "frame decode skipped: conversion failed: " + err.Error()
 				continue
 			}
+			if fi, err := os.Stat(tmp.Name()); err != nil || fi.Size() > maxWAVBytes {
+				os.Remove(tmp.Name())
+				item.DecodeStatus = fmt.Sprintf("frame decode skipped: converted WAV over the %d MB limit", maxWAVBytes>>20)
+				continue
+			}
+			defer os.Remove(tmp.Name())
 			path = tmp.Name()
+		} else if fi, err := os.Stat(path); err == nil && fi.Size() > maxWAVBytes {
+			item.DecodeStatus = fmt.Sprintf("frame decode skipped: WAV over the %d MB limit", maxWAVBytes>>20)
+			continue
 		}
 		samples, rate, err := decode.ReadWAV(path)
 		if err != nil {
+			item.DecodeStatus = "frame decode skipped: unreadable audio: " + err.Error()
+			continue
+		}
+		if rate > 0 && float64(len(samples))/float64(rate) > maxDecodeDurationSec {
+			item.DecodeStatus = fmt.Sprintf("frame decode skipped: audio longer than the %d s decode limit", int(maxDecodeDurationSec))
 			continue
 		}
 		var png []byte
@@ -252,21 +286,25 @@ func DecodeFrames(saved []Item, dir string) []Item {
 			// decode, same honesty bar as the decode command.
 			r := decode.APTDecode(samples, rate)
 			if r == nil {
+				item.DecodeStatus = "frame decode skipped: no APT sync found"
 				continue
 			}
-			ok, _ := r.Verified()
+			ok, why := r.Verified()
 			if !ok {
+				item.DecodeStatus = "frame decode skipped: APT decode not verified (" + why + ")"
 				continue
 			}
 			png, err = r.PNG()
 		}
 		if err != nil {
+			item.DecodeStatus = "frame decode skipped: " + err.Error()
 			continue
 		}
 		ext := filepath.Ext(item.Name)
 		name := strings.TrimSuffix(item.Name, ext) + "-sdrstream-decoded.png"
 		out := filepath.Join(dir, name)
 		if err := os.WriteFile(out, png, 0o644); err != nil {
+			item.DecodeStatus = "frame decoded but could not be saved: " + err.Error()
 			continue
 		}
 		frames = append(frames, Item{

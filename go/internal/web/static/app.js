@@ -562,6 +562,10 @@ function renderGallery() {
       const lin = document.createElement('div'); lin.className = 'muted';
       lin.textContent = 'decoded by sdrstream from ' + it.decoded_from; body.appendChild(lin);
     }
+    if (it.decode_status) {
+      const lin = document.createElement('div'); lin.className = 'muted';
+      lin.textContent = it.decode_status; body.appendChild(lin);
+    }
     card.appendChild(body); box.appendChild(card);
   });
   if (!shown.length) {

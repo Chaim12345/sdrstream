@@ -1127,6 +1127,11 @@ func cmdGallery(args []string) error {
 	}
 	sort.SliceStable(saved, func(i, j int) bool { return saved[i].Start.After(saved[j].Start) })
 	frames := gallery.DecodeFrames(saved, dir)
+	for _, item := range saved {
+		if item.DecodeStatus != "" {
+			fmt.Printf("  %s: %s\n", item.Name, item.DecodeStatus)
+		}
+	}
 	for _, frame := range frames {
 		fmt.Printf("  decoded %s from %s\n", frame.Name, frame.DecodedFrom)
 	}
