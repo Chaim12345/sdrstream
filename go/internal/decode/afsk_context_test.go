@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // A cancelled context stops AFSKFramesContext before any burst work and
@@ -27,4 +28,31 @@ func TestAFSKFramesContextDecodes(t *testing.T) {
 	if len(packets) == 0 {
 		t.Fatal("no packets decoded from the reference APRS audio")
 	}
+}
+
+// Cancellation must also land mid-decode, not only before the first burst:
+// a context cancelled while the ensemble demodulators are running is
+// observed at a burst or variant boundary and stops the remaining work.
+func TestAFSKFramesContextCancelInFlight(t *testing.T) {
+	start := time.Now()
+	if _, err := AFSKFramesContext(context.Background(), refAPRS); err != nil {
+		t.Fatalf("baseline decode: %v", err)
+	}
+	base := time.Since(start)
+	for _, frac := range []time.Duration{4, 8, 16} {
+		ctx, cancel := context.WithCancel(context.Background())
+		go func(d time.Duration) {
+			time.Sleep(d)
+			cancel()
+		}(base / frac)
+		_, err := AFSKFramesContext(ctx, refAPRS)
+		cancel()
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	t.Fatalf("decode never observed in-flight cancellation (baseline %s)", base)
 }

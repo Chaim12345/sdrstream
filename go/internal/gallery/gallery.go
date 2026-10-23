@@ -490,6 +490,7 @@ func DecodeFramesContext(ctx context.Context, saved []Item, dir string) []Item {
 				Name:           name,
 				Path:           out,
 				Size:           int64(text.Len()),
+				Text:           preview(text.Bytes()),
 				DecodedFrom:    item.Name,
 			})
 			continue

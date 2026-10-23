@@ -51,6 +51,9 @@ func TestDecodeFramesAFSKRealOffAir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if frame.Text == "" {
+		t.Fatal("text artefact carries no inline preview; the web UI renders it.text")
+	}
 	if !strings.Contains(string(content), "KF6DQ-5") {
 		t.Fatal("decoded text missing a station the reference decoder finds (KF6DQ-5)")
 	}
