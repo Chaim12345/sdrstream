@@ -23,6 +23,8 @@ type Sat struct {
 // AMSAT's published coordination data; check the live TLE set for which are
 // still transmitting.
 var Table = []Sat{
+	{Name: "ISS-SSTV", NoradID: 25544, DownlinkHz: 437550000, Mode: "FM", Status: "active", Notes: "ARISS SSTV Series 34 downlink (Robot36), 22-26 Oct 2026: AMSAT notice 2026-10-18 (amsat.org/?page_id=fulsovcs), DARC E39 2026-10-16/21. Event entry."},
+	{Name: "ISS-SSTV-2M", NoradID: 25544, DownlinkHz: 145800000, Mode: "FM", Status: "active", Notes: "Legacy ARISS SSTV downlink (pre-2025 events); kept as a control-listen entry."},
 	{Name: "ISS", NoradID: 25544, DownlinkHz: 145800000, Mode: "FM", UplinkHz: int64Ptr(145990000), ToneHz: float64Ptr(67.0), Status: "active", Notes: "Voice repeater (region 2/3 uplink); also SSTV and APRS.", Beacons: []int64{145825000, 145800000, 437800000}},
 	{Name: "SO-50", NoradID: 27607, DownlinkHz: 436795000, Mode: "FM", UplinkHz: int64Ptr(145850000), ToneHz: float64Ptr(67.0), Status: "active", Notes: "Most reliable FM bird; 74.4 Hz tone to arm for 10 min.", Beacons: []int64{436795000}},
 	{Name: "AO-91", NoradID: 43017, DownlinkHz: 145960000, Mode: "FM", UplinkHz: int64Ptr(435250000), ToneHz: float64Ptr(67.0), Status: "active", Notes: "Fox-1B. Downlink on 2 m so Doppler is mild.", Beacons: []int64{145960000}},

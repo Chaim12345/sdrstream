@@ -115,7 +115,7 @@ func PlanPass(sat satellites.Sat, receiver *catalogue.Receiver,
 	}
 
 	text := tleText
-	tracker, err := loadTracker(sat.Name, text, offline)
+	tracker, err := loadTracker(tleName(sat.Name), text, offline)
 	if err != nil {
 		return ChasePlan{}, err
 	}
@@ -230,6 +230,24 @@ func modeFor(kind, mode string) string {
 	return strings.ToUpper(mode)
 }
 
+// OpenWebRXProfileOverride, when non-empty, makes segment() select the
+// first OpenWebRX profile whose name contains it (case-insensitive) after
+// each connect. Set by the satrecord -profile flag for receivers outside
+// the verified catalogue.
+var OpenWebRXProfileOverride string
+
+// TLENameOverride, when non-empty, replaces the satellite name used to
+// match the TLE set (for catalogue entries under a different name).
+var TLENameOverride string
+
+// tleName is the name used to look the satellite up in the TLE set.
+func tleName(fallback string) string {
+	if TLENameOverride != "" {
+		return TLENameOverride
+	}
+	return fallback
+}
+
 // segment opens a fresh connection, tunes, records one segment, closes.
 func segment(ctx context.Context, plan ChasePlan, frequencyHz float64,
 	window time.Duration) ([]int16, int, error) {
@@ -244,6 +262,17 @@ func segment(ctx context.Context, plan ChasePlan, frequencyHz float64,
 			return nil, 0, err
 		}
 		defer client.Close()
+		if OpenWebRXProfileOverride != "" {
+			time.Sleep(1500 * time.Millisecond) // profile list arrives after connect
+			for _, p := range client.ProfileList() {
+				if strings.Contains(strings.ToLower(p.Name), strings.ToLower(OpenWebRXProfileOverride)) {
+					if err := client.SelectProfile(ctx, p.Key); err != nil {
+						return nil, 0, err
+					}
+					break
+				}
+			}
+		}
 		freq := int64(frequencyHz)
 		if err := client.Tune(ctx, &freq, mode, nil); err != nil {
 			return nil, 0, err
@@ -277,7 +306,7 @@ func Chase(ctx context.Context, plan ChasePlan, outPath string,
 		say = func(string) {}
 	}
 	text := plan.TLEText
-	tracker, err := loadTracker(plan.Satellite.Name, text, offline)
+	tracker, err := loadTracker(tleName(plan.Satellite.Name), text, offline)
 	if err != nil {
 		return 0, err
 	}

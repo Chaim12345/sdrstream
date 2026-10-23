@@ -568,10 +568,14 @@ func cmdSatrecord(args []string) error {
 	out := fs.String("out", "satellite.wav", "output file")
 	dryRun := fs.Bool("dry-run", false, "show the plan without recording")
 	offlineTle := fs.Bool("offline-tle", false, "use the cached TLE set even if stale")
+	profileSub := fs.String("profile", "", "openwebrx: select the first profile whose name contains this text (case-insensitive) before tuning")
+	tleName := fs.String("tle-name", "", "match this name in the TLE set instead of the satellite name")
 	fs.Parse(args)
 	if *name == "" {
 		return fmt.Errorf("--satellite is required")
 	}
+	satellite.OpenWebRXProfileOverride = *profileSub
+	satellite.TLENameOverride = *tleName
 	sat, err := satByName(*name)
 	if err != nil {
 		return err
