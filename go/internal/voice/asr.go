@@ -393,7 +393,11 @@ func TranscribeASR(ctx context.Context, samples []float64, rate int, o ASROption
 		}
 		if (err != nil || conf < o.MinConfidence || hallucination(text, conf)) && o.FallbackModel != "" && o.FallbackModel != model {
 			t2, l2, c2, e2 := runWhisper(ctx, binary, o.FallbackModel, wav, o.Options)
-			if e2 == nil && (err != nil || c2 > conf) {
+			// A hallucinated primary loses to any clean fallback, even at
+			// lower confidence: keeping the primary here would drop the
+			// whole chunk below and silence real speech.
+			cleanBeatsHallucination := hallucination(text, conf) && !hallucination(t2, c2)
+			if e2 == nil && (err != nil || c2 > conf || cleanBeatsHallucination) {
 				text, lang, conf, err, usedModel, fell = t2, l2, c2, nil, o.FallbackModel, true
 			}
 		}
