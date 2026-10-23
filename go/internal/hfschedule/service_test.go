@@ -231,3 +231,33 @@ func TestUpcomingSlotProtectedFromRetry(t *testing.T) {
 		t.Fatalf("retry should resume after the slot, got %+v err %v", a, err)
 	}
 }
+
+func TestSelectReceiverPrefersRecentCleanRecord(t *testing.T) {
+	now := utc("2026-10-22T06:00:00Z")
+	rs := []Receiver{
+		{URL: "flaky", Type: "kiwi", MaxKHz: 30000},
+		{URL: "steady", Type: "kiwi", MaxKHz: 30000},
+	}
+	// flaky has the better lifetime rate but failed 5 minutes ago (not
+	// consecutive, so it is not benched); steady is clean with a lower rate.
+	metrics := map[string]ReceiverMetrics{
+		"flaky":  {Attempts: 27, Successes: 22, Failures: 5, LastFailure: now.Add(-5 * time.Minute), LastSuccess: now.Add(-10 * time.Minute)},
+		"steady": {Attempts: 14, Successes: 11, Failures: 3, LastFailure: now.Add(-2 * time.Hour), LastSuccess: now.Add(-time.Hour)},
+	}
+	if got, ok := selectReceiver(rs, metrics, now); !ok || got.URL != "steady" {
+		t.Fatalf("recent failure should demote flaky below steady, got %v ok=%v", got, ok)
+	}
+	// Once the failure ages past the window, lifetime rate rules again.
+	later := now.Add(31 * time.Minute)
+	if got, ok := selectReceiver(rs, metrics, later); !ok || got.URL != "flaky" {
+		t.Fatalf("after the window the higher lifetime rate should win, got %v ok=%v", got, ok)
+	}
+	// Both recently failed: fall back to the success rate.
+	both := map[string]ReceiverMetrics{
+		"flaky":  {Attempts: 27, Successes: 22, Failures: 5, LastFailure: now.Add(-5 * time.Minute)},
+		"steady": {Attempts: 14, Successes: 11, Failures: 3, LastFailure: now.Add(-time.Minute)},
+	}
+	if got, ok := selectReceiver(rs, both, now); !ok || got.URL != "flaky" {
+		t.Fatalf("both recently failed: rate should decide, got %v ok=%v", got, ok)
+	}
+}

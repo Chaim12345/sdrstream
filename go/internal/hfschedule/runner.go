@@ -132,11 +132,25 @@ func (m *ReceiverMetrics) noteResult(ok bool, errText string, now time.Time) {
 	m.LastError = errText
 }
 
+// recentFailureWindow bounds how long a failure demotes a receiver below
+// receivers with a clean recent record. The lifetime success rate rewards a
+// receiver that was healthy for weeks even while it fails every other
+// attempt tonight, so recent performance outranks it.
+const recentFailureWindow = 30 * time.Minute
+
+// recentFailure reports whether the receiver failed inside the window.
+func (m ReceiverMetrics) recentFailure(now time.Time) bool {
+	return !m.LastFailure.IsZero() && now.Sub(m.LastFailure) < recentFailureWindow
+}
+
 // selectReceiver picks the healthiest eligible receiver: benched receivers
-// sit out their cooldown; among the rest the highest persisted success rate
-// wins, ties keep the operator priority order ReceiversFor established.
+// sit out their cooldown; among the rest a receiver with a recent failure
+// ranks below one with a clean recent record, then the highest persisted
+// success rate wins, and ties keep the operator priority order
+// ReceiversFor established.
 func selectReceiver(receivers []Receiver, metrics map[string]ReceiverMetrics, now time.Time) (Receiver, bool) {
 	best := -1
+	bestRecent := false
 	bestRate := -1.0
 	bestStreak := 1 << 30
 	for i, r := range receivers {
@@ -144,9 +158,10 @@ func selectReceiver(receivers []Receiver, metrics map[string]ReceiverMetrics, no
 		if m.benched(now) {
 			continue
 		}
+		rf := m.recentFailure(now)
 		rate := m.SuccessRate()
-		if best < 0 || rate > bestRate || (rate == bestRate && m.ConsecutiveFailures < bestStreak) {
-			best, bestRate, bestStreak = i, rate, m.ConsecutiveFailures
+		if best < 0 || (rf == bestRecent && (rate > bestRate || (rate == bestRate && m.ConsecutiveFailures < bestStreak))) || (bestRecent && !rf) {
+			best, bestRecent, bestRate, bestStreak = i, rf, rate, m.ConsecutiveFailures
 		}
 	}
 	if best < 0 {
