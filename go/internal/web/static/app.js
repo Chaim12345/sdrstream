@@ -6,13 +6,17 @@ const el = id => document.getElementById(id);
 /* Empty/muted placeholders are built as DOM nodes with textContent, never
    innerHTML: static strings are safe today, but the pattern keeps the next
    interpolated string from becoming an injection hole. */
+/* Both replace the box's content, matching the innerHTML assignments
+   they replace: appending would stack one placeholder per refresh. */
 const setEmpty = (box, text) => {
+  box.textContent = '';
   const d = document.createElement('div');
   d.className = 'empty';
   d.textContent = text;
   box.appendChild(d);
 };
 const setMuted = (box, text) => {
+  box.textContent = '';
   const d = document.createElement('span');
   d.className = 'muted';
   d.textContent = text;
