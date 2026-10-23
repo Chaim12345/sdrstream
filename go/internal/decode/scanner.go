@@ -165,77 +165,72 @@ func OccupiedBandwidth(samples []float64, rate int) float64 {
 	if binHz <= 0 {
 		return 0
 	}
+	// Normalize first so huge-but-finite inputs cannot overflow the power
+	// sums (ReadWAV yields only [-1,1], but a library caller can pass
+	// anything; +-1e300 samples made the old grow loop spin on Inf/NaN).
+	maxAbs := 0.0
+	for _, s := range samples {
+		if a := math.Abs(s); a > maxAbs {
+			maxAbs = a
+		}
+	}
+	if maxAbs <= 0 || math.IsNaN(maxAbs) || math.IsInf(maxAbs, 0) {
+		return 0
+	}
+	norm := make([]float64, len(samples))
+	for i, s := range samples {
+		norm[i] = s / maxAbs
+	}
 	powers := make([]float64, bins)
-	peak, peakPower := 0, 0.0
+	total := 0.0
 	for i := 0; i < bins; i++ {
 		f := low + (float64(i)+0.5)*binHz
-		powers[i] = goertzel(samples, rate, f)
-		if powers[i] > peakPower {
-			peak, peakPower = i, powers[i]
-		}
-	}
-	if peakPower <= 0 || math.IsNaN(peakPower) || math.IsInf(peakPower, 0) {
-		// No signal, or garbage input whose power overflowed (samples far
-		// outside [-1,1]; ReadWAV never yields those, but a library caller
-		// can): report unknown width rather than a fabricated one.
-		return 0
-	}
-	// Grow outward from the peak until the enclosed bins hold 90% of the
-	// TOTAL power inside the passband - not of the peak bin. The old
-	// peak-relative target made nearly every bin count as signal, and the
-	// boundary interpolation divided by the weakest neighbor's power, so
-	// the measured width exploded past the passband (MHz-wide readings for
-	// a single tone). Each boundary now stops at the fraction of the
-	// final bin actually needed to reach the target.
-	total := 0.0
-	for _, p := range powers {
-		total += p
+		powers[i] = goertzel(norm, rate, f)
+		total += powers[i]
 	}
 	if total <= 0 || math.IsNaN(total) || math.IsInf(total, 0) {
+		// No signal, or garbage input: report unknown width rather than a
+		// fabricated one.
 		return 0
 	}
+	// The width is the narrowest CONTIGUOUS span of bins holding 90% of
+	// the passband power. Growing greedily outward from the peak followed
+	// a tone's sidelobes past the valley before reaching a second tone
+	// (two tones 170 Hz apart measured ~1.4 kHz), and the older
+	// peak-relative target with weakest-neighbor interpolation reported
+	// MHz widths for a single tone. A two-pointer scan over the prefix
+	// sums is O(bins) and cannot fail to terminate.
+	prefix := make([]float64, bins+1)
+	for i, p := range powers {
+		prefix[i+1] = prefix[i] + p
+	}
 	target := 0.9 * total
-	lowEdge, highEdge := float64(peak)-0.5, float64(peak)+0.5
-	enclosed := peakPower
-	i, j := peak, peak
-	lowDone, highDone := false, false
-	for enclosed < target && !(lowDone && highDone) {
-		below, above := 0.0, 0.0
-		if !lowDone && i > 0 {
-			below = powers[i-1]
+	best := float64(bins)
+	j := 0
+	for i := 0; i < bins; i++ {
+		if j < i {
+			j = i
 		}
-		if !highDone && j < bins-1 {
-			above = powers[j+1]
+		for j < bins && prefix[j+1]-prefix[i] < target {
+			j++
 		}
-		if below <= 0 && above <= 0 {
+		if j >= bins {
+			// The whole remaining span falls short; wider starts only get
+			// shorter of power, so no later window can win.
 			break
 		}
-		need := target - enclosed
-		if above >= below {
-			if above >= need {
-				highEdge = float64(j+1) - 0.5 + need/above
-				enclosed = target
-				highDone = true
-			} else {
-				j++
-				enclosed += above
-				highEdge = float64(j) + 0.5
-				highDone = j == bins-1
-			}
-		} else {
-			if below >= need {
-				lowEdge = float64(i-1) + 0.5 - need/below
-				enclosed = target
-				lowDone = true
-			} else {
-				i--
-				enclosed += below
-				lowEdge = float64(i) - 0.5
-				lowDone = i == 0
-			}
+		// Window [i..j] holds at least the target; take only the fraction
+		// of the final bin actually needed.
+		need := target - (prefix[j] - prefix[i])
+		frac := 0.0
+		if powers[j] > 0 {
+			frac = need / powers[j]
+		}
+		if w := float64(j-i) + frac; w < best {
+			best = w
 		}
 	}
-	width := (highEdge - lowEdge) * binHz
+	width := best * binHz
 	if width < binHz {
 		return binHz
 	}
