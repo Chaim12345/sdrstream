@@ -936,9 +936,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/stations.json", s.handleStations)
 	mux.HandleFunc("/api/map.json", s.handleMap)
 	mux.HandleFunc("/api/tiles/", s.handleTile)
-	mux.HandleFunc("/manifest.webmanifest", handlePWAFile("manifest.webmanifest", "application/manifest+json", false))
+	mux.HandleFunc("/manifest.webmanifest", handlePWAFile("manifest.webmanifest", "application/manifest+json", true))
 	mux.HandleFunc("/sw.js", handlePWAFile("sw.js", "text/javascript; charset=utf-8", true))
-	mux.Handle("/static/", http.FileServerFS(staticFS))
+	// Static shell assets revalidate every load for the same reason: the
+	// service worker's network-first fetch is only fresh if the HTTP cache
+	// does not answer instead.
+	mux.Handle("/static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		http.FileServerFS(staticFS).ServeHTTP(w, r)
+	}))
 	mux.HandleFunc("/audio/", s.handleAudio)
 	mux.HandleFunc("/audio/live/", s.handleLiveAudio)
 	mux.HandleFunc("/gallery/", s.handleGalleryFile)
@@ -951,6 +957,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// The document must revalidate every load: without a validator Chrome
+	// otherwise reuses a cached shell after an app upgrade and the user
+	// keeps running the previous frontend.
+	w.Header().Set("Cache-Control", "no-cache")
 	fmt.Fprint(w, indexPage)
 }
 

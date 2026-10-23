@@ -1284,3 +1284,21 @@ func TestGalleryFileServesPlayableAudio(t *testing.T) {
 		t.Errorf("range request: status = %d, body = %q; want 206 RIFF", recorder.Code, recorder.Body.String())
 	}
 }
+
+// The shell (document, static assets, service worker) must revalidate on
+// every load: without Cache-Control: no-cache, an installed browser can
+// keep running the previous frontend after an app upgrade because the
+// responses carry no validator at all.
+func TestShellAssetsRevalidate(t *testing.T) {
+	server := newTestServer(t)
+	for _, path := range []string{"/", "/static/app.css", "/static/app.js", "/sw.js", "/manifest.webmanifest"} {
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest("GET", path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", path, recorder.Code)
+		}
+		if cc := recorder.Header().Get("Cache-Control"); cc != "no-cache" {
+			t.Errorf("%s: Cache-Control = %q, want no-cache", path, cc)
+		}
+	}
+}
