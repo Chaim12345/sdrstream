@@ -189,6 +189,16 @@ func sameOriginPOST(r *http.Request) bool {
 	return origin == ""
 }
 
+// writeLoginForm renders the password form, optionally with an inline
+// error, so a failed POST never strands the user on a bare error page.
+func writeLoginForm(w http.ResponseWriter, errMsg string) {
+	errHTML := ""
+	if errMsg != "" {
+		errHTML = `<p class="err" role="alert">` + errMsg + `</p>`
+	}
+	fmt.Fprint(w, `<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>sdrstream login</title><style>body{background:#0a0d14;color:#d9e1ef;font:16px system-ui;display:grid;place-items:center;min-height:90vh}form{background:#11151f;padding:24px;border:1px solid #1f2635;border-radius:12px;width:min(360px,85vw)}input,button{box-sizing:border-box;width:100%;padding:12px;margin-top:12px;border-radius:6px}input{background:#161b28;color:#fff;border:1px solid #455}button{background:#5cc8ff;border:0;font-weight:600}.err{color:#ff9d9d;margin:12px 0 0}</style><form method="post" action="/login"><h1>sdrstream</h1>`+errHTML+`<label for="password">Demo password</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus><button type="submit">Open monitor</button></form></html>`)
+}
+
 // handleLogin serves the password form and creates sessions. Wrong
 // passwords are rate-limited per client IP: 5 tries per 15 minutes.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -196,7 +206,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.Method == http.MethodGet {
-		fmt.Fprint(w, `<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>sdrstream login</title><style>body{background:#0a0d14;color:#d9e1ef;font:16px system-ui;display:grid;place-items:center;min-height:90vh}form{background:#11151f;padding:24px;border:1px solid #1f2635;border-radius:12px;width:min(360px,85vw)}input,button{box-sizing:border-box;width:100%;padding:12px;margin-top:12px;border-radius:6px}input{background:#161b28;color:#fff;border:1px solid #455}button{background:#5cc8ff;border:0;font-weight:600}</style><form method="post" action="/login"><h1>sdrstream</h1><label for="password">Demo password</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus><button type="submit">Open monitor</button></form></html>`)
+		writeLoginForm(w, "")
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -242,14 +252,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if attempt.count >= 5 {
 		s.auth.mu.Unlock()
 		w.Header().Set("Retry-After", "900")
-		http.Error(w, "too many attempts", http.StatusTooManyRequests)
+		w.WriteHeader(http.StatusTooManyRequests)
+		writeLoginForm(w, "Too many attempts - try again in 15 minutes.")
 		return
 	}
 	attempt.count++
 	s.auth.attempts[ip] = attempt
 	s.auth.mu.Unlock()
 	if subtle.ConstantTimeCompare([]byte(r.FormValue("password")), []byte(uiPassword)) != 1 {
-		http.Error(w, "invalid password", http.StatusUnauthorized)
+		w.WriteHeader(http.StatusUnauthorized)
+		writeLoginForm(w, "Invalid password - try again.")
 		return
 	}
 	s.auth.mu.Lock()

@@ -1054,3 +1054,44 @@ func TestMonitorLifecycleControl(t *testing.T) {
 		t.Fatalf("hook failure: status = %d, want 502", rec.Code)
 	}
 }
+
+func TestLoginFailureRendersFormWithInlineError(t *testing.T) {
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "test-demo-password")
+	handler := (&Server{}).Handler()
+
+	post := func(password string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("password="+password))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// A wrong password must re-render the form with an inline error,
+	// not strand the user on a bare text page (QA finding).
+	rec := post("wrong")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong password status=%d, want 401", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `name="password"`) || !strings.Contains(body, "Invalid password") {
+		t.Fatalf("401 page must contain the form and the inline error, got: %q", body)
+	}
+
+	// After 5 failed attempts the lockout page keeps the form too and
+	// carries Retry-After.
+	for i := 0; i < 4; i++ {
+		post("wrong")
+	}
+	rec = post("wrong")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("6th attempt status=%d, want 429", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") != "900" {
+		t.Fatalf("Retry-After=%q, want 900", rec.Header().Get("Retry-After"))
+	}
+	body = rec.Body.String()
+	if !strings.Contains(body, `name="password"`) || !strings.Contains(body, "Too many attempts") {
+		t.Fatalf("429 page must contain the form and the lockout message, got: %q", body)
+	}
+}
