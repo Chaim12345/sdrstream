@@ -67,11 +67,11 @@ var maritimeWords = []string{
 	// English (international 518 kHz and UK national 490 kHz).
 	"NAVAREA", "METAREA", "WARNING", "GALE", "STORM", "WIND", "WAVES", "SWELL", "VISIBILITY", "FORECAST", "SEA", "COAST", "MARINERS", "NAVIGATION", "LIGHT", "BUOY", "HAZARD", "CANCEL",
 	// Dutch (Oostende national 490 kHz).
-	"SCHEEPVAART", "BOEI", "HAVEN", "WAARSCHUWING", "KUST", "ANKEREN", "VISSEN", "ZEEGEBIED", "VAARWATER", "GEDOOFD",
+	"SCHEEPVAART", "BOEI", "HAVEN", "WAARSCHUWING", "KUST", "ANKEREN", "VISSEN", "ZEEGEBIED", "VAARWATER", "GEDOOFD", "LICHT", "VAARWEG", "WADDEN",
 	// German (Pinneberg national 490 kHz).
-	"SEEGEBIET", "SEEWETTER", "BOJE", "HAFEN", "SEEFAHRER", "ANKERN", "STURMWARNUNG", "NEBEL",
+	"SEEGEBIET", "SEEWETTER", "BOJE", "HAFEN", "SEEFAHRER", "ANKERN", "STURMWARNUNG", "NEBEL", "WARN", "LEUCHTTURM", "OSTSEE", "NORDSEE", "SPERRGEBIET", "TONNE", "BAKE", "FEUERSCHIFF",
 	// French (Corsen national 490 kHz).
-	"AVIS", "TEMPETE", "NAVIGATEURS", "BALISE", "MOUILLAGE",
+	"AVIS", "TEMPETE", "NAVIGATEURS", "BALISE", "MOUILLAGE", "GOLFE",
 }
 
 // MaritimeWordHits counts distinct maritime words present in text.
