@@ -114,6 +114,29 @@
         <output id="squelch-value" for="squelch">+8 dB</output>
       </div>
       <div class="muted rx-bw" id="rx-bw"></div>
+      <div class="ctl-row">
+        <span class="ctl-label">monitor</span>
+        <select id="monitor-kind" aria-label="Receiver type">
+          <option value="openwebrx">OpenWebRX</option>
+          <option value="websdr">WebSDR</option>
+          <option value="kiwi">KiwiSDR</option>
+        </select>
+      </div>
+      <div class="ctl-row">
+        <span class="ctl-label">host</span>
+        <input id="monitor-host" list="monitor-stations" placeholder="host[:port]" aria-label="Receiver address" autocomplete="off">
+        <datalist id="monitor-stations"></datalist>
+      </div>
+      <div class="ctl-row">
+        <span class="ctl-label">profile</span>
+        <input id="monitor-profile" placeholder="optional" aria-label="OpenWebRX profile" autocomplete="off">
+      </div>
+      <div class="ctl-row">
+        <span class="ctl-label"></span>
+        <button id="monitor-start" class="seg-btn" type="button">start</button>
+        <button id="monitor-stop" class="seg-btn" type="button" hidden>stop</button>
+        <span class="muted" id="monitor-msg"></span>
+      </div>
     </div>
     <div class="panel" id="panel-receivers">
       <div class="panel-head">

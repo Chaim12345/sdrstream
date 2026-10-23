@@ -891,6 +891,7 @@ async function refreshLive() {
 
 function renderSignal(live) {
   const meter = el('signal-meter');
+  syncMonitorButtons(live);
   if (!live || !live.available) {
     el('signal-receiver').textContent = 'no monitor running';
     el('meter-fill').style.width = '0%';
@@ -1501,6 +1502,85 @@ async function postMonitorControl(fields) {
   } catch (err) {
     toast('receiver control failed: ' + err, undefined, true);
     refreshReceiverPanel();
+
+/* ---------- monitor start / stop ---------- */
+// Starts and stops the live monitor the panels above read from. The
+// server answers construction failures (bad address, refused
+// connection) with an error we surface in place, so an empty spectrum
+// never reads as success.
+async function postMonitorLifecycle(fields) {
+  const body = new URLSearchParams(fields);
+  const response = await fetch('/api/monitor/control', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body,
+  });
+  if (!response.ok) {
+    let detail = '';
+    try { detail = (await response.text()).trim(); } catch { /* keep status */ }
+    throw new Error(detail || ('HTTP ' + response.status));
+  }
+  return response.json();
+}
+
+function initMonitorLifecycle() {
+  const host = el('monitor-host');
+  const kindSel = el('monitor-kind');
+  const profile = el('monitor-profile');
+  const startBtn = el('monitor-start');
+  const stopBtn = el('monitor-stop');
+  const msg = el('monitor-msg');
+  if (!host || !startBtn || !stopBtn) return;
+  startBtn.addEventListener('click', async () => {
+    const server = host.value.trim();
+    if (!server) { msg.textContent = 'enter a receiver host[:port]'; return; }
+    msg.textContent = 'starting...';
+    startBtn.disabled = true;
+    try {
+      await postMonitorLifecycle({ action: 'start', server, kind: kindSel.value, profile: profile.value.trim() });
+      msg.textContent = 'monitor starting';
+    } catch (err) {
+      msg.textContent = 'start failed: ' + err.message;
+    } finally {
+      startBtn.disabled = false;
+      refreshLive();
+    }
+  });
+  stopBtn.addEventListener('click', async () => {
+    msg.textContent = 'stopping...';
+    try {
+      await postMonitorLifecycle({ action: 'stop' });
+      msg.textContent = 'monitor stopped';
+    } catch (err) {
+      msg.textContent = 'stop failed: ' + err.message;
+    }
+    refreshLive();
+  });
+  // Offer known public receivers from the station directory.
+  fetchJSON('/api/stations.json').then(stations => {
+    const list = el('monitor-stations');
+    if (!list) return;
+    (stations || []).slice(0, 300).forEach(st => {
+      if (!st.url) return;
+      const opt = document.createElement('option');
+      try {
+        const u = new URL(/^https?:\/\//.test(st.url) ? st.url : 'http://' + st.url);
+        opt.value = u.host;
+      } catch { opt.value = st.url; }
+      opt.label = (st.name || '') + (st.type ? ' (' + st.type + ')' : '');
+      list.appendChild(opt);
+    });
+  }).catch(() => { /* directory offline: free text still works */ });
+}
+
+function syncMonitorButtons(live) {
+  const startBtn = el('monitor-start');
+  const stopBtn = el('monitor-stop');
+  if (!startBtn || !stopBtn) return;
+  const running = !!(live && live.available);
+  startBtn.hidden = running;
+  stopBtn.hidden = !running;
+}
+
   }
 }
 function applyRxState(info) {
@@ -1792,6 +1872,7 @@ function initSettingsView() {
 applyTheme();
 initSettingsView();
 buildRxControls();
+initMonitorLifecycle();
 if (location.hash && el('view-' + location.hash.slice(1))) showView(location.hash.slice(1)); else showView('overview');
 refreshReceiverPanel(); renderMsglog();
 setInterval(refreshReceiverPanel, 3000);

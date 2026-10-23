@@ -986,3 +986,71 @@ func TestPWARoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestMonitorLifecycleControl(t *testing.T) {
+	post := func(server *Server, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "http://example.test/api/monitor/control", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Origin", "http://example.test")
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Without hooks the lifecycle actions report unsupported.
+	noHooks := &Server{}
+	if rec := post(noHooks, "action=start&server=rx.example:8073&kind=openwebrx"); rec.Code != http.StatusNotImplemented {
+		t.Fatalf("start without hooks: status = %d, want 501", rec.Code)
+	}
+	if rec := post(noHooks, "action=stop"); rec.Code != http.StatusNotImplemented {
+		t.Fatalf("stop without hooks: status = %d, want 501", rec.Code)
+	}
+
+	// With hooks, start validates input and forwards a normalized spec.
+	var got MonitorStartSpec
+	stopped := 0
+	server := &Server{}
+	server.SetMonitorHooks(MonitorHooks{
+		Start: func(spec MonitorStartSpec) error { got = spec; return nil },
+		Stop:  func() error { stopped++; return nil },
+	})
+	for _, body := range []string{
+		"action=start&server=&kind=openwebrx",
+		"action=start&server=rx.example:8073&kind=morse",
+		"action=start&server=rx%20bad:8073&kind=openwebrx",
+		"action=start&server=rx.example%40evil:8073&kind=openwebrx",
+		"action=start&server=ab&kind=openwebrx",
+		"action=start&server=rx.example:8073&kind=openwebrx&profile=bad%20profile",
+	} {
+		if rec := post(server, body); rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400", body, rec.Code)
+		}
+	}
+	rec := post(server, "action=start&server=http%3A%2F%2Fjukebox.spdns.eu%3A8073%2F&kind=openwebrx&profile=0m&label=Jukebox")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid start: status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if got.Server != "jukebox.spdns.eu:8073" || got.Kind != "openwebrx" || got.Profile != "0m" || got.Label != "Jukebox" {
+		t.Fatalf("spec = %+v", got)
+	}
+	if rec := post(server, "action=start&server=websdr.ewi.utwente.nl%3A8901&kind=WebSDR"); rec.Code != http.StatusOK {
+		t.Fatalf("kind case-insensitive: status = %d", rec.Code)
+	}
+	if got.Kind != "websdr" {
+		t.Fatalf("kind = %q, want websdr", got)
+	}
+	if rec := post(server, "action=stop"); rec.Code != http.StatusOK || stopped != 1 {
+		t.Fatalf("stop: status = %d, stopped = %d", rec.Code, stopped)
+	}
+	// Stop is idempotent.
+	if rec := post(server, "action=stop"); rec.Code != http.StatusOK || stopped != 2 {
+		t.Fatalf("idempotent stop: status = %d, stopped = %d", rec.Code, stopped)
+	}
+
+	// A hook failure surfaces as 502 so the UI can show a failed state.
+	broken := &Server{}
+	broken.SetMonitorHooks(MonitorHooks{Start: func(spec MonitorStartSpec) error { return errors.New("dial refused") }})
+	if rec := post(broken, "action=start&server=rx.example:8073&kind=openwebrx"); rec.Code != http.StatusBadGateway {
+		t.Fatalf("hook failure: status = %d, want 502", rec.Code)
+	}
+}
