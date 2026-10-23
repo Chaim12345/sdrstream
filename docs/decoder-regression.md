@@ -50,8 +50,10 @@ raises the floor; commit the new baseline with the change.
 | ACARS | TLeconte/acarsdec `test.wav` (LGPL-2.0) | acarsdec output (sdr-acars fixture) |
 | HFDL | signals.taunus.de HFDL 300/600/1200 bps | at least one FCS-verified frame (no reference decoder run) |
 | APRS | committed WA8LMF TNC test CD excerpt | multimon-ng AFSK1200 |
-| SSTV | committed ARISS Series 34 Robot36 excerpt (user-contributed off-air recording, tests/data/NOTICE) | verified VIS detect + full frame decode |
 | SSTV (negative) | committed generated RTTY clip | must produce zero detections |
+
+A real off-air SSTV positive sample is wanted but not yet rights-clean for
+redistribution; add one only with established redistribution terms.
 
 Reference decoders are never vendored; only their output lists are, as
 `internal/regress/golden/*.txt`. `scripts/regress_golden.sh` regenerates them

@@ -15,14 +15,6 @@ real_pocsag_1200_taunus.wav
   pager network. No licence statement was found on the source page.
   TODO: confirm redistribution terms with the site owner or replace.
 
-real_sstv_ariss_series34_robot36.wav
-  42 s excerpt of an off-air recording of the ARISS SSTV Series 34 event
-  (ISS, 437.550 MHz, Robot36, 2026-10-22). Recorded and contributed by the
-  project's own user from their personal archive for regression use; ARISS
-  invites reception and decoding of its public SSTV transmissions
-  (ariss.org). Decode verified 2026-10-23: full frame, byte-identical to
-  the independently produced reference decode, visually inspected.
-
 Related fixtures elsewhere: go/internal/decode/testdata/ft8 and wspr contain
 recordings whose provenance is listed in their own file names and test
 comments; they are outside this file's scope.
