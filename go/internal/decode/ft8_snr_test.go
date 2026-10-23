@@ -183,9 +183,14 @@ func TestFT8SyntheticSNRLadder(t *testing.T) {
 	}
 	// Measured AWGN behavior (2026-10-23, this test's generator, 3 seeds
 	// per point): -18 dB 3/3 decode, -19 dB 2/3, -20 dB 0/3, -21 dB 0/3.
-	// Practical threshold is about -19 dB; WSJT-X's published FT8
-	// reference is about -21 dB in 2500 Hz AWGN, so this decoder sits
-	// roughly 2 dB above the reference on a friendly synthetic channel. Assertions pin only the robust zone: every seed
+	// Practical threshold is about -19 dB. Reference: the WSJT-X Version
+	// 2.7 User Guide states "Thresholds for decodability are around -20
+	// dB for FT8" and defines S/N against a 2500 Hz reference noise
+	// bandwidth (wsjt.sourceforge.io/wsjtx-doc/wsjtx-main-2.7.0.html).
+	// That threshold describes WSJT-X's own decoder and SNR estimator on
+	// real signals, so the comparison is indicative, not exact: this Go
+	// decoder's synthetic-AWGN threshold sits within about a dB of the
+	// guide's approximate figure. Assertions pin only the robust zone: every seed
 	// must decode at -14 dB, none may decode at -28 dB. The boundary
 	// itself is seed-dependent and stays a measurement, not a gate.
 	decodeAt := func(snr float64, seed int64) bool {
