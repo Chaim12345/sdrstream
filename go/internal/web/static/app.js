@@ -440,6 +440,55 @@ function renderHealth() {
   el('health-ledger').appendChild(feedsLink);
 
   renderReceiverProof(entries);
+  renderSourceFreshness(m);
+}
+
+// Per-source freshness for the health view, built only from the
+// metrics.json the health view already fetched. State and error are the
+// source's own recorded values; staleness judgement stays with the
+// feeds view (metrics carries no refresh interval to compare against).
+function renderSourceFreshness(m) {
+  const panel = el('panel-health');
+  if (!panel) return;
+  let box = document.getElementById('health-sources');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'health-sources';
+    panel.appendChild(box);
+  }
+  box.textContent = '';
+  const title = document.createElement('div'); title.className = 'hbar-title';
+  title.textContent = 'Live data sources';
+  box.appendChild(title);
+  const sources = (m.feeds && m.feeds.sources) || [];
+  if (!sources.length) {
+    const none = document.createElement('div'); none.className = 'muted';
+    none.textContent = 'no live data sources recorded since boot';
+    box.appendChild(none);
+    return;
+  }
+  sources.forEach(src => {
+    const row = document.createElement('div'); row.className = 'src-health-row';
+    const name = document.createElement('b'); name.textContent = src.name || 'unnamed source';
+    const state = document.createElement('span');
+    state.className = 'badge'; state.dataset.state = src.state || 'unknown';
+    state.textContent = src.state || 'unknown';
+    const fresh = document.createElement('span'); fresh.className = 'muted';
+    // Zero-value Go times serialise as year 0001: that means "no
+    // successful fetch recorded", not a fetch in the distant past.
+    fresh.textContent = (src.last_ok && !String(src.last_ok).startsWith('0001'))
+      ? 'last successful fetch ' + relTime(src.last_ok)
+      : 'no successful fetch yet';
+    row.append(name, state, fresh);
+    if (src.last_error) {
+      // Block-level so the recorded error never runs into the
+      // freshness text as one ambiguous line.
+      const err = document.createElement('div'); err.className = 'feed-error';
+      err.textContent = src.last_error;
+      row.appendChild(err);
+    }
+    box.appendChild(row);
+  });
 }
 
 function renderCaptures(status) {
@@ -1034,6 +1083,15 @@ async function refreshActivity() {
     pill.title = 'activity feed unavailable: ' + (err && err.message || err);
   }
 }
+// Provenance framing of a live decode: the receiver or station that
+// reported it, labelled as the origin - never implied to be this
+// server's own reception (monitors listen to public receivers and
+// gallery merges carry a station name), and never guessed when absent.
+// a.source is a receiver/station name, not a source class; the capture
+// source-class model (captureProvenance) stays capture-owned.
+function activityProvenance(a) {
+  return a.source ? 'via ' + shortURL(a.source) : 'source not recorded';
+}
 function activityCard(a, fresh) {
   const card = document.createElement('div');
   card.className = 'card-activity ' + (a.kind || '') + (fresh ? ' fresh' : '');
@@ -1054,11 +1112,11 @@ function activityCard(a, fresh) {
     rowEl.appendChild(level);
   }
   card.appendChild(rowEl);
-  if (a.mode) {
-    const meta = document.createElement('div'); meta.className = 'meta';
-    meta.textContent = a.mode + (a.source ? ' · ' + shortURL(a.source) : '');
-    card.appendChild(meta);
-  }
+  // Provenance is stated on every card: the receiver a decode came from,
+  // or that no source was recorded - never guessed or silently omitted.
+  const meta = document.createElement('div'); meta.className = 'meta';
+  meta.textContent = (a.mode ? a.mode + ' · ' : '') + activityProvenance(a);
+  card.appendChild(meta);
   if (a.detail) {
     const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = a.detail;
     card.appendChild(detail);
@@ -1066,6 +1124,11 @@ function activityCard(a, fresh) {
   if (a.historical) {
     const lin = document.createElement('div'); lin.className = 'muted';
     lin.textContent = 'historical - verification unknown (no gate proof recorded)';
+    card.appendChild(lin);
+  } else if (a.verification) {
+    // The gate reason recorded at verification time, verbatim.
+    const lin = document.createElement('div'); lin.className = 'muted';
+    lin.textContent = 'live gate passed: ' + a.verification;
     card.appendChild(lin);
   } else if (a.rejected) {
     // A known gate failure is not "verification unknown": say what happened.
@@ -1156,6 +1219,14 @@ function renderActivity() {
   if (activityMode) active.push('decoder ' + activityMode);
   if (activityWindowSec) active.push('time window');
   if (activitySearch.trim()) active.push('search');
+  // ui-features' gate-verdict selector (feat/ui-msglog) shares this feed:
+  // include it in the active-filter summary so the visible count is
+  // truthful. Guarded so this renders correctly before and after that
+  // branch integrates; the control itself stays theirs.
+  if (typeof activityVerdict !== 'undefined' && activityVerdict) {
+    const verdictLabels = { passed: 'gate passed', rejected: 'gate rejected', historical: 'historical / no gate proof', ungated: 'no recorded verdict' };
+    active.push(verdictLabels[activityVerdict] || 'gate verdict ' + activityVerdict);
+  }
   el('activity-summary').textContent =
     full.length + ' of ' + activityItems.length + ' decodes' + (active.length ? ' · filtered by ' + active.join(', ') : '');
   const over = el('feed-overview');
@@ -2362,10 +2433,12 @@ function renderReceiverProof(entries) {
       im.title = 'imported clip - not captured by this server';
       badges.appendChild(im);
     }
-    if (e.receiver) {
-      const rx = document.createElement('span'); rx.className = 'badge blind'; rx.textContent = shortURL(e.receiver);
-      badges.appendChild(rx);
-    }
+    const rx = document.createElement('span');
+    rx.className = 'badge blind';
+    // An archived capture without a recorded receiver says so plainly;
+    // omitting the badge would let a reader assume this server's receiver.
+    rx.textContent = e.receiver ? shortURL(e.receiver) : 'receiver not recorded';
+    badges.appendChild(rx);
     facetChips({ gate_verdict: e.gate_verdict || (e.evidence === 'verified' ? 'passed' : ''),
       crosscheck: e.crosscheck, crosscheck_ref: e.crosscheck_ref, crosscheck_detail: e.crosscheck_detail,
       gate: e.gate, verified: e.evidence === 'verified' }).forEach(ch => badges.appendChild(ch));
