@@ -45,7 +45,16 @@ final class UpdateManifest {
         this.minSdk = minSdk;
     }
 
-    static UpdateManifest parse(String json, String expectedPackage) throws UpdateException {
+    /**
+     * @param plainHttpHost the one host plain HTTP is accepted for, or null
+     *        for HTTPS-only. The caller (Updater) supplies it only for the
+     *        exact host of the user-configured feed, and only when that host
+     *        is loopback or a CGNAT literal currently reachable over an active
+     *        VPN transport. Plain HTTP is never accepted for redirects or for
+     *        a host named only inside the manifest.
+     */
+    static UpdateManifest parse(String json, String expectedPackage, String plainHttpHost)
+            throws UpdateException {
         final JSONObject o;
         try {
             o = new JSONObject(json);
@@ -61,7 +70,7 @@ final class UpdateManifest {
             throw new UpdateException("The update feed has no valid version.");
         }
         String url = o.optString("url", "");
-        if (!isAllowedUrl(url)) {
+        if (!isAllowedUrl(url, plainHttpHost)) {
             throw new UpdateException("The update feed points at an untrusted download address.");
         }
         String sha256 = o.optString("sha256", "").toLowerCase(Locale.US);
@@ -84,43 +93,44 @@ final class UpdateManifest {
     }
 
     /**
-     * HTTPS is required, except to hosts that cannot leave the local network:
-     * loopback, RFC1918 and the Tailscale CGNAT range 100.64.0.0/10, so a QA
-     * feed on the device owner's own tailnet/LAN can be plain HTTP. The
-     * checksum and signer checks still apply to whatever is downloaded.
+     * HTTPS always. Plain HTTP only for loopback, or for the single explicit
+     * host the caller vetted (see parse). A CGNAT address is NOT treated as
+     * trusted by range alone.
      */
-    static boolean isAllowedUrl(String url) {
+    static boolean isAllowedUrl(String url, String plainHttpHost) {
         if (url == null) return false;
         String lower = url.toLowerCase(Locale.US);
         if (lower.startsWith("https://")) return true;
         if (!lower.startsWith("http://")) return false;
-        String rest = lower.substring("http://".length());
+        String host = hostOf(lower);
+        if (host == null) return false;
+        if (host.equals("localhost") || host.startsWith("127.")) return true;
+        return plainHttpHost != null && !plainHttpHost.isEmpty() && host.equals(plainHttpHost);
+    }
+
+    /** Lowercase host portion of a URL, without port; null if not parseable. */
+    static String hostOf(String lowerUrl) {
+        int scheme = lowerUrl.indexOf("://");
+        if (scheme < 0) return null;
+        String rest = lowerUrl.substring(scheme + 3);
         int slash = rest.indexOf('/');
         String host = slash >= 0 ? rest.substring(0, slash) : rest;
         int colon = host.lastIndexOf(':');
         if (colon >= 0) host = host.substring(0, colon);
-        return isPrivateTestHost(host);
+        return host.isEmpty() ? null : host;
     }
 
-    static boolean isPrivateTestHost(String host) {
-        if (host == null || host.isEmpty()) return false;
-        if (host.equals("localhost")) return true;
+    /** True for a dotted-quad literal inside the CGNAT range 100.64.0.0/10. */
+    static boolean isCgnatLiteral(String host) {
+        if (host == null) return false;
         String[] parts = host.split("\\.");
         if (parts.length != 4) return false;
-        int[] o = new int[4];
         try {
-            for (int i = 0; i < 4; i++) {
-                o[i] = Integer.parseInt(parts[i]);
-                if (o[i] < 0 || o[i] > 255) return false;
-            }
+            int o0 = Integer.parseInt(parts[0]);
+            int o1 = Integer.parseInt(parts[1]);
+            return o0 == 100 && o1 >= 64 && o1 <= 127;
         } catch (NumberFormatException e) {
-            return false; // hostname, not a literal: require DNS-proof HTTPS
+            return false;
         }
-        if (o[0] == 127) return true;                       // loopback
-        if (o[0] == 10) return true;                        // RFC1918
-        if (o[0] == 192 && o[1] == 168) return true;        // RFC1918
-        if (o[0] == 172 && o[1] >= 16 && o[1] <= 31) return true; // RFC1918
-        if (o[0] == 100 && o[1] >= 64 && o[1] <= 127) return true; // Tailscale CGNAT
-        return false;
     }
 }

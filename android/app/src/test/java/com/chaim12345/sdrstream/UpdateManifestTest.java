@@ -24,7 +24,7 @@ public class UpdateManifestTest {
 
     @Test
     public void parsesValidManifest() throws Exception {
-        UpdateManifest m = UpdateManifest.parse(valid(), PKG);
+        UpdateManifest m = UpdateManifest.parse(valid(), PKG, null);
         assertEquals(PKG, m.pkg);
         assertEquals(1034, m.versionCode);
         assertEquals("0.1.3", m.versionName);
@@ -36,65 +36,80 @@ public class UpdateManifestTest {
     @Test
     public void toleratesUnknownFields() throws Exception {
         UpdateManifest m = UpdateManifest.parse(
-                valid().replace("\"minSdk\":26", "\"minSdk\":26,\"futureField\":{\"x\":1}"), PKG);
+                valid().replace("\"minSdk\":26", "\"minSdk\":26,\"futureField\":{\"x\":1}"), PKG, null);
         assertEquals(1034, m.versionCode);
     }
 
     @Test
     public void rejectsOtherPackage() {
-        expectInvalid(valid().replace(PKG, "com.example.other"), PKG);
+        expectInvalid(valid().replace(PKG, "com.example.other"), PKG, null);
     }
 
     @Test
     public void rejectsMissingVersion() {
         expectInvalid("{\"package\":\"" + PKG + "\",\"url\":\"https://x/y.apk\","
-                + "\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}", PKG);
+                + "\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}", PKG, null);
     }
 
     @Test
     public void rejectsHttpDownloadFromPublicHost() {
-        expectInvalid(valid().replace("https://releases.example.com", "http://releases.example.com"), PKG);
+        expectInvalid(valid().replace("https://releases.example.com", "http://releases.example.com"), PKG, "100.99.176.4");
     }
 
     @Test
-    public void allowsHttpToTailnetAndLanHosts() throws Exception {
-        for (String host : new String[]{"100.99.176.4", "100.64.0.1", "100.127.255.254",
-                "127.0.0.1", "10.0.0.5", "192.168.1.20", "172.16.0.3", "172.31.255.255"}) {
+    public void allowsHttpToLoopbackAlways() throws Exception {
+        for (String host : new String[]{"127.0.0.1", "127.0.1.1", "localhost"}) {
             UpdateManifest m = UpdateManifest.parse(
-                    valid().replace("https://releases.example.com", "http://" + host + ":8080"), PKG);
+                    valid().replace("https://releases.example.com", "http://" + host + ":8080"), PKG, null);
             assertTrue(m.url.startsWith("http://" + host));
         }
     }
 
     @Test
-    public void rejectsHttpToNonPrivateLookalikes() {
-        for (String host : new String[]{"100.63.0.1", "100.128.0.1", "172.15.0.1", "172.32.0.1",
-                "11.0.0.5", "192.167.1.1", "example.com", "100.99.176.4.evil.com"}) {
-            expectInvalid(valid().replace("https://releases.example.com", "http://" + host), PKG);
+    public void allowsHttpOnlyToTheExactConfiguredHost() throws Exception {
+        // The caller vetted 100.99.176.4 (user-configured + VPN check).
+        UpdateManifest m = UpdateManifest.parse(
+                valid().replace("https://releases.example.com", "http://100.99.176.4:8080"),
+                PKG, "100.99.176.4");
+        assertTrue(m.url.startsWith("http://100.99.176.4"));
+    }
+
+    @Test
+    public void rejectsHttpToEveryOtherHostEvenPrivateRanges() {
+        // CGNAT/RFC1918 ranges alone are never trusted: only the exact
+        // caller-vetted host qualifies.
+        for (String host : new String[]{"100.64.0.1", "100.127.255.254", "10.0.0.5",
+                "192.168.1.20", "172.16.0.3", "100.99.176.5", "example.com",
+                "100.99.176.4.evil.com"}) {
+            expectInvalid(valid().replace("https://releases.example.com", "http://" + host),
+                    PKG, "100.99.176.4");
         }
+        // No vetted host at all: even the CGNAT literal is refused.
+        expectInvalid(valid().replace("https://releases.example.com", "http://100.99.176.4"),
+                PKG, null);
     }
 
     @Test
     public void rejectsBadChecksum() {
         expectInvalid(valid().replace(
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                "0123456789abcdef"), PKG); // too short
+                "0123456789abcdef"), PKG, null); // too short
         expectInvalid(valid().replace(
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                "zz3456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), PKG); // non-hex
+                "zz3456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), PKG, null); // non-hex
     }
 
     @Test
     public void rejectsGarbageJson() {
-        expectInvalid("not json at all", PKG);
-        expectInvalid("", PKG);
+        expectInvalid("not json at all", PKG, null);
+        expectInvalid("", PKG, null);
     }
 
     @Test
     public void acceptsUppercaseShaAndNormalizes() throws Exception {
         UpdateManifest m = UpdateManifest.parse(valid().replace(
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"), PKG);
+                "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"), PKG, null);
         assertEquals("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", m.sha256);
     }
 
@@ -107,9 +122,19 @@ public class UpdateManifestTest {
         assertFalse(UpdateManifest.isHex64(null));
     }
 
-    private static void expectInvalid(String json, String pkg) {
+    @Test
+    public void cgnatLiteralDetection() {
+        assertTrue(UpdateManifest.isCgnatLiteral("100.64.0.1"));
+        assertTrue(UpdateManifest.isCgnatLiteral("100.127.255.254"));
+        assertFalse(UpdateManifest.isCgnatLiteral("100.63.255.255"));
+        assertFalse(UpdateManifest.isCgnatLiteral("100.128.0.1"));
+        assertFalse(UpdateManifest.isCgnatLiteral("example.com"));
+        assertFalse(UpdateManifest.isCgnatLiteral(null));
+    }
+
+    private static void expectInvalid(String json, String pkg, String plainHttpHost) {
         try {
-            UpdateManifest.parse(json, pkg);
+            UpdateManifest.parse(json, pkg, plainHttpHost);
             fail("expected UpdateException for: " + json);
         } catch (UpdateException expected) {
             assertTrue(expected.getMessage() != null && !expected.getMessage().isEmpty());

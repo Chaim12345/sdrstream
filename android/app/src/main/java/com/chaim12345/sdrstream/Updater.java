@@ -10,6 +10,9 @@ import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.content.pm.Signature;
 import android.content.pm.SigningInfo;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -49,6 +52,8 @@ final class Updater {
     private static final int MAX_MANIFEST_BYTES = 64 * 1024;
     private static final int CONNECT_TIMEOUT_MS = 10_000;
     private static final int READ_TIMEOUT_MS = 15_000;
+    private static final long MAX_APK_BYTES = 200L * 1024 * 1024;
+    private static final int MAX_REDIRECTS = 2;
 
     static final int CHECK_UP_TO_DATE = 0;
     static final int CHECK_AVAILABLE = 1;
@@ -118,10 +123,31 @@ final class Updater {
             MAIN.post(() -> listener.onCheck(CHECK_NOT_CONFIGURED, null, null));
             return;
         }
+        // Plain HTTP is accepted only for the exact host the user typed as
+        // the update source, and only when that host is loopback or a CGNAT
+        // literal with an active VPN transport right now. A CGNAT address is
+        // not assumed to be Tailscale by range alone; the VPN check is what
+        // makes it a known tailnet test host. HTTPS feeds need no such check.
+        final String feedHost = UpdateManifest.hostOf(feed.toLowerCase(Locale.US));
+        final boolean feedIsPlainHttp = feed.toLowerCase(Locale.US).startsWith("http://");
+        final String plainHttpHost;
+        if (feedIsPlainHttp && feedHost != null && !feedHost.startsWith("127.")
+                && !feedHost.equals("localhost")) {
+            if (!UpdateManifest.isCgnatLiteral(feedHost) || !isOnVpn(ctx)) {
+                MAIN.post(() -> listener.onCheck(CHECK_ERROR, null,
+                        "Plain-HTTP update sources are only for this device's own tailnet "
+                                + "while the VPN is connected. Use HTTPS, or connect the VPN."));
+                return;
+            }
+            plainHttpHost = feedHost;
+        } else {
+            plainHttpHost = feedIsPlainHttp ? feedHost : null; // loopback
+        }
         new Thread(() -> {
             try {
                 String body = httpGet(feed, MAX_MANIFEST_BYTES);
-                final UpdateManifest m = UpdateManifest.parse(body, ctx.getPackageName());
+                final UpdateManifest m = UpdateManifest.parse(body, ctx.getPackageName(),
+                        plainHttpHost);
                 if (m.minSdk > Build.VERSION.SDK_INT) {
                     postCheck(listener, CHECK_ERROR, null,
                             "The available update needs a newer Android version.");
@@ -233,8 +259,11 @@ final class Updater {
             File target = new File(dir, "update-" + m.versionCode + ".apk");
             HttpURLConnection conn = null;
             try {
-                conn = open(m.url);
+                conn = openFollowingRedirects(m.url);
                 long total = conn.getContentLengthLong();
+                if (total > MAX_APK_BYTES) {
+                    throw new UpdateException("The update is larger than the allowed maximum.");
+                }
                 try (InputStream in = conn.getInputStream();
                      OutputStream out = new FileOutputStream(partial)) {
                     byte[] buf = new byte[65536];
@@ -246,8 +275,11 @@ final class Updater {
                             listener.onError("cancelled");
                             return;
                         }
-                        out.write(buf, 0, n);
                         read += n;
+                        if (read > MAX_APK_BYTES) {
+                            throw new UpdateException("The update is larger than the allowed maximum.");
+                        }
+                        out.write(buf, 0, n);
                         int percent = total > 0 ? (int) (read * 100 / total) : -1;
                         if (percent != lastPercent) {
                             lastPercent = percent;
@@ -403,7 +435,7 @@ final class Updater {
     }
 
     private static String httpGet(String url, int maxBytes) throws IOException {
-        HttpURLConnection conn = open(url);
+        HttpURLConnection conn = openFollowingRedirects(url);
         try (InputStream in = conn.getInputStream()) {
             StringBuilder sb = new StringBuilder();
             byte[] buf = new byte[8192];
@@ -420,13 +452,51 @@ final class Updater {
         }
     }
 
-    private static HttpURLConnection open(String url) throws IOException {
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-        conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
-        conn.setReadTimeout(READ_TIMEOUT_MS);
-        conn.setInstanceFollowRedirects(true);
-        conn.setRequestProperty("User-Agent", "sdrstream-updater");
-        return conn;
+    /**
+     * Opens a connection, following at most MAX_REDIRECTS redirects by hand.
+     * Automatic redirect following is off: every hop must be an absolute
+     * HTTPS URL, so a feed or CDN can never bounce the updater to plain HTTP
+     * or to an internal address (SSRF guard).
+     */
+    private static HttpURLConnection openFollowingRedirects(String url) throws IOException {
+        String current = url;
+        for (int hop = 0; ; hop++) {
+            HttpURLConnection conn = (HttpURLConnection) new URL(current).openConnection();
+            conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            conn.setReadTimeout(READ_TIMEOUT_MS);
+            conn.setInstanceFollowRedirects(false);
+            conn.setRequestProperty("User-Agent", "sdrstream-updater");
+            int code = conn.getResponseCode();
+            if (code < 300 || code >= 400) return conn;
+            String location = conn.getHeaderField("Location");
+            conn.disconnect();
+            if (location == null || hop >= MAX_REDIRECTS) {
+                throw new IOException("too many redirects");
+            }
+            java.net.URI resolved;
+            try {
+                resolved = new java.net.URI(current).resolve(location);
+            } catch (java.net.URISyntaxException e) {
+                throw new IOException("bad redirect target", e);
+            }
+            if (!"https".equalsIgnoreCase(resolved.getScheme())) {
+                throw new IOException("redirect to a non-HTTPS address refused");
+            }
+            current = resolved.toString();
+        }
+    }
+
+    /** True when the active network is a VPN transport (Tailscale counts). */
+    private static boolean isOnVpn(Context ctx) {
+        ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return false;
+        for (Network network : cm.getAllNetworks()) {
+            NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+            if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void infoDialog(Activity activity, String title, String message) {
