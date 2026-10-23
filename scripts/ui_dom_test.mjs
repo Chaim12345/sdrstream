@@ -37,7 +37,15 @@ function makeEl(tag = 'div') {
 const byId = {};
 const nullIds = new Set(['health-sources']); // created by renderSourceFreshness, not present in index.html
 const document = {
-  getElementById(id) { if (byId[id]) return byId[id]; if (nullIds.has(id)) return null; return (byId[id] = makeEl()); },
+  getElementById(id) {
+    if (byId[id]) return byId[id];
+    if (nullIds.has(id)) return null;
+    // Auto-created stubs stand in for real index.html elements: give
+    // them a parent so parentElement.after/insertBefore work.
+    const e = makeEl();
+    document.body.appendChild(e);
+    return (byId[id] = e);
+  },
   createElement(t) { return makeEl(t); },
   querySelectorAll() { return []; },
   querySelector() { return makeEl('meta'); },
