@@ -1,6 +1,7 @@
 package decode
 
 import (
+	"context"
 	"fmt"
 	"math"
 )
@@ -53,17 +54,28 @@ type SSTVResult struct {
 // spreads. This is robust where instantaneous-frequency demodulation
 // wobbles, notably on 1200 Hz sync tones.
 func tonePurity(samples []float64, rate int, freq, winSec, hopSec float64) []float64 {
+	out, _ := tonePurityContext(context.Background(), samples, rate, freq, winSec, hopSec)
+	return out
+}
+
+// tonePurityContext is tonePurity with cancellation checks between hops.
+func tonePurityContext(ctx context.Context, samples []float64, rate int, freq, winSec, hopSec float64) ([]float64, error) {
 	win := int(winSec * float64(rate))
 	hop := int(hopSec * float64(rate))
 	if win < 8 || hop < 1 {
-		return nil
+		return nil, nil
 	}
 	n := (len(samples) - win) / hop
 	if n <= 0 {
-		return nil
+		return nil, nil
 	}
 	out := make([]float64, n)
 	for h := 0; h < n; h++ {
+		if h&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		seg := samples[h*hop : h*hop+win]
 		var power float64
 		for _, v := range seg {
@@ -76,7 +88,7 @@ func tonePurity(samples []float64, rate int, freq, winSec, hopSec float64) []flo
 		g := goertzel(seg, rate, freq)
 		out[h] = 2 * g * g / (float64(win) * power)
 	}
-	return out
+	return out, nil
 }
 
 // SSTVDetect scans audio for SSTV VIS headers and returns each one found
@@ -89,14 +101,27 @@ func tonePurity(samples []float64, rate int, freq, winSec, hopSec float64) []flo
 // the data bits must pass even parity; and when enough audio follows the
 // header, the image must show a consistent line-sync cadence.
 func SSTVDetect(samples []float64, rate int) []SSTVResult {
+	out, _ := sstvDetectContext(context.Background(), samples, rate)
+	return out
+}
+
+// sstvDetectContext is SSTVDetect with cancellation checks inside the
+// purity scans and the header scan loop.
+func sstvDetectContext(ctx context.Context, samples []float64, rate int) ([]SSTVResult, error) {
 	if rate < 8000 || len(samples) < rate {
-		return nil
+		return nil, nil
 	}
 	const hopSec, winSec = 0.002, 0.008
-	p1200 := tonePurity(samples, rate, sstvBreak, winSec, hopSec)
-	p1900 := tonePurity(samples, rate, sstvLeader, winSec, hopSec)
+	p1200, err := tonePurityContext(ctx, samples, rate, sstvBreak, winSec, hopSec)
+	if err != nil {
+		return nil, err
+	}
+	p1900, err := tonePurityContext(ctx, samples, rate, sstvLeader, winSec, hopSec)
+	if err != nil {
+		return nil, err
+	}
 	if len(p1200) == 0 {
-		return nil
+		return nil, nil
 	}
 	hopN := int(hopSec * float64(rate))
 	bitN := int(sstvBitLen * float64(rate))
@@ -104,6 +129,11 @@ func SSTVDetect(samples []float64, rate int) []SSTVResult {
 	var demod []float64               // computed lazily on the first header candidate
 	var out []SSTVResult
 	for h := leaderHops; h+leaderHops < len(p1200); h++ {
+		if h&511 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		// Break candidate: 1200 Hz dominates with decent purity.
 		if p1200[h] < 0.5 || p1200[h] < p1900[h]+0.1 {
 			continue
@@ -142,7 +172,11 @@ func SSTVDetect(samples []float64, rate int) []SSTVResult {
 		// first sustained drop below 1600 Hz. The coarse hop grid can
 		// place base a few ms either way, which would skew every line.
 		if demod == nil {
-			demod = fmDemod(samples, rate)
+			var err error
+			demod, err = fmDemodContext(ctx, samples, rate)
+			if err != nil {
+				return nil, err
+			}
 		}
 		refined := base
 		lo := base - int(0.008*float64(rate))
@@ -189,7 +223,7 @@ func SSTVDetect(samples []float64, rate int) []SSTVResult {
 		out = append(out, res)
 		h = base/hopN + 150 // past the 300 ms of VIS bits
 	}
-	return out
+	return out, nil
 }
 
 // leaderHolds reports whether every hop in [from, to) is dominated by a

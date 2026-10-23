@@ -733,3 +733,33 @@ func TestDecodeFramesAPTReal(t *testing.T) {
 	frames := DecodeFrames([]Item{audio}, dir)
 	assertAPTFrame(t, frames, name, dir)
 }
+
+// In-flight cancellation at the gallery level: the parent context is
+// cancelled 5 ms into a decode that takes far longer, and the artefact
+// must be left with a cancel reason, NO frame item, and no partial PNG
+// on disk.
+func TestDecodeFramesContextCancelNoPartialFrame(t *testing.T) {
+	dir := t.TempDir()
+	name := "8-cancel.wav"
+	// 450 s of synthetic APT at 11025 Hz: inside all input caps, decode
+	// takes far past the 5 ms cancel.
+	writeWAV16(t, filepath.Join(dir, name), synthAPT(900, 11025, 0.05), 11025)
+	audio := Item{Kind: "audio", Mode: "APT", Name: name, Path: filepath.Join(dir, name), Source: "satnogs"}
+	items := []Item{audio}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(5*time.Millisecond, cancel)
+	frames := DecodeFramesContext(ctx, items, dir)
+	if len(frames) != 0 {
+		t.Fatalf("cancelled refresh produced %d frame(s)", len(frames))
+	}
+	if !strings.Contains(items[0].DecodeStatus, "cancelled") {
+		t.Fatalf("cancel reason missing: %q", items[0].DecodeStatus)
+	}
+	if items[0].Path == "" {
+		t.Fatalf("source item not preserved: %+v", items[0])
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*.png"))
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("partial frame left on disk: %v (%v)", matches, err)
+	}
+}

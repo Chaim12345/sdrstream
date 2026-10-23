@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -215,6 +216,9 @@ func WriteManifest(items []Item, dir string) error {
 var (
 	// maxWAVBytes caps a converted or source WAV for frame decoding.
 	maxWAVBytes int64 = 64 << 20
+	// maxDecodeWallClock bounds one item's pure-Go decode as a backstop to
+	// the input caps, via context cancellation inside the decoders.
+	maxDecodeWallClock = 2 * time.Minute
 	// maxDecodeSamples caps the estimated decoded mono sample count before
 	// allocation: the decoder materialises one float64 per sample, so this
 	// bounds the transient allocation to ~128 MB, a conservative budget
@@ -331,6 +335,13 @@ func probeWAV(path string) (float64, int64, error) {
 // yield a frame gets its DecodeStatus set to the concrete skip reason,
 // so a missing tool or an oversized input is reported, not silent.
 func DecodeFrames(saved []Item, dir string) []Item {
+	return DecodeFramesContext(context.Background(), saved, dir)
+}
+
+// DecodeFramesContext is DecodeFrames with cancellation: a cancelled
+// context stops in-flight decode work and is reported per artefact, and
+// no partial frame file is written.
+func DecodeFramesContext(ctx context.Context, saved []Item, dir string) []Item {
 	var frames []Item
 	for i := range saved {
 		item := &saved[i]
@@ -404,26 +415,42 @@ func DecodeFrames(saved []Item, dir string) []Item {
 			item.DecodeStatus = "frame decode skipped: unreadable audio: " + err.Error()
 			continue
 		}
+		// One deadline per artefact, honouring the caller's context: the
+		// decoders check it inside their sample loops, so an over-long
+		// or cancelled decode stops instead of monopolising a refresh.
+		dctx, cancel := context.WithTimeout(ctx, maxDecodeWallClock)
 		var png []byte
 		if wantSSTV {
-			png, err = decode.SSTVImage(samples, rate)
+			png, err = decode.SSTVImageContext(dctx, samples, rate)
 		} else {
 			// APT pictures ship only when the sync-lock gate verifies the
 			// decode, same honesty bar as the decode command.
-			r := decode.APTDecode(samples, rate)
-			if r == nil {
+			var r *decode.APTResult
+			r, err = decode.APTDecodeContext(dctx, samples, rate)
+			if err == nil && r == nil {
 				item.DecodeStatus = "frame decode skipped: no APT sync found"
+				cancel()
 				continue
 			}
-			ok, why := r.Verified()
-			if !ok {
-				item.DecodeStatus = "frame decode skipped: APT decode not verified (" + why + ")"
-				continue
+			if err == nil {
+				ok, why := r.Verified()
+				if !ok {
+					item.DecodeStatus = "frame decode skipped: APT decode not verified (" + why + ")"
+					cancel()
+					continue
+				}
+				png, err = r.PNG()
 			}
-			png, err = r.PNG()
 		}
+		cancel()
 		if err != nil {
-			item.DecodeStatus = "frame decode skipped: " + err.Error()
+			if errors.Is(err, context.DeadlineExceeded) {
+				item.DecodeStatus = fmt.Sprintf("frame decode skipped: decode exceeded the %d min limit", int(maxDecodeWallClock.Minutes()))
+			} else if errors.Is(err, context.Canceled) {
+				item.DecodeStatus = "frame decode skipped: decode cancelled"
+			} else {
+				item.DecodeStatus = "frame decode skipped: " + err.Error()
+			}
 			continue
 		}
 		ext := filepath.Ext(item.Name)

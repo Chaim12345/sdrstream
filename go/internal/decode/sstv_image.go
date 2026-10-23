@@ -2,6 +2,7 @@ package decode
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"image"
 	"image/color"
@@ -95,10 +96,17 @@ func (m sstvModeSpec) lineSec() float64 {
 // 8 kHz are shorter than one tone cycle, so tone-by-Goertzel estimation
 // cannot work there; phase differentiation plus averaging can.
 func fmDemod(samples []float64, rate int) []float64 {
+	out, _ := fmDemodContext(context.Background(), samples, rate)
+	return out
+}
+
+// fmDemodContext is fmDemod with cancellation checks inside its
+// per-sample passes.
+func fmDemodContext(ctx context.Context, samples []float64, rate int) ([]float64, error) {
 	n := len(samples)
 	out := make([]float64, n)
 	if n == 0 {
-		return out
+		return out, nil
 	}
 	const fc = 1900.0
 	w := int(0.001 * float64(rate)) // 1 ms I/Q lowpass window
@@ -112,6 +120,11 @@ func fmDemod(samples []float64, rate int) []float64 {
 	wc := 2 * math.Pi * fc / float64(rate)
 	var sumI, sumQ float64
 	for i, s := range samples {
+		if i&(1<<15) == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		c, sn := math.Cos(wc*float64(i)), math.Sin(wc*float64(i))
 		iv, qv := s*c, -s*sn
 		raw[i][0], raw[i][1] = iv, qv
@@ -128,6 +141,11 @@ func fmDemod(samples []float64, rate int) []float64 {
 	}
 	scale := float64(rate) / (2 * math.Pi * 2)
 	for i := w + 1; i < n; i++ {
+		if i&(1<<15) == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		i0, q0 := iq[i-2][0], iq[i-2][1]
 		i1, q1 := iq[i][0], iq[i][1]
 		den := i0*i1 + q0*q1
@@ -146,7 +164,7 @@ func fmDemod(samples []float64, rate int) []float64 {
 	// phase spikes without smearing 5 ms sync edges.
 	w2 := int(0.0008 * float64(rate))
 	if w2 < 2 {
-		return out
+		return out, nil
 	}
 	smooth := make([]float64, n)
 	var acc float64
@@ -161,7 +179,7 @@ func fmDemod(samples []float64, rate int) []float64 {
 			smooth[i] = out[i]
 		}
 	}
-	return smooth
+	return smooth, nil
 }
 
 // findSyncs locates line-sync pulses, starting near the expected
@@ -171,8 +189,17 @@ func fmDemod(samples []float64, rate int) []float64 {
 // sync-length window's 1200 Hz purity against the video band. Lines
 // whose sync cannot be found keep their expected position (coasting).
 func findSyncs(samples []float64, rate int, m sstvModeSpec, imageStartSec float64) []float64 {
+	syncs, _ := findSyncsContext(context.Background(), samples, rate, m, imageStartSec)
+	return syncs
+}
+
+// findSyncsContext is findSyncs with a cancellation check per line.
+func findSyncsContext(ctx context.Context, samples []float64, rate int, m sstvModeSpec, imageStartSec float64) ([]float64, error) {
 	const hopSec, winSec = 0.002, 0.008
-	p1200 := tonePurity(samples, rate, sstvFreqSync, winSec, hopSec)
+	p1200, err := tonePurityContext(ctx, samples, rate, sstvFreqSync, winSec, hopSec)
+	if err != nil {
+		return nil, err
+	}
 	syncs := make([]float64, m.height)
 	lineSec := m.lineSec()
 	expected := imageStartSec + m.firstSyncSec
@@ -181,6 +208,9 @@ func findSyncs(samples []float64, rate int, m sstvModeSpec, imageStartSec float6
 		search = lineSec * 0.1
 	}
 	for y := 0; y < m.height; y++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		// Line 0 with the sync at the line start follows the VIS stop
 		// bit directly, and the two form one continuous 1200 Hz
 		// plateau the search cannot split. The header end is known to
@@ -252,7 +282,7 @@ func findSyncs(samples []float64, rate int, m sstvModeSpec, imageStartSec float6
 		syncs[y] = float64(bestPos) / float64(rate)
 		expected = syncs[y] + lineSec
 	}
-	return syncs
+	return syncs, nil
 }
 
 func purityOf(seg []float64, rate int, freq float64) float64 {
@@ -311,10 +341,22 @@ func sampleChannel(freq []float64, rate int, startSec, scanSec float64, width in
 // image. The VIS header picks the mode; unsupported modes and frames
 // with under 80% of their lines present in the audio return an error.
 func SSTVImage(samples []float64, rate int) ([]byte, error) {
+	return SSTVImageContext(context.Background(), samples, rate)
+}
+
+// SSTVImageContext is SSTVImage with cancellation honoured in the
+// detection, demodulation, sync-search and line-decode stages.
+func SSTVImageContext(ctx context.Context, samples []float64, rate int) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if rate < 8000 {
 		return nil, fmt.Errorf("SSTV sample rate %d is too low", rate)
 	}
-	vis := SSTVDetect(samples, rate)
+	vis, err := sstvDetectContext(ctx, samples, rate)
+	if err != nil {
+		return nil, err
+	}
 	if len(vis) == 0 {
 		return nil, fmt.Errorf("no SSTV VIS header found")
 	}
@@ -325,18 +367,27 @@ func SSTVImage(samples []float64, rate int) ([]byte, error) {
 	// StartSec names the 1200 Hz break inside the header; image data
 	// follows the break, the second leader and ten 30 ms VIS bits.
 	imageStart := vis[0].StartSec + 0.010 + 0.300 + 10*sstvBitLen
-	freq := fmDemod(samples, rate)
-	syncs := findSyncs(samples, rate, spec, imageStart)
+	freq, err := fmDemodContext(ctx, samples, rate)
+	if err != nil {
+		return nil, err
+	}
+	syncs, err := findSyncsContext(ctx, samples, rate, spec, imageStart)
+	if err != nil {
+		return nil, err
+	}
 
 	img := image.NewNRGBA(image.Rect(0, 0, spec.width, spec.height))
 	decoded := 0
 	switch spec.family {
 	case familyMartin:
-		decoded = decodeMartin(freq, rate, spec, syncs, img)
+		decoded, err = decodeMartin(ctx, freq, rate, spec, syncs, img)
 	case familyScottie:
-		decoded = decodeScottie(freq, rate, spec, syncs, img)
+		decoded, err = decodeScottie(ctx, freq, rate, spec, syncs, img)
 	case familyRobot36:
-		decoded = decodeRobot36(freq, rate, spec, syncs, img)
+		decoded, err = decodeRobot36(ctx, freq, rate, spec, syncs, img)
+	}
+	if err != nil {
+		return nil, err
 	}
 	if float64(decoded) < 0.8*float64(spec.height) {
 		return nil, fmt.Errorf("truncated %s frame: %d of %d lines present (need 80%%)",
@@ -349,12 +400,15 @@ func SSTVImage(samples []float64, rate int) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func decodeMartin(freq []float64, rate int, m sstvModeSpec, syncs []float64, img *image.NRGBA) int {
+func decodeMartin(ctx context.Context, freq []float64, rate int, m sstvModeSpec, syncs []float64, img *image.NRGBA) (int, error) {
 	g := make([]uint8, m.width)
 	b := make([]uint8, m.width)
 	r := make([]uint8, m.width)
 	decoded := 0
 	for y := 0; y < m.height; y++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		s := syncs[y]
 		gStart := s + m.syncSec + m.gapSec
 		bStart := gStart + m.scanSec + m.gapSec
@@ -369,18 +423,21 @@ func decodeMartin(freq []float64, rate int, m sstvModeSpec, syncs []float64, img
 			decoded++
 		}
 	}
-	return decoded
+	return decoded, nil
 }
 
 // decodeScottie handles the Scottie layout, where the sync pulse sits
 // between the blue and red scans: for display line y the red scan follows
 // sync y while green and blue precede it.
-func decodeScottie(freq []float64, rate int, m sstvModeSpec, syncs []float64, img *image.NRGBA) int {
+func decodeScottie(ctx context.Context, freq []float64, rate int, m sstvModeSpec, syncs []float64, img *image.NRGBA) (int, error) {
 	g := make([]uint8, m.width)
 	b := make([]uint8, m.width)
 	r := make([]uint8, m.width)
 	decoded := 0
 	for y := 0; y < m.height; y++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		s := syncs[y]
 		rStart := s + m.syncSec + m.gapSec
 		// Line start is one gap before green; green then blue, each
@@ -397,17 +454,20 @@ func decodeScottie(freq []float64, rate int, m sstvModeSpec, syncs []float64, im
 			decoded++
 		}
 	}
-	return decoded
+	return decoded, nil
 }
 
 // decodeRobot36 handles the YUV 4:2:0 Robot 36 layout: per line a luma
 // scan, then a half-length chroma scan alternating Cr (even lines, 1500 Hz
 // separator) and Cb (odd lines, 2300 Hz separator).
-func decodeRobot36(freq []float64, rate int, m sstvModeSpec, syncs []float64, img *image.NRGBA) int {
+func decodeRobot36(ctx context.Context, freq []float64, rate int, m sstvModeSpec, syncs []float64, img *image.NRGBA) (int, error) {
 	yPlane := make([][]uint8, m.height)
 	cPlane := make([][]uint8, m.height)
 	decoded := 0
 	for y := 0; y < m.height; y++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		s := syncs[y]
 		yScan := make([]uint8, m.width)
 		cScan := make([]uint8, m.width)
@@ -443,7 +503,7 @@ func decodeRobot36(freq []float64, rate int, m sstvModeSpec, syncs []float64, im
 			})
 		}
 	}
-	return decoded
+	return decoded, nil
 }
 
 func min(a, b int) int {

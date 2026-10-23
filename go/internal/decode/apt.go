@@ -2,6 +2,7 @@ package decode
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/color"
 	"image/png"
@@ -71,9 +72,16 @@ func (r *APTResult) PNG() ([]byte, error) {
 // aptEnvelope demodulates the 2400 Hz AM subcarrier and returns the
 // envelope sampled at aptWordRate.
 func aptEnvelope(samples []float64, rate int) []float64 {
+	env, _ := aptEnvelopeContext(context.Background(), samples, rate)
+	return env
+}
+
+// aptEnvelopeContext is aptEnvelope with cancellation checks inside its
+// per-sample loops.
+func aptEnvelopeContext(ctx context.Context, samples []float64, rate int) ([]float64, error) {
 	n := len(samples)
 	if n == 0 || rate < 6000 {
-		return nil
+		return nil, nil
 	}
 	// Quadrature mix with 2400 Hz, boxcar low-pass over ~2 carrier cycles
 	// (cumulative sums with fractional edges are unnecessary here: the
@@ -83,12 +91,22 @@ func aptEnvelope(samples []float64, rate int) []float64 {
 	cQ := make([]float64, n+1)
 	step := 2 * math.Pi * 2400 / float64(rate)
 	for i, v := range samples {
+		if i&(1<<15) == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		ph := step * float64(i)
 		cI[i+1] = cI[i] + v*math.Cos(ph)
 		cQ[i+1] = cQ[i] + v*math.Sin(ph)
 	}
 	mag := make([]float64, n)
 	for i := 0; i < n; i++ {
+		if i&(1<<15) == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		a, b := i-w/2, i+w/2
 		if a < 0 {
 			a = 0
@@ -115,7 +133,7 @@ func aptEnvelope(samples []float64, rate int) []float64 {
 		f := pos - float64(i0)
 		env[i] = mag[i0]*(1-f) + mag[i0+1]*f
 	}
-	return env
+	return env, nil
 }
 
 // aptTemplate builds the zero-mean sync template: lead-in of 4 dark
@@ -162,9 +180,19 @@ func nccAt(env, tpl []float64, tm, tn float64, off int) float64 {
 
 // APTDecode decodes NOAA APT audio (FM-demodulated, any rate >= 8 kHz).
 func APTDecode(samples []float64, rate int) *APTResult {
-	env := aptEnvelope(samples, rate)
+	r, _ := APTDecodeContext(context.Background(), samples, rate)
+	return r
+}
+
+// APTDecodeContext is APTDecode with cancellation: a cancelled context
+// returns (nil, ctx.Err()); ordinary "no APT signal" stays (nil, nil).
+func APTDecodeContext(ctx context.Context, samples []float64, rate int) (*APTResult, error) {
+	env, err := aptEnvelopeContext(ctx, samples, rate)
+	if err != nil {
+		return nil, err
+	}
 	if len(env) < 4*aptLineLen {
-		return nil
+		return nil, nil
 	}
 	tplA := aptTemplate(4, 7, 4)
 	var tm, tn float64
@@ -185,6 +213,11 @@ func APTDecode(samples []float64, rate int) *APTResult {
 	last := len(env) - len(tplA)
 	sc := make([]float64, last+1)
 	for i := 0; i <= last; i++ {
+		if i&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		sc[i] = nccAt(env, tplA, tm, tn, i)
 	}
 	for i := 3; i < last-3; i++ {
@@ -212,7 +245,7 @@ func APTDecode(samples []float64, rate int) *APTResult {
 		}
 	}
 	if len(picked) < 4 {
-		return nil
+		return nil, nil
 	}
 	sort.Slice(picked, func(a, b int) bool { return picked[a].pos < picked[b].pos })
 	// Keep only peaks consistent with the 2080-word cadence: a peak is
@@ -241,7 +274,7 @@ func APTDecode(samples []float64, rate int) *APTResult {
 		}
 	}
 	if len(lp) < 4 {
-		return nil
+		return nil, nil
 	}
 	first, lastP := lp[0].pos, lp[len(lp)-1].pos
 	rows := (lastP-first)/aptLineLen + 1
@@ -255,7 +288,7 @@ func APTDecode(samples []float64, rate int) *APTResult {
 	sort.Float64s(vals)
 	lo, hi := vals[len(vals)/50], vals[len(vals)*49/50]
 	if hi-lo < 1e-9 {
-		return nil
+		return nil, nil
 	}
 	put := func(row int, start int) {
 		if row < 0 || row >= rows {
@@ -300,5 +333,5 @@ func APTDecode(samples []float64, rate int) *APTResult {
 	}
 	res.MeanSyncA = sumA / float64(res.LinesLocked)
 	res.SyncB = float64(bOK) / float64(res.LinesLocked)
-	return res
+	return res, nil
 }
