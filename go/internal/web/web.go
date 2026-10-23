@@ -123,6 +123,13 @@ type SatelliteInfo struct {
 	Band       string `json:"band"`
 	Status     string `json:"status"`
 	Receivers  int    `json:"receivers"`
+	// Notes carries the catalogue's source-grounded status detail (e.g.
+	// NOAA OSPO decommission dates) - it must reach the UI, not die here.
+	Notes string `json:"notes,omitempty"`
+	// Event names the dated transmission event currently overriding the
+	// catalogue downlink (e.g. an ARISS SSTV series on 70cm).
+	Event           string `json:"event,omitempty"`
+	EventDownlinkHz int64  `json:"event_downlink_hz,omitempty"`
 }
 
 // Server holds the state and serves the UI and API.
@@ -2145,11 +2152,17 @@ func (s *Server) handleSatellites(w http.ResponseWriter, r *http.Request) {
 		case sat.DownlinkHz >= 1240_000_000:
 			band = "23cm"
 		}
-		out = append(out, SatelliteInfo{
+		info := SatelliteInfo{
 			Name: sat.Name, NoradID: sat.NoradID, DownlinkHz: sat.DownlinkHz,
 			Mode: sat.Mode, Relay: relay, Status: sat.Status, Band: band,
 			Receivers: len(catalogue.ForFrequency(float64(sat.DownlinkHz))),
-		})
+			Notes:     sat.Notes,
+		}
+		if ev := satellites.ActiveEvent(sat.Name, time.Now()); ev != nil {
+			info.Event = ev.Name
+			info.EventDownlinkHz = ev.DownlinkHz
+		}
+		out = append(out, info)
 	}
 	writeJSON(w, out)
 }

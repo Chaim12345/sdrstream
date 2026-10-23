@@ -467,8 +467,23 @@ async function refreshSats() {
     body.textContent = '';
     (sats || []).forEach(s => {
       const tr = document.createElement('tr');
-      [s.name, s.norad_id, (s.downlink_hz / 1e6).toFixed(4) + ' MHz', s.mode, s.relay || '—', s.status, s.receivers]
+      const dl = (s.downlink_hz / 1e6).toFixed(4) + ' MHz';
+      [s.name, s.norad_id, dl, s.mode, s.relay || '—', s.status, s.receivers]
         .forEach(v => { const td = document.createElement('td'); td.textContent = v; tr.appendChild(td); });
+      if (s.event) {
+        const line = document.createElement('div');
+        line.className = 'sat-note';
+        line.textContent = 'event: ' + s.event + (s.event_downlink_hz ? ' on ' + (s.event_downlink_hz / 1e6).toFixed(4) + ' MHz' : '');
+        tr.children[2].appendChild(line);
+      }
+      if (s.notes) {
+        const td = tr.children[5];
+        td.title = s.notes;
+        const line = document.createElement('div');
+        line.className = 'sat-note';
+        line.textContent = s.notes;
+        td.appendChild(line);
+      }
       tr.className = 'sat-status-' + s.status;
       body.appendChild(tr);
     });

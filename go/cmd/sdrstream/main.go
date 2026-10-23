@@ -1486,7 +1486,7 @@ func cmdWeb(args []string) error {
 	capturesMaxGB := fs.Float64("captures-max-gb", 0, "prune oldest captures above this size in GiB (0 = no size limit)")
 	capturesRetain := fs.Duration("captures-retain", 0, "prune captures older than this (0 = no age limit)")
 	galleryDir := fs.String("gallery-dir", "", "directory for SatNOGS gallery artefacts (default: cache/gallery)")
-	satFollow := fs.String("satfollow", "", `comma-separated satellites to auto-record by pass priority (empty = off; "default" = NOAA 15/19/18, ISS)`)
+	satFollow := fs.String("satfollow", "", `comma-separated satellites to auto-record by pass priority (empty = off; "default" = ISS only - NOAA 15/18/19 decommissioned 2025, APT unvalidated)`)
 	scanStations := fs.String("scan-stations", "", "comma-separated public receivers for bounded parallel scan (one connection per receiver)")
 	scanOpenDirectory := fs.Bool("scan-open-directory", false, "scan OpenWebRX and WebSDR entries from receiverbook")
 	scanKiwiDirectory := fs.Bool("scan-kiwi-directory", false, "scan free-slot KiwiSDR entries from cached public directory")
