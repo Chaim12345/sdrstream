@@ -174,54 +174,68 @@ func OccupiedBandwidth(samples []float64, rate int) float64 {
 			peak, peakPower = i, powers[i]
 		}
 	}
-	if peakPower <= 0 {
+	if peakPower <= 0 || math.IsNaN(peakPower) || math.IsInf(peakPower, 0) {
+		// No signal, or garbage input whose power overflowed (samples far
+		// outside [-1,1]; ReadWAV never yields those, but a library caller
+		// can): report unknown width rather than a fabricated one.
 		return 0
 	}
-	// Grow outward from the peak until 90% of the power inside the
-	// passband is enclosed; the two boundaries are interpolated so the
-	// result is finer than the bin grid.
-	target := 0.9 * peakPower
-	lowBin, highBin := float64(peak), float64(peak)
+	// Grow outward from the peak until the enclosed bins hold 90% of the
+	// TOTAL power inside the passband - not of the peak bin. The old
+	// peak-relative target made nearly every bin count as signal, and the
+	// boundary interpolation divided by the weakest neighbor's power, so
+	// the measured width exploded past the passband (MHz-wide readings for
+	// a single tone). Each boundary now stops at the fraction of the
+	// final bin actually needed to reach the target.
+	total := 0.0
+	for _, p := range powers {
+		total += p
+	}
+	if total <= 0 || math.IsNaN(total) || math.IsInf(total, 0) {
+		return 0
+	}
+	target := 0.9 * total
+	lowEdge, highEdge := float64(peak)-0.5, float64(peak)+0.5
+	enclosed := peakPower
 	i, j := peak, peak
-	for i > 0 || j < bins-1 {
+	lowDone, highDone := false, false
+	for enclosed < target && !(lowDone && highDone) {
 		below, above := 0.0, 0.0
-		if i > 0 {
+		if !lowDone && i > 0 {
 			below = powers[i-1]
 		}
-		if j < bins-1 {
+		if !highDone && j < bins-1 {
 			above = powers[j+1]
 		}
 		if below <= 0 && above <= 0 {
 			break
 		}
+		need := target - enclosed
 		if above >= below {
-			j++
-			if above < target {
-				fraction := 0.0
-				if above > 0 {
-					fraction = (powers[j] - target) / powers[j]
-				}
-				highBin = float64(j) - fraction
+			if above >= need {
+				highEdge = float64(j+1) - 0.5 + need/above
+				enclosed = target
+				highDone = true
 			} else {
-				highBin = float64(j)
+				j++
+				enclosed += above
+				highEdge = float64(j) + 0.5
+				highDone = j == bins-1
 			}
 		} else {
-			i--
-			if below < target {
-				fraction := 0.0
-				if below > 0 {
-					fraction = (target - powers[i]) / powers[i]
-				}
-				lowBin = float64(i) + fraction
+			if below >= need {
+				lowEdge = float64(i-1) + 0.5 - need/below
+				enclosed = target
+				lowDone = true
 			} else {
-				lowBin = float64(i)
+				i--
+				enclosed += below
+				lowEdge = float64(i) - 0.5
+				lowDone = i == 0
 			}
 		}
-		if i == 0 && j == bins-1 {
-			break
-		}
 	}
-	width := (highBin - lowBin) * binHz
+	width := (highEdge - lowEdge) * binHz
 	if width < binHz {
 		return binHz
 	}
