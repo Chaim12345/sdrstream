@@ -200,37 +200,53 @@ func OccupiedBandwidth(samples []float64, rate int) float64 {
 	// peak-relative target with weakest-neighbor interpolation reported
 	// MHz widths for a single tone. A two-pointer scan over the prefix
 	// sums is O(bins) and cannot fail to terminate.
-	prefix := make([]float64, bins+1)
-	for i, p := range powers {
-		prefix[i+1] = prefix[i] + p
+	prefix0 := func(p []float64, k int) float64 {
+		sum := 0.0
+		for i := 0; i < k; i++ {
+			sum += p[i]
+		}
+		return sum
 	}
 	target := 0.9 * total
-	best := float64(bins)
-	j := 0
-	for i := 0; i < bins; i++ {
-		if j < i {
-			j = i
+	// The scan aligns the window's left edge to a bin boundary and takes a
+	// fractional share of the closing bin, so it is not the exact
+	// fractional optimum on every distribution. Running it on the reversed
+	// spectrum too keeps the result mirror-invariant and within a fraction
+	// of a bin of the optimum (reviewer example: [30,1,69] vs [69,1,30]
+	// differed by 0.19 bins one way, 0 the other).
+	window := func(p []float64) float64 {
+		best := float64(bins)
+		j := 0
+		for i := 0; i < bins; i++ {
+			if j < i {
+				j = i
+			}
+			for j < bins && prefix0(p, j+1)-prefix0(p, i) < target {
+				j++
+			}
+			if j >= bins {
+				// The whole remaining span falls short; later starts hold
+				// even less power, so no later window can win.
+				break
+			}
+			// Window [i..j] holds at least the target; take only the
+			// fraction of the final bin actually needed.
+			need := target - (prefix0(p, j) - prefix0(p, i))
+			frac := 0.0
+			if p[j] > 0 {
+				frac = need / p[j]
+			}
+			if w := float64(j-i) + frac; w < best {
+				best = w
+			}
 		}
-		for j < bins && prefix[j+1]-prefix[i] < target {
-			j++
-		}
-		if j >= bins {
-			// The whole remaining span falls short; wider starts only get
-			// shorter of power, so no later window can win.
-			break
-		}
-		// Window [i..j] holds at least the target; take only the fraction
-		// of the final bin actually needed.
-		need := target - (prefix[j] - prefix[i])
-		frac := 0.0
-		if powers[j] > 0 {
-			frac = need / powers[j]
-		}
-		if w := float64(j-i) + frac; w < best {
-			best = w
-		}
+		return best
 	}
-	width := best * binHz
+	rev := make([]float64, bins)
+	for i, p := range powers {
+		rev[bins-1-i] = p
+	}
+	width := math.Min(window(powers), window(rev)) * binHz
 	if width < binHz {
 		return binHz
 	}

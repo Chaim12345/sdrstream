@@ -2106,55 +2106,13 @@ function decodedItems() {
   return (activityItems || []).filter(a => a.detail && a.mode)
     .slice().sort((a, b) => new Date(a.started) - new Date(b.started));
 }
-function renderMsglog() {
-  const box = el('msglog');
-  const items = decodedItems().filter(a => !msglogMode || a.mode === msglogMode);
-  // Rebuild only when the content changed; a rebuilt log loses the scroll spot.
-  const key = items.map(a => a.started + a.mode + a.detail).join('|') + '#' + msglogMode;
-  if (box.dataset.key === key) return;
-  box.dataset.key = key;
-  box.textContent = '';
-  if (!items.length) {
-    setEmpty(box, msglogMode ? 'no ' + msglogMode + ' messages' : 'nothing decoded yet');
-  }
-  items.slice(-300).forEach(a => {
-    const line = document.createElement('div');
-    line.className = 'msgline ' + (a.kind || '');
-    const t = document.createElement('span');
-    t.className = 'msg-time'; t.textContent = fmtTime(a.started);
-    const m = document.createElement('span');
-    m.className = 'msg-mode'; m.textContent = a.mode;
-    const f = document.createElement('span');
-    f.className = 'msg-freq'; f.textContent = mhz(a.frequency_hz);
-    const d = document.createElement('span');
-    d.className = 'msg-detail'; d.textContent = a.detail;
-    line.append(t, m, f, d);
-    box.appendChild(line);
-  });
-  if (!msglogStuck) box.scrollTop = box.scrollHeight;
-  el('msglog-state').textContent = items.length + ' messages' + (msglogMode ? ' · ' + msglogMode : '') + (msglogStuck ? ' · scroll paused' : '');
-  // Rebuild the decoder filter chips from the modes present in the data.
-  const modes = [...new Set(decodedItems().map(a => a.mode))].sort();
-  const bar = el('msglog-modes');
-  const barKey = modes.join('|') + '#' + msglogMode;
-  if (bar.dataset.key !== barKey) {
-    bar.dataset.key = barKey;
-    bar.textContent = '';
-    const mk = (label, value) => {
-      const b = document.createElement('button');
-      b.className = 'chip' + (value === msglogMode ? ' on' : '');
-      b.textContent = label; b.dataset.dmode = value;
-      b.addEventListener('click', () => { msglogMode = value; renderMsglog(); });
-      bar.appendChild(b);
-    };
-    mk('all', '');
-    modes.forEach(m => mk(m, m));
-  }
-}
-function msglogText() {
-  return decodedItems().filter(a => !msglogMode || a.mode === msglogMode)
-    .map(a => fmtTime(a.started) + ' ' + a.mode + ' ' + mhz(a.frequency_hz) + '  ' + a.detail).join('\n');
-}
+// msglog.js (loaded after this script) replaces both bindings with the
+// decoder history log. They must be DECLARED here: the enhancement is a
+// strict-mode IIFE and assigns through these globals, so deleting them
+// disables it entirely. The no-op fallbacks only run if msglog.js itself
+// is missing (for example a stale cached shell).
+function renderMsglog() {}
+function msglogText() { return ''; }
 el('msglog-copy').addEventListener('click', async () => {
   const text = msglogText();
   if (!text) { toast('nothing to copy', undefined, true); return; }
@@ -2167,10 +2125,11 @@ el('msglog-export').addEventListener('click', () => {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   downloadFile('sdrstream-messages-' + stamp + '.txt', text, 'text/plain');
 });
+// msglog.js owns the log's rendering and its state line; this listener only
+// maintains the shared "user scrolled up" flag it freezes on.
 el('msglog').addEventListener('scroll', () => {
   const box = el('msglog');
   msglogStuck = box.scrollTop + box.clientHeight < box.scrollHeight - 40;
-  el('msglog-state').textContent = el('msglog-state').textContent.replace(/ · scroll paused$/, '') + (msglogStuck ? ' · scroll paused' : '');
 });
 
 /* ---------- in-browser audio recording ---------- */
@@ -2371,9 +2330,12 @@ initMonitorLifecycle();
   else if (location.hash && el('view-' + location.hash.slice(1))) showView(location.hash.slice(1));
   else showView('overview');
 }
-refreshReceiverPanel(); renderMsglog();
+refreshReceiverPanel(); if (typeof renderMsglog === 'function') renderMsglog();
 setInterval(refreshReceiverPanel, 3000);
-setInterval(renderMsglog, 4000);
+// Look the renderer up on every tick: msglog.js replaces the binding after
+// this script loads, and a captured reference would keep the legacy renderer
+// alive beside it.
+setInterval(() => renderMsglog(), 4000);
 refreshStatus(); refreshSats(); refreshGallery(); refreshStations(); refreshScans(); refreshActivity(); refreshFeeds(); refreshSources(false); refreshBandCond(); refreshLive(); refreshHealth();
 el('sources-refresh').onclick = () => refreshSources(true);
 setInterval(refreshStatus, 5000);

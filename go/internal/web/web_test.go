@@ -1334,3 +1334,29 @@ func TestShellWiresMsglog(t *testing.T) {
 		t.Fatal("static/msglog.js not embedded")
 	}
 }
+
+// The message log has exactly one renderer: msglog.js owns it, and app.js
+// must not keep a legacy copy. A second renderer ran beside it (the 4 s
+// poll interval captured the legacy binding before msglog.js replaced it)
+// and the two wrote conflicting chips, state lines and item sets in the
+// live browser while the fake-DOM suites stayed green.
+func TestAppJsHasNoLegacyMsglogRenderer(t *testing.T) {
+	data, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appjs := string(data)
+	for _, marker := range []string{"scroll paused", "slice(-300)", "bar.dataset.key"} {
+		if strings.Contains(appjs, marker) {
+			t.Fatalf("app.js still carries the legacy msglog renderer marker %q", marker)
+		}
+	}
+	// The replaceable bindings must stay declared: msglog.js is a
+	// strict-mode IIFE that assigns through them, and the 4 s poll must
+	// look the renderer up per tick, never capture the binding.
+	for _, marker := range []string{"function renderMsglog() {}", "function msglogText() {", "setInterval(() => renderMsglog(), 4000)"} {
+		if !strings.Contains(appjs, marker) {
+			t.Fatalf("app.js is missing the msglog wiring marker %q", marker)
+		}
+	}
+}
