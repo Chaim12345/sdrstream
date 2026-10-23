@@ -154,7 +154,9 @@ line):**
 **Verified against reference implementations only (not live):**
 PSK31Scan timing recovery; parts of the WSPR Fano path.
 
-**Synthetic/tests only:** SSTV (synthetic fixtures), EAS/SAME fixtures,
+**Synthetic/tests only:** SSTV (live classification enabled 7d7ec06;
+  full-frame proof is a synthesized Martin M1 round trip, 256/256 lines
+  locked - no live RF capture yet), EAS/SAME fixtures,
 most unit-level decoder fixtures.
 
 **Known gaps:** wide-scan yield of verified decodes is still low; most
@@ -186,22 +188,33 @@ M2/M5/M8/M9/M10/M11/M12/M13/M14, M4 kiwi pre-capture drain (inside
 path not reachable from `WSPRDecode`), AIS orphan eviction + lat/lon
 clamp, WebSDR retune-during-reconnect race.
 
-**Still open:**
+**Still open** (re-audited against the tree 2026-10-23; several former
+entries were stale and are listed under "Recently closed" below):
 
 - R2 transport remainder: openwebrx auto-reconnect (`Reconnect` option
-  still unused), kiwi in-flight reconnect (fixed interval, masked error),
-  websdr backoff reset + preflight short-read, and a websdr test suite
-  (still zero tests).
-- M6 verify gate: byte/rune count mixing rejects accented text; substring
-  anchors. `TranscribeASR` not yet under the NIM semaphore.
-- R4 smallies: `/audio/live` exact match, `app.js` innerHTML ->
-  textContent, atomic `index.json`.
+  is defined and defaulted but never read by the client), websdr backoff
+  reset + preflight short-read.
+- `TranscribeASR` not yet under the NIM semaphore.
 - R5 decode coverage: truncated-WAV fuzz, FT8/WSPR audio-level SNR
   fixtures, WEFAX color + mid-chart, AIS eviction tests, block-scan budget
   reduction.
-- Retention: record-all grows ~345 MB/h; capture quota knob not yet wired.
-- Jukebox temp-WAV cleanup (main.go), openwebrx readLoop writes
-  Config/Profiles without mu (minor race).
+- openwebrx readLoop writes Config/Profiles without mu (minor race).
+
+**Recently closed (previously listed as open):**
+
+- websdr test suite: `internal/websdr/websdr_test.go` exists.
+- kiwi in-flight reconnect: `Client.Record` now honours deadlines while
+  waiting and caps reconnects against a flapping server.
+- M6 verify gate: text checks count runes, not bytes (accented text no
+  longer rejected).
+- R4 smallies: `/audio/live` exact match (regression-tested), `app.js`
+  placeholders use DOM nodes/textContent (zero non-vendor innerHTML
+  uses remain), gallery `index.json` writes are atomic
+  (`common.WriteFileAtomic`).
+- Retention: capture quota is wired - `pruneCapturesLoop` runs from
+  `cmd/sdrstream/main.go` (`--captures-max-gb`) and the web server prunes
+  on its own tick.
+- Jukebox temp-WAV cleanup: unique temp + rename in `main.go`.
 
 ## 7. Pending owner decisions
 
