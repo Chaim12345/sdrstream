@@ -128,6 +128,8 @@ func main() {
 		err = cmdSatfollow(args)
 	case "web":
 		err = cmdWeb(args)
+	case "capturemeta":
+		err = cmdCapturemeta(args)
 	case "feeds":
 		err = cmdFeeds(args)
 	case "avmarine":
