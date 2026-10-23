@@ -2052,6 +2052,18 @@ func (s *Server) handleTestFixtures(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, fixtures)
 }
 
+// RecordGate forwards a live quality gate verdict to the monitor's
+// stored activity, when a monitor is running. Verdicts for pruned or
+// absent activities are dropped.
+func (s *Server) RecordGate(id int, passed bool, reason string) {
+	s.mu.Lock()
+	instance := s.monitor
+	s.mu.Unlock()
+	if instance != nil {
+		instance.RecordGate(id, passed, reason)
+	}
+}
+
 // handleActivity returns the transmissions the monitor has seen.
 func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()

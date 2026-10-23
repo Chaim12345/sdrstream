@@ -52,6 +52,7 @@ type Activity struct {
 	SSTVReport         *verify.SSTVReport `json:"-"`                      // decode evidence for an SSTV image; nil = no report = unknown. Dropped on any JSON round-trip: re-verification must treat a missing report as unknown (conservative), never as clean.
 	Verification       string             `json:"verification,omitempty"` // gate reason recorded at verification; empty = no recorded proof
 	Historical         bool               `json:"historical,omitempty"`   // gallery-sourced entry with no recorded gate proof: list, never count as current gate-passed
+	Rejected           string             `json:"rejected,omitempty"`     // live quality gate verdict when the gate REJECTED this decode: a known failure, never to be worn as "verification unknown"
 	Label              string             `json:"label,omitempty"`
 	Target             string             `json:"target,omitempty"` // named service a scheduled target was aimed at
 	Source             string             `json:"source"`
@@ -256,6 +257,26 @@ func (m *Monitor) Activities() []Activity {
 		out = append(out, m.activities[i])
 	}
 	return out
+}
+
+// RecordGate annotates a stored activity with its live quality gate
+// verdict, so the feed and its counters can tell a gate-passed decode
+// from one never gated and from one the gate rejected. Unknown IDs
+// (activity pruned before the verdict arrived) are ignored.
+func (m *Monitor) RecordGate(id int, passed bool, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.activities {
+		if m.activities[i].ID != id {
+			continue
+		}
+		if passed {
+			m.activities[i].Verification = reason
+		} else {
+			m.activities[i].Rejected = reason
+		}
+		return
+	}
 }
 
 // Spectrum returns the latest spectrum frame.

@@ -909,9 +909,11 @@ async function refreshActivity() {
   try {
     const items = await fetchJSON('/api/activity.json');
     activityItems = items || [];
-    // Historical entries (gallery items with no recorded gate proof)
-    // are listed but never counted as current gate-passed traffic.
-    el('activity-count').textContent = activityItems.filter(a => !a.historical).length;
+    // The pill counts only entries carrying a gate verdict: monitor
+    // decodes the gate passed and verified live gallery items. Ungated
+    // detections, historical entries and rejected decodes are listed
+    // but never counted.
+    el('activity-count').textContent = activityItems.filter(a => a.verification).length;
     if (activitySeenKey === null && activityItems.length) {
       activitySeenKey = activityKey(activityItems[0]); // no toast storm on first load
     } else {
@@ -959,6 +961,11 @@ function activityCard(a, fresh) {
   if (a.historical) {
     const lin = document.createElement('div'); lin.className = 'muted';
     lin.textContent = 'historical - verification unknown (no gate proof recorded)';
+    card.appendChild(lin);
+  } else if (a.rejected) {
+    // A known gate failure is not "verification unknown": say what happened.
+    const lin = document.createElement('div'); lin.className = 'muted';
+    lin.textContent = 'failed the live quality gate: ' + a.rejected;
     card.appendChild(lin);
   }
   return card;

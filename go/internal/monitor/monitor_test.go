@@ -721,3 +721,28 @@ func TestDecodeDataFindsSAME(t *testing.T) {
 		t.Fatalf("mode=%q ok=%v detail=%q", mode, ok, detail)
 	}
 }
+
+// The live quality gate writes its verdict back into the stored
+// activity: a pass records its reason, a rejection records a known
+// failure (never to be confused with "verification unknown"), and a
+// verdict for a pruned activity is dropped without touching others.
+func TestRecordGateAnnotatesStoredActivity(t *testing.T) {
+	m := &Monitor{}
+	m.activities = []Activity{{ID: 1, Kind: "data"}, {ID: 2, Kind: "sstv"}}
+	m.RecordGate(1, true, "live gate passed")
+	m.RecordGate(2, false, "sync coasting 0.31 over ceiling")
+	m.RecordGate(99, true, "verdict for a pruned activity")
+	byID := map[int]Activity{}
+	for _, a := range m.Activities() {
+		byID[a.ID] = a
+	}
+	if byID[1].Verification != "live gate passed" || byID[1].Rejected != "" {
+		t.Errorf("passed activity: %+v", byID[1])
+	}
+	if byID[2].Rejected == "" || byID[2].Verification != "" {
+		t.Errorf("rejected activity: %+v", byID[2])
+	}
+	if byID[1].Historical || byID[2].Historical {
+		t.Error("gate verdicts must not mark entries historical")
+	}
+}

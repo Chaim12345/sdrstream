@@ -1886,10 +1886,12 @@ func monitorOnActivity(server *web.Server) func(monitor.Activity) {
 		if activity.Detail != "" && (activity.Kind == "data" || activity.Kind == "cw" || activity.Kind == "sstv" || activity.Kind == "voice") {
 			if err := verify.Live(activity.Kind, activity.Mode, activity.Detail, nil, activity.VerificationAnchor); err != nil {
 				writeActivitySidecar(server, activity, false, err.Error())
+				server.RecordGate(activity.ID, false, err.Error())
 				log.Printf("gallery: verification rejected live text: %v", err)
 				return
 			}
 			writeActivitySidecar(server, activity, true, "live gate passed")
+			server.RecordGate(activity.ID, true, "live gate passed")
 			if err := server.AddLiveArtifact(activity, nil); err != nil {
 				log.Printf("gallery: save live text: %v", err)
 			}
@@ -1902,10 +1904,12 @@ func monitorOnImage(server *web.Server) func(monitor.Activity, []byte) {
 	return func(activity monitor.Activity, png []byte) {
 		if err := verify.Live(activity.Kind, activity.Mode, "", png); err != nil {
 			writeActivitySidecar(server, activity, false, err.Error())
+			server.RecordGate(activity.ID, false, err.Error())
 			log.Printf("gallery: verification rejected live image: %v", err)
 			return
 		}
 		writeActivitySidecar(server, activity, true, "live gate passed")
+		server.RecordGate(activity.ID, true, "live gate passed")
 		if err := server.AddLiveArtifact(activity, png); err != nil {
 			log.Printf("gallery: save live image: %v", err)
 		}
