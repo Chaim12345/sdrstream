@@ -2473,6 +2473,10 @@ func mutateBlocklist(fn func(m map[string]stationBlock)) {
 	defer blockMu.Unlock()
 	lf, err := lockBlocklist()
 	if err != nil {
+		// Never silent: a dropped block or purge is invisible without
+		// this. The mutation is skipped, the in-memory scan state is
+		// unaffected, and the next mutation retries the lock.
+		log.Printf("blocklist: mutation skipped, lock failed: %v", err)
 		return
 	}
 	defer lf.Close()

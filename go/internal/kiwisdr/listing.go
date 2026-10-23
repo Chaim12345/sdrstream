@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/chaim12345/sdrstream/go/internal/common"
 )
 
 // ListingURL is the linkfanel mirror of the kiwisdr.com public receiver list.
@@ -289,10 +291,12 @@ func (l *Loader) fetch(ctx context.Context) (string, error) {
 	l.page, l.fetched = page, now
 	if l.CachePath != "" {
 		if err := os.MkdirAll(filepath.Dir(l.CachePath), 0o755); err == nil {
-			tmp := l.CachePath + ".tmp"
-			if os.WriteFile(tmp, []byte(page), 0o644) == nil {
-				_ = os.Rename(tmp, l.CachePath)
-			}
+			// Best-effort cache write, but never a torn one: a shared
+			// fixed .tmp could interleave two writers and persist a
+			// broken page that then poisons the cache until expiry.
+			// Unique temp + rename, umask-masked perms. Last writer
+			// wins is fine for a cache; no lock needed.
+			_ = common.WriteFileAtomic(l.CachePath, []byte(page), 0o644)
 		}
 	}
 	return page, nil
