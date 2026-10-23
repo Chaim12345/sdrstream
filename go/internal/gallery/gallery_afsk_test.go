@@ -11,7 +11,7 @@ import (
 // realAPRSFixture is 30 s of off-air 144.39 MHz APRS (Los Angeles, 2005)
 // from Track 1 of WA8LMF's freely distributed TNC Test CD, already
 // committed for the decoder tests (see internal/decode/afsk_real_test.go).
-const realAPRSFixture = "../../tests/data/real_aprs_wa8lmf_30s.wav"
+const realAPRSFixture = "../../../tests/data/real_aprs_wa8lmf_30s.wav"
 
 // AFSK-labelled audio decodes into a text artefact carrying the AX.25
 // frames, with lineage and provenance preserved. The HDLC CRC gate is the
