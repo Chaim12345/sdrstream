@@ -594,6 +594,13 @@ function galleryCard(it) {
     const lin = document.createElement('div'); lin.className = 'muted';
     lin.textContent = it.decode_status; body.appendChild(lin);
   }
+  // Gate provenance recorded at verification time (live items). Only
+  // real recorded reasons render; items saved before the field existed
+  // show nothing - unknown provenance is never re-labeled.
+  if (it.verification) {
+    const lin = document.createElement('div'); lin.className = 'muted verification';
+    lin.textContent = it.verification; body.appendChild(lin);
+  }
   card.appendChild(body);
   return card;
 }
