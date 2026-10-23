@@ -672,3 +672,6 @@ kbd {
 .history-name { font-family: var(--mono); margin: 8px 0; }
 .history-text { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.6 var(--mono); margin: 8px 0; }
 #history-state, #history-scope { overflow-wrap: anywhere; }
+
+.history-result .history-file-link { display: inline-flex; align-items: center; min-height: 44px; box-sizing: border-box; margin-top: 12px; }
+#history-results { margin-bottom: 18px; }

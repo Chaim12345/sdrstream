@@ -35,6 +35,8 @@ test('late stale search cannot overwrite new results; error has retry message an
 test('no history differs from no matching filter',async()=>{
  const {$,pending}=harness();$('history-form').fire('submit');pending[0].resolve(page([]));await flush();
  assert.match($('history-results').textContent,/No saved record matches/);
+ assert.match($('history-state').textContent,/^0 of 0 matching records/);
+ assert.doesNotMatch($('history-state').textContent,/0-0/);
  $('history-form').fire('submit');pending[1].resolve({...page([]),available:0});await flush();
  assert.match($('history-results').textContent,/No capture, decode or gallery metadata/);
 });

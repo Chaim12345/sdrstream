@@ -34,7 +34,7 @@
     if (item.redecode) { const from = document.createElement('div');from.className='muted';from.textContent='re-decoded from '+item.decoded_from;node.appendChild(from); }
     // The API returns local store links; refuse schemes or unexpected paths.
     if (typeof item.url === 'string' && /^\/(audio|gallery)\/[^/]+$/.test(item.url)) {
-      const a = document.createElement('a');a.href=item.url;a.textContent='Open saved file';a.className='chip';node.appendChild(a);
+      const a = document.createElement('a');a.href=item.url;a.textContent='Open saved file';a.className='chip history-file-link';node.appendChild(a);
     }
     return node;
   }
@@ -52,7 +52,7 @@
       const box = $('history-results'); box.textContent = '';
       if (!page.items.length) setEmpty(box, page.available ? 'No saved record matches these filters. Change the search or reset filters.' : 'No capture, decode or gallery metadata is available yet.');
       page.items.forEach(item => box.appendChild(card(item)));
-      $('history-state').textContent = 'Showing ' + (page.items.length ? offset + 1 : 0) + '-' + (offset + page.items.length) + ' of ' + page.total + ' matching records · ' + page.available + ' available';
+      $('history-state').textContent = (page.items.length ? 'Showing ' + (offset + 1) + '-' + (offset + page.items.length) : '0') + ' of ' + page.total + ' matching records · ' + page.available + ' available';
       $('history-scope').textContent = page.scope + ' Paging reads a fresh snapshot; use Search again to refresh.';
       $('history-prev').hidden = !offset; $('history-next').hidden = next === null;
     } catch (err) {
