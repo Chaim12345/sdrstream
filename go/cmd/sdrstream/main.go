@@ -1126,7 +1126,11 @@ func cmdGallery(args []string) error {
 		fmt.Fprintf(os.Stderr, "some artefacts failed: %v\n", err)
 	}
 	sort.SliceStable(saved, func(i, j int) bool { return saved[i].Start.After(saved[j].Start) })
-	frames := gallery.DecodeFrames(saved, dir)
+	// An interrupt cancels an in-flight decode through the decoders'
+	// context checks instead of dying mid-frame.
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	frames := gallery.DecodeFramesContext(ctx, saved, dir)
 	for _, item := range saved {
 		if item.DecodeStatus != "" {
 			fmt.Printf("  %s: %s\n", item.Name, item.DecodeStatus)

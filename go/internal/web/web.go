@@ -141,20 +141,20 @@ type SatelliteInfo struct {
 
 // Server holds the state and serves the UI and API.
 type LiveGalleryItem struct {
-	Source        string    `json:"source,omitempty"` // "live"; SatNOGS imports use "satnogs"
-	ObservationURL string   `json:"observation_url,omitempty"`
-	ObservationID int       `json:"observation_id"`
-	Satellite     string    `json:"satellite"`
-	Station       string    `json:"station"`
-	Start         time.Time `json:"start"`
-	Mode          string    `json:"mode"`
-	FrequencyHz   int64     `json:"frequency_hz"`
-	Kind          string    `json:"kind"`
-	Name          string    `json:"name"`
-	URL           string    `json:"url"`
-	AudioURL      string    `json:"audio_url,omitempty"`
-	Size          int64     `json:"size,omitempty"`
-	Text          string    `json:"text,omitempty"`
+	Source         string    `json:"source,omitempty"` // "live"; SatNOGS imports use "satnogs"
+	ObservationURL string    `json:"observation_url,omitempty"`
+	ObservationID  int       `json:"observation_id"`
+	Satellite      string    `json:"satellite"`
+	Station        string    `json:"station"`
+	Start          time.Time `json:"start"`
+	Mode           string    `json:"mode"`
+	FrequencyHz    int64     `json:"frequency_hz"`
+	Kind           string    `json:"kind"`
+	Name           string    `json:"name"`
+	URL            string    `json:"url"`
+	AudioURL       string    `json:"audio_url,omitempty"`
+	Size           int64     `json:"size,omitempty"`
+	Text           string    `json:"text,omitempty"`
 }
 
 // obsCacheEntry is one cached SatNOGS observations lookup.
@@ -269,6 +269,11 @@ type Server struct {
 	fetchObservations func(noradID int) ([]satnogs.Observation, error)
 	NoAuth            bool
 	auth              authState
+	// ctx bounds server-owned background work (gallery refresh, decode):
+	// cancelled when the serving context ends, so shutdown stops an
+	// in-flight gallery decode instead of letting it run on.
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // New builds a server with the bundled page. When capturesDir is non-empty
@@ -281,6 +286,7 @@ func New(capturesDir, galleryDir string) *Server {
 		galleryDir = filepath.Join(satnogs.CacheDir, "gallery")
 	}
 	s := &Server{capturesDir: capturesDir, galleryDir: galleryDir, scanIndex: make(map[string]int), scanStatePath: scanStateFile()}
+	s.ctx, s.cancel = context.WithCancel(context.Background())
 	if capturesDir != "" {
 		go s.retentionLoop()
 	}
@@ -296,8 +302,15 @@ func New(capturesDir, galleryDir string) *Server {
 // galleryLoop keeps the SatNOGS gallery fresh without blocking startup.
 func (s *Server) galleryLoop() {
 	s.refreshGallery()
-	for range time.Tick(30 * time.Minute) {
-		s.refreshGallery()
+	tick := time.NewTicker(30 * time.Minute)
+	defer tick.Stop()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-tick.C:
+			s.refreshGallery()
+		}
 	}
 }
 
@@ -321,13 +334,29 @@ func (s *Server) refreshGallery() {
 	if len(saved) == 0 {
 		return
 	}
-	saved = append(saved, gallery.DecodeFrames(saved, s.galleryDir)...)
+	saved = append(saved, s.decodeGallery(saved)...)
 	sort.SliceStable(saved, func(i, j int) bool { return saved[i].Start.After(saved[j].Start) })
 	s.mu.Lock()
 	s.gallery = saved
 	s.galleryAt = time.Now()
 	s.mu.Unlock()
 	s.saveGallery()
+}
+
+// decodeGallery runs frame decoding under the server's lifecycle
+// context: server shutdown cancels an in-flight decode instead of a
+// viewer's request context, because the refresh is background-owned.
+func (s *Server) decodeGallery(saved []gallery.Item) []gallery.Item {
+	return gallery.DecodeFramesContext(s.lifecycleCtx(), saved, s.galleryDir)
+}
+
+// lifecycleCtx returns the server-owned background context, creating it
+// for Servers built as literals (tests) rather than via New.
+func (s *Server) lifecycleCtx() context.Context {
+	if s.ctx == nil {
+		s.ctx, s.cancel = context.WithCancel(context.Background())
+	}
+	return s.ctx
 }
 
 // saveGallery writes the manifest next to the artefacts, with absolute
@@ -2287,7 +2316,9 @@ func (s *Server) newHTTPServer(addr string) *http.Server {
 	}
 }
 
-// ServeContext serves until ctx is cancelled, then gracefully drains requests.
+// ServeContext serves until ctx is cancelled, then gracefully drains requests
+// and stops server-owned background work, including any in-flight gallery
+// decode.
 func (s *Server) ServeContext(ctx context.Context, addr string) error {
 	if os.Getenv("SDRSTREAM_UI_PASSWORD") == "" && !s.NoAuth {
 		host, _, err := net.SplitHostPort(addr)
@@ -2308,6 +2339,11 @@ func (s *Server) ServeContext(ctx context.Context, addr string) error {
 	// would otherwise be killed mid-response.
 
 	defer s.flushScanState()
+	defer func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+	}()
 	server := s.newHTTPServer(addr)
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.ListenAndServe() }()
