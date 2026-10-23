@@ -44,4 +44,14 @@ test('recorded rejection wins history card badge even with live source',async()=
  const {$,pending}=harness();$('history-form').fire('submit');
  pending[0].resolve(page([{store:'capture',source_class:'live-unverified',rejected:'specific failure'}]));await flush();
  assert.equal($('history-results').children[0].children[0].children[0].textContent,'recorded gate rejection: specific failure');
+ assert.match($('history-results').children[0].children[0].children[1].textContent,/live source/);
+});
+
+test('rejected synthetic record retains provenance badge beside rejection',async()=>{
+ const {$,pending}=harness();$('history-form').fire('submit');
+ pending[0].resolve(page([{store:'capture',source_class:'synthetic',rejected:'fixture failure'}]));await flush();
+ const badges=$('history-results').children[0].children[0].children;
+ assert.equal(badges.length,2);
+ assert.equal(badges[0].textContent,'recorded gate rejection: fixture failure');
+ assert.equal(badges[1].textContent,'test fixture / synthetic - not a reception');
 });
