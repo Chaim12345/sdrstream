@@ -12,12 +12,20 @@ function makeEl(tag = 'div') {
     tagName: String(tag).toUpperCase(), children: [], dataset: {}, style: {},
     _text: '', className: '', id: '', hidden: false, value: '',
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
-    appendChild(c) { this.children.push(c); if (c && c.id) byId[c.id] = c; return c; },
+    appendChild(c) { this.children.push(c); if (c) { c.parentElement = this; if (c.id) byId[c.id] = c; } return c; },
     append(...cs) { cs.forEach(c => { if (c && typeof c === 'object') this.appendChild(c); }); },
+    insertBefore(c, ref) {
+      const i = ref ? this.children.indexOf(ref) : -1;
+      if (i < 0) this.children.push(c); else this.children.splice(i, 0, c);
+      if (c) { c.parentElement = this; if (c.id) byId[c.id] = c; } return c;
+    },
+    after(...cs) { const p = this.parentElement; if (!p) return; const i = p.children.indexOf(this); cs.forEach((c, k) => { if (c && typeof c === 'object') p.insertBefore(c, p.children[i + 1 + k] || null); }); },
+    before(...cs) { const p = this.parentElement; if (!p) return; cs.forEach(c => { if (c && typeof c === 'object') p.insertBefore(c, this); }); },
     addEventListener() {}, removeEventListener() {},
     setAttribute(k, v) { (this.attrs ||= {})[k] = v; },
     getAttribute(k) { return (this.attrs || {})[k] ?? null; },
-    removeAttribute() {}, remove() {}, click() {}, focus() {},
+    removeAttribute() {}, click() {}, focus() {},
+    remove() { const p = this.parentElement; if (!p) return; const i = p.children.indexOf(this); if (i >= 0) p.children.splice(i, 1); this.parentElement = null; },
     querySelector() { return makeEl(); },
     querySelectorAll() { return []; },
     set textContent(v) { this._text = String(v); this.children = []; },
@@ -29,7 +37,15 @@ function makeEl(tag = 'div') {
 const byId = {};
 const nullIds = new Set(['health-sources']); // created by renderSourceFreshness, not present in index.html
 const document = {
-  getElementById(id) { if (byId[id]) return byId[id]; if (nullIds.has(id)) return null; return (byId[id] = makeEl()); },
+  getElementById(id) {
+    if (byId[id]) return byId[id];
+    if (nullIds.has(id)) return null;
+    // Auto-created stubs stand in for real index.html elements: give
+    // them a parent so parentElement.after/insertBefore work.
+    const e = makeEl();
+    document.body.appendChild(e);
+    return (byId[id] = e);
+  },
   createElement(t) { return makeEl(t); },
   querySelectorAll() { return []; },
   querySelector() { return makeEl('meta'); },
@@ -76,6 +92,20 @@ check('historical card keeps verification-unknown line', texts(card).includes('h
 card = sandbox.activityCard({ started: new Date().toISOString(), kind: 'cw', rejected: 'text failed plausibility' }, false);
 check('rejected card states the gate failure', texts(card).includes('failed the live quality gate: text failed plausibility'));
 
+// Precedence must match ui-features' activityGateVerdict: rejected >
+// historical > passed. A repeated RecordGate can leave both fields set.
+card = sandbox.activityCard({ started: new Date().toISOString(), kind: 'cw', rejected: 'late gate failure', historical: true }, false);
+check('rejected+historical shows the rejection, not historical', texts(card).includes('failed the live quality gate: late gate failure') && !texts(card).some(t => t.startsWith('historical -')));
+card = sandbox.activityCard({ started: new Date().toISOString(), kind: 'cw', rejected: 'late gate failure', verification: 'earlier pass note' }, false);
+check('rejected+verification shows the rejection, not the pass', texts(card).includes('failed the live quality gate: late gate failure') && !texts(card).some(t => t.startsWith('live gate passed')));
+if (typeof sandbox.activityGateVerdict === 'function') {
+  check('card verdict agrees with filter helper on both-fields item',
+    sandbox.activityGateVerdict({ rejected: 'x', historical: true }) === 'rejected' &&
+    sandbox.activityGateVerdict({ rejected: 'x', verification: 'y' }) === 'rejected' &&
+    sandbox.activityGateVerdict({ historical: true }) === 'historical' &&
+    sandbox.activityGateVerdict({ verification: 'y' }) === 'passed');
+}
+
 card = sandbox.activityCard({ started: new Date().toISOString(), kind: 'data', source: 'http://<img src=x onerror=alert(1)>/' }, false);
 check('markup in source stays text (no IMG node)', !tags(card).includes('IMG'));
 check('markup in source appears as literal text', texts(card).some(t => t.includes('<img')));
@@ -116,8 +146,10 @@ delete byId['activity-summary'];
 sandbox.renderActivity();
 let summary = byId['activity-summary'].textContent;
 check('summary without verdict filter omits gate wording', !/gate (passed|rejected|verdict)/.test(summary));
-// Post-integration state: the control declares the variable globally.
-vm.runInContext('var activityVerdict = "passed";', sandbox);
+// Post-integration state: the variable exists (declared by msglog's
+// `let` on combined, injected here on standalone).
+if (vm.runInContext('typeof activityVerdict', sandbox) === 'undefined') vm.runInContext('var activityVerdict = "";', sandbox);
+vm.runInContext('activityVerdict = "passed";', sandbox);
 sandbox.renderActivity();
 summary = byId['activity-summary'].textContent;
 check('summary with verdict=passed says gate passed', summary.includes('filtered by gate passed'));
