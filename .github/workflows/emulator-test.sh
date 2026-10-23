@@ -21,6 +21,7 @@ fi
 echo "install_ok=$INSTALL_OK"
 
 if [ "$INSTALL_OK" = 1 ]; then
+  adb shell pm grant com.chaim12345.sdrstream android.permission.POST_NOTIFICATIONS || true
   adb shell am start -n com.chaim12345.sdrstream/.MainActivity
   sleep 20
   adb exec-out screencap -p > "$OUT/$LABEL-20s.png" || true
@@ -31,6 +32,11 @@ if [ "$INSTALL_OK" = 1 ]; then
   (curl -sS -m 8 http://127.0.0.1:18080/healthz && echo) > "$OUT/$LABEL-healthz-70s.txt" 2>&1 || true
   curl -sS -m 8 -o /dev/null -w "root http_code=%{http_code}\n" http://127.0.0.1:18080/ > "$OUT/$LABEL-root.txt" 2>&1 || true
   adb shell run-as com.chaim12345.sdrstream sh -c 'ls -la files/; echo ---; tail -60 files/engine.log 2>/dev/null; echo ---; cat files/crash.log 2>/dev/null' > "$OUT/$LABEL-ondevice-logs.txt" 2>&1 || true
+  # Dismiss any leftover dialogs and let the WebView settle, then final shot.
+  adb shell input keyevent KEYCODE_BACK || true
+  sleep 3
+  adb shell am start -n com.chaim12345.sdrstream/.MainActivity || true
+  sleep 8
   adb exec-out screencap -p > "$OUT/$LABEL-final.png" || true
 fi
 adb logcat -d -v threadtime > "$OUT/$LABEL-logcat.txt" 2>&1 || true
