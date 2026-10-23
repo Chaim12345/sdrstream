@@ -321,6 +321,7 @@ func (s *Server) refreshGallery() {
 	if len(saved) == 0 {
 		return
 	}
+	saved = append(saved, gallery.DecodeFrames(saved, s.galleryDir)...)
 	sort.SliceStable(saved, func(i, j int) bool { return saved[i].Start.After(saved[j].Start) })
 	s.mu.Lock()
 	s.gallery = saved

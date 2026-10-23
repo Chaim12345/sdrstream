@@ -1,6 +1,7 @@
 package gallery
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -156,5 +157,46 @@ func TestWriteManifestRoundtrip(t *testing.T) {
 	}
 	if loaded[0].Source != "satnogs" || loaded[0].ObservationURL != ObservationLink(42) {
 		t.Fatalf("provenance lost: %+v", loaded[0])
+	}
+}
+
+func TestDecodeFramesFromSSTVAudio(t *testing.T) {
+	fixture := filepath.Join("..", "decode", "testdata", "sstv_robot36.wav")
+	if _, err := os.Stat(fixture); err != nil {
+		t.Skip("sstv fixture not present:", err)
+	}
+	dir := t.TempDir()
+	name := "15259232-audio.wav"
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	audio := Item{
+		Source: "satnogs", ObservationURL: ObservationLink(15259232), ObservationID: 15259232,
+		Satellite: "ISS", NoradID: 25544, Station: "test-station",
+		Start: time.Unix(1_700_000_000, 0), Mode: "SSTV", FrequencyHz: 437_550_000,
+		Kind: "audio", Name: name, Path: filepath.Join(dir, name),
+	}
+	other := Item{Kind: "audio", Mode: "APRS", Name: "x.wav", Path: audio.Path}
+	frames := DecodeFrames([]Item{audio, other}, dir)
+	if len(frames) != 1 {
+		t.Fatalf("got %d frames, want 1 from the SSTV audio only", len(frames))
+	}
+	frame := frames[0]
+	if frame.Kind != "image" || frame.DecodedFrom != name {
+		t.Fatalf("frame lineage wrong: %+v", frame)
+	}
+	if frame.Source != "satnogs" || frame.ObservationURL != ObservationLink(15259232) || frame.Station != "test-station" {
+		t.Fatalf("provenance not carried to the decoded frame: %+v", frame)
+	}
+	png, err := os.ReadFile(frame.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(png) < 8 || !bytes.Equal(png[:8], []byte("\x89PNG\r\n\x1a\n")) {
+		t.Fatalf("decoded artefact is not a PNG (%d bytes)", len(png))
 	}
 }

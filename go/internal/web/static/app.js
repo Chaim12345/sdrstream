@@ -558,6 +558,10 @@ function renderGallery() {
       link.textContent = it.satellite || ('#' + it.observation_id); name.appendChild(link);
     } else { name.textContent = it.satellite || ('#' + it.observation_id); }
     const detail = document.createElement('div'); detail.textContent = caption.slice(caption.indexOf('·') + 1).trim(); body.appendChild(detail);
+    if (it.decoded_from) {
+      const lin = document.createElement('div'); lin.className = 'muted';
+      lin.textContent = 'decoded by sdrstream from ' + it.decoded_from; body.appendChild(lin);
+    }
     card.appendChild(body); box.appendChild(card);
   });
   if (!shown.length) {

@@ -7,8 +7,11 @@ package gallery
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/chaim12345/sdrstream/go/internal/decode"
 	"io"
 	"net/http"
 	"os"
@@ -41,6 +44,7 @@ func ObservationLink(id int) string {
 type Item struct {
 	Source        string    `json:"source,omitempty"` // "satnogs"; live decodes use "live"
 	ObservationURL string   `json:"observation_url,omitempty"`
+	DecodedFrom   string    `json:"decoded_from,omitempty"` // artefact this image was decoded from by sdrstream
 	ObservationID int       `json:"observation_id"`
 	Satellite     string    `json:"satellite"`
 	NoradID       int       `json:"norad_id"`
@@ -198,6 +202,69 @@ func WriteManifest(items []Item, dir string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "index.json"), data, 0o644)
+}
+
+// DecodeFrames runs the project's own decoders over downloaded audio
+// artefacts and returns new image items for the frames they extract.
+// Mode-matched: only observations whose mode names SSTV are attempted.
+// OGG/MP3 payloads convert through ffmpeg; WAV decodes directly. An
+// audio item that yields no frame is left as it is, without a placeholder.
+func DecodeFrames(saved []Item, dir string) []Item {
+	var frames []Item
+	for _, item := range saved {
+		if item.Kind != "audio" || !strings.Contains(strings.ToUpper(item.Mode), "SSTV") {
+			continue
+		}
+		path := item.Path
+		if !strings.HasSuffix(strings.ToLower(path), ".wav") {
+			if !decode.FFmpegAvailable() {
+				continue
+			}
+			tmp, err := os.CreateTemp("", "sdrstream-gallery-*.wav")
+			if err != nil {
+				continue
+			}
+			tmp.Close()
+			defer os.Remove(tmp.Name())
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if err := decode.ConvertToWAV(ctx, "", path, tmp.Name()); err != nil {
+				continue
+			}
+			path = tmp.Name()
+		}
+		samples, rate, err := decode.ReadWAV(path)
+		if err != nil {
+			continue
+		}
+		png, err := decode.SSTVImage(samples, rate)
+		if err != nil {
+			continue
+		}
+		ext := filepath.Ext(item.Name)
+		name := strings.TrimSuffix(item.Name, ext) + "-sdrstream-decoded.png"
+		out := filepath.Join(dir, name)
+		if err := os.WriteFile(out, png, 0o644); err != nil {
+			continue
+		}
+		frames = append(frames, Item{
+			Source:         item.Source,
+			ObservationURL: item.ObservationURL,
+			ObservationID:  item.ObservationID,
+			Satellite:      item.Satellite,
+			NoradID:        item.NoradID,
+			Station:        item.Station,
+			Start:          item.Start,
+			Mode:           item.Mode,
+			FrequencyHz:    item.FrequencyHz,
+			Kind:           "image",
+			Name:           name,
+			Path:           out,
+			Size:           int64(len(png)),
+			DecodedFrom:    item.Name,
+		})
+	}
+	return frames
 }
 
 func fetchOne(client *http.Client, item Item, dir string, maxBytes int64) (Item, error) {

@@ -505,6 +505,13 @@ upcoming passes. Files are classified from their bytes, not the URL extension
 is passed. The web server refreshes the same gallery every 30 minutes and
 serves the files itself, so the browser never depends on the S3 bucket.
 
+After the download, sdrstream runs its own decoders over mode-matched
+audio artefacts: an SSTV payload becomes a decoded frame saved next to
+the recording, listed in the manifest with `decoded_from` pointing at
+the audio it came from, so derived images are never confused with what
+the ground station itself published. OGG payloads convert through
+ffmpeg when needed; an artefact that yields no frame is left as it is.
+
 Every run writes an `index.json` manifest next to the artefacts. Each entry
 carries its source (`satnogs` - live station decodes are filed as `live`
 instead), a link to the backing observation page, the recording station and

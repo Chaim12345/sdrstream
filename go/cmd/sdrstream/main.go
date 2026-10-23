@@ -1126,6 +1126,11 @@ func cmdGallery(args []string) error {
 		fmt.Fprintf(os.Stderr, "some artefacts failed: %v\n", err)
 	}
 	sort.SliceStable(saved, func(i, j int) bool { return saved[i].Start.After(saved[j].Start) })
+	frames := gallery.DecodeFrames(saved, dir)
+	for _, frame := range frames {
+		fmt.Printf("  decoded %s from %s\n", frame.Name, frame.DecodedFrom)
+	}
+	saved = append(saved, frames...)
 	// The manifest keeps source, licence and the observation link next to
 	// the files; the web UI loads the same file unchanged.
 	if err := gallery.WriteManifest(saved, dir); err != nil {
