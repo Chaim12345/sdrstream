@@ -309,12 +309,12 @@ func TestNarrowbandDecodersNeedANarrowChannel(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", test.file, err)
 		}
-		mode, detail, ok := instance.decodeData(context.Background(), samples, rate, 3000)
+		mode, detail, ok := instance.decodeData(context.Background(), samples, rate, 3000, 0)
 		if !ok || mode != test.narrow {
 			t.Errorf("%s in a 3 kHz channel: got %q/%q, want %q (%s)",
 				test.file, mode, detail, test.narrow, test.note)
 		}
-		mode, detail, ok = instance.decodeData(context.Background(), samples, rate, 25000)
+		mode, detail, ok = instance.decodeData(context.Background(), samples, rate, 25000, 0)
 		if test.wide == "" {
 			if ok {
 				t.Errorf("%s in a 25 kHz channel: got %q/%q, want nothing: the voice is not RTTY",
@@ -444,7 +444,7 @@ func TestDecodeDataHonoursCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	instance.decodeData(ctx, make([]float64, 22050), 22050, 3000)
+	instance.decodeData(ctx, make([]float64, 22050), 22050, 3000, 0)
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("decodeData took %v with a cancelled context; the external decoder ran to completion", elapsed)
 	}
@@ -716,7 +716,7 @@ func TestDecodeDataFindsSAME(t *testing.T) {
 		s = append(s, make([]float64, rate)...)
 	}
 	m := New(Options{})
-	mode, detail, ok := m.decodeData(context.Background(), s, rate, 0)
+	mode, detail, ok := m.decodeData(context.Background(), s, rate, 0, 0)
 	if !ok || mode != "same" || !strings.Contains(detail, "Severe Thunderstorm Warning") || !strings.Contains(detail, header) {
 		t.Fatalf("mode=%q ok=%v detail=%q", mode, ok, detail)
 	}
@@ -744,5 +744,78 @@ func TestRecordGateAnnotatesStoredActivity(t *testing.T) {
 	}
 	if byID[1].Historical || byID[2].Historical {
 		t.Error("gate verdicts must not mark entries historical")
+	}
+}
+
+// TestSweepPathGatesNarrowDecodersByAudioWidth pins the contract the
+// independent review flagged: on the sweep path the RF width is unknown,
+// so the narrow-decoder gate must read the measured AUDIO occupied
+// bandwidth on its own scale. Broadband voice (the Shannon VOLMET
+// recording occupies ~2 kHz of audio) must not reach the morse/RTTY/
+// PSK31/NAVTEX decoders, while genuinely narrow signals (the 195 Hz RTTY
+// reference) still decode. Before the fix the measured value (always
+// <= 2.4 kHz) was compared against the 4 kHz RF threshold, so every
+// swept signal passed the gate.
+func TestSweepPathGatesNarrowDecodersByAudioWidth(t *testing.T) {
+	instance := New(Options{})
+
+	voice, voiceRate, err := decode.ReadWAV("../../../tests/data/real_volmet_shannon_5505_usb.wav")
+	if err != nil {
+		t.Fatalf("read VOLMET recording: %v", err)
+	}
+	if bw := decode.OccupiedBandwidth(voice, voiceRate); bw <= 1000 {
+		t.Fatalf("VOLMET occupied audio bandwidth %.0f Hz: the fixture no longer exercises the broadband side of the gate", bw)
+	}
+	kind, mode, detail, _ := instance.classify(context.Background(), voice, voiceRate, 0)
+	if kind == "data" || kind == "cw" {
+		t.Fatalf("broadband voice on the sweep path decoded as %s/%s (%q); the audio-width gate let it through", kind, mode, detail)
+	}
+	if kind != "voice" {
+		t.Fatalf("VOLMET classified %q/%q, want voice", kind, mode)
+	}
+
+	rtty, rttyRate, err := decode.ReadWAV("../../../tests/data/ref_rtty.wav")
+	if err != nil {
+		t.Fatalf("read RTTY reference: %v", err)
+	}
+	if bw := decode.OccupiedBandwidth(rtty, rttyRate); bw <= 0 || bw > 1000 {
+		t.Fatalf("RTTY occupied audio bandwidth %.0f Hz: the fixture no longer exercises the narrow side of the gate", bw)
+	}
+	kind, mode, detail, _ = instance.classify(context.Background(), rtty, rttyRate, 0)
+	if kind != "data" || mode != "rtty" {
+		t.Fatalf("narrow RTTY on the sweep path classified %q/%q (%q), want data/rtty", kind, mode, detail)
+	}
+}
+
+// TestDecodeDataGateReadsEachScaleSeparately pins the two-scale gate: a
+// known RF estimate governs when present (a 25 kHz FM channel stays closed
+// to RTTY even if the audio measures narrow, a 3 kHz SSB channel stays
+// open even if the audio measures wide), and the audio measurement only
+// governs when the RF width is unknown.
+func TestDecodeDataGateReadsEachScaleSeparately(t *testing.T) {
+	instance := New(Options{})
+	rtty, rate, err := decode.ReadWAV("../../../tests/data/ref_rtty.wav")
+	if err != nil {
+		t.Fatalf("read RTTY reference: %v", err)
+	}
+	// Wide RF channel: closed, however narrow the audio looks.
+	if mode, detail, ok := instance.decodeData(context.Background(), rtty, rate, 25000, 195); ok && (mode == "rtty" || mode == "morse") {
+		t.Fatalf("25 kHz RF channel with narrow audio: got %s (%q), want the RF estimate to govern", mode, detail)
+	}
+	// Narrow RF channel with wide-looking audio: open (the RF estimate is
+	// the better evidence), so the reference still decodes.
+	narrowMode, _, narrowOK := instance.decodeData(context.Background(), rtty, rate, 3000, 2048)
+	if !narrowOK || narrowMode != "rtty" {
+		t.Fatalf("3 kHz RF channel with 2 kHz occupied audio: got %q ok=%v, want the RF estimate to keep the gate open", narrowMode, narrowOK)
+	}
+	// Unknown RF, wide audio: closed even to a reference RTTY clip,
+	// because the measurement says the audio is voice-shaped.
+	if mode, detail, ok := instance.decodeData(context.Background(), rtty, rate, 0, 2048); ok && (mode == "rtty" || mode == "morse") {
+		t.Fatalf("unknown RF with 2 kHz occupied audio: got %s (%q), want the audio gate closed", mode, detail)
+	}
+	// Unknown RF, narrow audio: open, and the reference decodes.
+	mode, _, ok := instance.decodeData(context.Background(), rtty, rate, 0, 195)
+	if !ok || mode != "rtty" {
+		t.Fatalf("unknown RF with 195 Hz occupied audio: got %q ok=%v, want rtty", mode, ok)
 	}
 }

@@ -1369,11 +1369,19 @@ func (m *Monitor) publish(activity Activity) {
 // is proof that the signal was data, while a "voice" verdict from the
 // spectrum alone is only a guess.
 func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, bandwidthHz float64) (kind, mode, detail string, asr voice.Result) {
-	// The sweep path never measures the channel width, so the narrow
-	// decoders would otherwise fire on every loud signal. Measure the
-	// signal itself instead of trusting a zero that means "unknown".
-	if bandwidthHz <= 0 {
-		bandwidthHz = decode.OccupiedBandwidth(samples, rate)
+	// bandwidthHz is the scheduler's RF estimate of the signal width, or
+	// 0 when the sweep path never measured it. The fallback evidence is
+	// the occupied bandwidth of the demodulated audio, on a different
+	// scale: 2.4 kHz of audio is the whole usable passband, while 2.4 kHz
+	// of RF is a single SSB channel. Keep the two quantities separate so
+	// the narrow-decoder gate in decodeData can interpret each on its own
+	// scale instead of comparing audio hertz against an RF threshold.
+	rfBandwidthHz := bandwidthHz
+	audioBandwidthHz := 0.0
+	signalWidthHz := bandwidthHz
+	if signalWidthHz <= 0 {
+		audioBandwidthHz = decode.OccupiedBandwidth(samples, rate)
+		signalWidthHz = audioBandwidthHz
 	}
 	hit := decode.Classify(samples, rate)
 	// Two shapes of real signal: a modulated one, whose level swings with
@@ -1389,7 +1397,7 @@ func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, ban
 		return "noise", "", "no signal above the noise floor", asr
 	}
 	if m.opts.Strategy != "broadcast" {
-		if mode, detail, ok := m.decodeData(ctx, samples, rate, bandwidthHz); ok {
+		if mode, detail, ok := m.decodeData(ctx, samples, rate, rfBandwidthHz, audioBandwidthHz); ok {
 			if mode == "morse" {
 				return "cw", "cw", detail, asr
 			}
@@ -1418,8 +1426,11 @@ func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, ban
 	// always: single-sideband voice can measure only a few hundred Hz of
 	// occupied bandwidth. The speech detector, not the bandwidth, decides.
 	// Without this the Shannon VOLMET recording became a "0 kHz carrier".
-	if bandwidthHz > 0 && bandwidthHz < 2500 && len(segments) == 0 && hit.Kind != "silence" {
-		return "carrier", "", fmt.Sprintf("%.0f kHz wide", bandwidthHz/1e3), asr
+	if signalWidthHz > 0 && signalWidthHz < 2500 && len(segments) == 0 && hit.Kind != "silence" {
+		if signalWidthHz < 1000 {
+			return "carrier", "", fmt.Sprintf("%.0f Hz wide", signalWidthHz), asr
+		}
+		return "carrier", "", fmt.Sprintf("%.1f kHz wide", signalWidthHz/1e3), asr
 	}
 	switch hit.Kind {
 	case "voice", "data", "cw":
@@ -1464,16 +1475,32 @@ func (m *Monitor) ClassifyForScan(ctx context.Context, samples []float64, rate i
 
 // decodeData tries every data decoder and returns the first result.
 //
-// bandwidthHz is the width of the channel the transmission was heard in, or
-// 0 when it is not known. The narrowband decoders (CW, RTTY, PSK31, NAVTEX,
-// SSTV) are only tried on a narrow channel: they will happily return
-// plausible-looking text from any loud narrowband-looking audio, and on an
-// AM aviation voice channel that turned every call into "RTTY" instead of
-// letting the speech detector and whisper look at it. A POCSAG pager
-// channel is 12.5 kHz wide and packet data is a few kHz, so those are not
-// gated.
-func (m *Monitor) decodeData(ctx context.Context, samples []float64, rate int, bandwidthHz float64) (mode, detail string, ok bool) {
-	narrowChannel := bandwidthHz <= 0 || bandwidthHz <= 4000
+// The narrowband decoders (CW, RTTY, PSK31, NAVTEX, SSTV) only run on a
+// signal known to be narrow: they will happily return plausible-looking
+// text from any loud narrowband-looking audio, and on an AM aviation voice
+// channel that turned every call into "RTTY" instead of letting the speech
+// detector and whisper look at it. A POCSAG pager channel is 12.5 kHz wide
+// and packet data is a few kHz, so those are not gated.
+//
+// Two width estimates arrive on different scales and the gate reads each
+// on its own. rfBandwidthHz is the scheduler's RF estimate of the signal
+// width (0 when the sweep path never measured it); 4 kHz bounds an SSB
+// channel, so wider RF estimates are broadband signals. audioBandwidthHz
+// is the occupied bandwidth of the demodulated audio (0 when not
+// measured); the gated modes occupy at most a few hundred Hz of audio
+// (RTTY's 170 Hz shift measures ~200 Hz) while demodulated voice spans
+// most of the 2.4 kHz analysis passband, so 1 kHz separates them without
+// pretending an audio width is a channel width. When neither is known the
+// decoders run as they always have, and the identifier and framing checks
+// below stay the last line against invented traffic.
+func (m *Monitor) decodeData(ctx context.Context, samples []float64, rate int, rfBandwidthHz, audioBandwidthHz float64) (mode, detail string, ok bool) {
+	narrowSignal := true
+	switch {
+	case rfBandwidthHz > 0:
+		narrowSignal = rfBandwidthHz <= 4000
+	case audioBandwidthHz > 0:
+		narrowSignal = audioBandwidthHz <= 1000
+	}
 	// SAME (NOAA Weather Radio / EAS) headers are validated field by field,
 	// so this is safe to try on any audio and cannot invent traffic.
 	if alerts := decode.SAMEScan(samples, rate); len(alerts) > 0 {
@@ -1515,7 +1542,7 @@ func (m *Monitor) decodeData(ctx context.Context, samples []float64, rate int, b
 				return "aprs", strings.Join(lines, " | "), true
 			}
 		}
-		if narrowChannel {
+		if narrowSignal {
 			if result, err := decode.MorseDecode(path); err == nil && result.Text != "" {
 				if plausibleNarrowbandText(result.Text) {
 					return "morse", result.Text, true
@@ -1567,7 +1594,7 @@ func (m *Monitor) decodeData(ctx context.Context, samples []float64, rate int, b
 		}
 		return "eas", strings.Join(lines, " | "), true
 	}
-	if narrowChannel {
+	if narrowSignal {
 		if messages := decode.NAVTEXDecode(samples, rate, 0); len(messages) > 0 {
 			lines := make([]string, 0, len(messages))
 			for _, message := range messages {

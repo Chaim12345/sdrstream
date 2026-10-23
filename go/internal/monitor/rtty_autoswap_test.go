@@ -61,7 +61,7 @@ func TestDecodeDataRTTYAutoSwapsPolarity(t *testing.T) {
 	for i := range samples {
 		samples[i] += 0.12 * rng.NormFloat64()
 	}
-	mode, detail, ok := instance.decodeData(context.Background(), samples, 8000, 3000)
+	mode, detail, ok := instance.decodeData(context.Background(), samples, 8000, 3000, 0)
 	if !ok || mode != "rtty" {
 		t.Fatalf("mode = %q/%q ok=%v, want rtty", mode, detail, ok)
 	}
