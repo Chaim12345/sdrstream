@@ -44,23 +44,23 @@ func ObservationLink(id int) string {
 
 // Item is one artefact from one observation.
 type Item struct {
-	Source        string    `json:"source,omitempty"` // "satnogs"; live decodes use "live"
-	ObservationURL string   `json:"observation_url,omitempty"`
-	DecodedFrom   string    `json:"decoded_from,omitempty"` // artefact this image was decoded from by sdrstream
-	DecodeStatus  string    `json:"decode_status,omitempty"` // set on audio items when frame decoding was skipped, with the reason
-	ObservationID int       `json:"observation_id"`
-	Satellite     string    `json:"satellite"`
-	NoradID       int       `json:"norad_id"`
-	Station       string    `json:"station"`
-	Start         time.Time `json:"start"`
-	Mode          string    `json:"mode"`
-	FrequencyHz   int64     `json:"frequency_hz"`
-	Kind          string    `json:"kind"` // image, audio, text or binary
-	Name          string    `json:"name"`
-	URL           string    `json:"url"`
-	Path          string    `json:"path,omitempty"`
-	Size          int64     `json:"size,omitempty"`
-	Text          string    `json:"text,omitempty"`
+	Source         string    `json:"source,omitempty"` // "satnogs"; live decodes use "live"
+	ObservationURL string    `json:"observation_url,omitempty"`
+	DecodedFrom    string    `json:"decoded_from,omitempty"`  // artefact this image was decoded from by sdrstream
+	DecodeStatus   string    `json:"decode_status,omitempty"` // set on audio items when frame decoding was skipped, with the reason
+	ObservationID  int       `json:"observation_id"`
+	Satellite      string    `json:"satellite"`
+	NoradID        int       `json:"norad_id"`
+	Station        string    `json:"station"`
+	Start          time.Time `json:"start"`
+	Mode           string    `json:"mode"`
+	FrequencyHz    int64     `json:"frequency_hz"`
+	Kind           string    `json:"kind"` // image, audio, text or binary
+	Name           string    `json:"name"`
+	URL            string    `json:"url"`
+	Path           string    `json:"path,omitempty"`
+	Size           int64     `json:"size,omitempty"`
+	Text           string    `json:"text,omitempty"`
 }
 
 // Collect lists the artefacts of a set of observations. Waterfalls are
@@ -75,18 +75,18 @@ func Collect(observations []satnogs.Observation) []Item {
 		}
 		seen[url] = true
 		items = append(items, Item{
-			Source:        "satnogs",
+			Source:         "satnogs",
 			ObservationURL: ObservationLink(observation.ID),
-			ObservationID: observation.ID,
-			Satellite:     observation.SatName,
-			NoradID:       observation.NoradID,
-			Station:       observation.Station,
-			Start:         observation.Start,
-			Mode:          observation.Mode,
-			FrequencyHz:   observation.FrequencyHz,
-			Kind:          kind,
-			Name:          fmt.Sprintf("%d-%s", observation.ID, baseName(url)),
-			URL:           url,
+			ObservationID:  observation.ID,
+			Satellite:      observation.SatName,
+			NoradID:        observation.NoradID,
+			Station:        observation.Station,
+			Start:          observation.Start,
+			Mode:           observation.Mode,
+			FrequencyHz:    observation.FrequencyHz,
+			Kind:           kind,
+			Name:           fmt.Sprintf("%d-%s", observation.ID, baseName(url)),
+			URL:            url,
 		})
 	}
 	for _, observation := range observations {
@@ -252,7 +252,8 @@ func probeWAVDuration(path string) (float64, error) {
 		return 0, fmt.Errorf("not a RIFF/WAVE file")
 	}
 	var rate, channels, bits int64
-	var dataBytes, dataOffset int64
+	var dataBytes int64
+	dataSeen := false
 	for {
 		chunk := make([]byte, 8)
 		if _, err := io.ReadFull(f, chunk); err != nil {
@@ -276,17 +277,25 @@ func probeWAVDuration(path string) (float64, error) {
 				return 0, err
 			}
 		case "data":
-			dataBytes = size
-			dataOffset = pos
-			if actual := fi.Size() - dataOffset; dataBytes > actual {
-				dataBytes = actual
+			// The decoder reads the FIRST data chunk and stops; the
+			// probe measures exactly that chunk, even when it is empty
+			// and a later data chunk holds more audio.
+			if !dataSeen {
+				dataSeen = true
+				dataBytes = size
+				if actual := fi.Size() - pos; dataBytes > actual {
+					dataBytes = actual
+				}
+			}
+			if _, err := f.Seek(pos+size+(size&1), io.SeekStart); err != nil {
+				break
 			}
 		default:
 			if _, err := f.Seek(pos+size+(size&1), io.SeekStart); err != nil {
 				return 0, err
 			}
 		}
-		if dataBytes > 0 && rate > 0 {
+		if dataSeen && rate > 0 {
 			break
 		}
 	}

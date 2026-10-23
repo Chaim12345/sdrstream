@@ -5,16 +5,17 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"os/exec"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/decode"
+	"time"
+
 	"github.com/chaim12345/sdrstream/go/internal/satnogs"
 )
 
@@ -306,12 +307,12 @@ func wavFixture(declaredData uint32, payloadBytes int, rate uint32) []byte {
 	b.WriteString("WAVE")
 	b.WriteString("fmt ")
 	_ = binary.Write(&b, binary.LittleEndian, uint32(16))
-	_ = binary.Write(&b, binary.LittleEndian, uint16(1))      // PCM
-	_ = binary.Write(&b, binary.LittleEndian, uint16(1))      // mono
-	_ = binary.Write(&b, binary.LittleEndian, rate)           // sample rate
-	_ = binary.Write(&b, binary.LittleEndian, rate*2)         // byte rate
-	_ = binary.Write(&b, binary.LittleEndian, uint16(2))      // block align
-	_ = binary.Write(&b, binary.LittleEndian, uint16(16))     // bits
+	_ = binary.Write(&b, binary.LittleEndian, uint16(1))  // PCM
+	_ = binary.Write(&b, binary.LittleEndian, uint16(1))  // mono
+	_ = binary.Write(&b, binary.LittleEndian, rate)       // sample rate
+	_ = binary.Write(&b, binary.LittleEndian, rate*2)     // byte rate
+	_ = binary.Write(&b, binary.LittleEndian, uint16(2))  // block align
+	_ = binary.Write(&b, binary.LittleEndian, uint16(16)) // bits
 	b.WriteString("data")
 	_ = binary.Write(&b, binary.LittleEndian, declaredData)
 	b.Write(make([]byte, payloadBytes))
@@ -411,5 +412,140 @@ func TestDecodeFramesOversizedCompressedSkipped(t *testing.T) {
 	}
 	if left, _ := filepath.Glob(filepath.Join(dir, "*.wav")); len(left) != 0 {
 		t.Fatalf("over-cap conversion left WAV files behind: %v", left)
+	}
+}
+
+// craftWAVRaw builds a WAV file from explicit chunk specs so tests can
+// mismatch declared vs actual sizes. Chunks are (id, declaredSize, payload).
+func craftWAVRaw(t *testing.T, chunks [][3]interface{}) string {
+	t.Helper()
+	body := []byte("RIFF\x00\x00\x00\x00WAVE")
+	for _, c := range chunks {
+		id := c[0].(string)
+		declared := uint32(c[1].(int))
+		payload := c[2].([]byte)
+		body = append(body, id[0], id[1], id[2], id[3])
+		var sz [4]byte
+		binary.LittleEndian.PutUint32(sz[:], declared)
+		body = append(body, sz[:]...)
+		body = append(body, payload...)
+		if len(payload)%2 == 1 {
+			body = append(body, 0)
+		}
+	}
+	p := filepath.Join(t.TempDir(), "crafted.wav")
+	if err := os.WriteFile(p, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func fmtChunk(rate, channels int) []byte {
+	b := make([]byte, 16)
+	binary.LittleEndian.PutUint16(b[0:2], 1)
+	binary.LittleEndian.PutUint16(b[2:4], uint16(channels))
+	binary.LittleEndian.PutUint32(b[4:8], uint32(rate))
+	binary.LittleEndian.PutUint16(b[12:14], uint16(channels*2))
+	binary.LittleEndian.PutUint16(b[14:16], 16)
+	return b
+}
+
+func TestProbeMatchesDecoder_UnderstatedDeclared(t *testing.T) {
+	// Declared 0.5s but 5s of payload present: BOTH probe and decoder must
+	// measure only the declared 0.5s (decoder clamps end to declared size).
+	half := 44100 // bytes for 0.5s mono 16-bit @ 44100
+	full := make([]byte, half*10)
+	p := craftWAVRaw(t, [][3]interface{}{
+		{"fmt ", 16, fmtChunk(44100, 1)},
+		{"data", half, full},
+	})
+	d, err := probeWAVDuration(p)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if d != 0.5 {
+		t.Fatalf("probe %.4fs, want 0.5s", d)
+	}
+	samples, rate, err := decode.ReadWAV(p)
+	if err != nil {
+		t.Fatalf("ReadWAV: %v", err)
+	}
+	if rate != 44100 || len(samples) != 22050 {
+		t.Fatalf("decoder read %d samples @ %d, want 22050 @ 44100 (declared portion only)", len(samples), rate)
+	}
+}
+
+func TestProbeMatchesDecoder_MultipleDataChunks(t *testing.T) {
+	// First data chunk 0.5s, second data chunk claims 1GB: decoder reads the
+	// FIRST chunk only; probe must agree.
+	half := 44100
+	p := craftWAVRaw(t, [][3]interface{}{
+		{"fmt ", 16, fmtChunk(44100, 1)},
+		{"data", half, make([]byte, half)},
+		{"data", 1 << 30, make([]byte, half)},
+	})
+	d, err := probeWAVDuration(p)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if d != 0.5 {
+		t.Fatalf("probe %.4fs, want 0.5s (first data chunk only)", d)
+	}
+	samples, _, err := decode.ReadWAV(p)
+	if err != nil {
+		t.Fatalf("ReadWAV: %v", err)
+	}
+	if len(samples) != 22050 {
+		t.Fatalf("decoder read %d samples, want 22050 (first chunk only)", len(samples))
+	}
+}
+
+func TestProbeMatchesDecoder_EmptyFirstDataChunk(t *testing.T) {
+	// Empty first data chunk, real audio in the second: decoder reads the
+	// empty first chunk; probe must not be deflated by the second.
+	p := craftWAVRaw(t, [][3]interface{}{
+		{"fmt ", 16, fmtChunk(44100, 1)},
+		{"data", 0, []byte{}},
+		{"data", 441000, make([]byte, 441000)},
+	})
+	d, err := probeWAVDuration(p)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if d != 0 {
+		t.Fatalf("probe %.4fs, want 0 (first data chunk is empty)", d)
+	}
+	samples, _, err := decode.ReadWAV(p)
+	if err != nil {
+		t.Fatalf("ReadWAV: %v", err)
+	}
+	if len(samples) != 0 {
+		t.Fatalf("decoder read %d samples, want 0", len(samples))
+	}
+}
+
+func TestProbeMatchesDecoder_GarbageBlockAlign(t *testing.T) {
+	// Decoder ignores block-align/byte-rate fields; probe derives bytes/sec
+	// from rate*channels*bits. Garbage block align must not change either.
+	fc := fmtChunk(44100, 1)
+	binary.LittleEndian.PutUint32(fc[8:12], 999999999) // byte rate garbage
+	binary.LittleEndian.PutUint16(fc[12:14], 77)       // block align garbage
+	p := craftWAVRaw(t, [][3]interface{}{
+		{"fmt ", 16, fc},
+		{"data", 88200, make([]byte, 88200)},
+	})
+	d, err := probeWAVDuration(p)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if d != 1.0 {
+		t.Fatalf("probe %.4fs, want 1.0s", d)
+	}
+	samples, rate, err := decode.ReadWAV(p)
+	if err != nil {
+		t.Fatalf("ReadWAV: %v", err)
+	}
+	if len(samples) != 44100 || rate != 44100 {
+		t.Fatalf("decoder read %d samples @ %d, want 44100 @ 44100", len(samples), rate)
 	}
 }
