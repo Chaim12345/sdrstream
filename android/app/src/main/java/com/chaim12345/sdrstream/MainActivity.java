@@ -61,6 +61,7 @@ public class MainActivity extends Activity {
     private static final int MENU_STOP_ENGINE = 4;
     private static final int MENU_DIAGNOSTICS = 5;
     private static final int MENU_SHARE_LOGS = 6;
+    private static final int MENU_BACKGROUND = 7;
 
     private WebView webView;
     private AlertDialog batteryDialog;
@@ -135,6 +136,7 @@ public class MainActivity extends Activity {
         popup.getMenu().add(0, MENU_STOP_ENGINE, 3, "Stop engine");
         popup.getMenu().add(0, MENU_DIAGNOSTICS, 4, "Diagnostics");
         popup.getMenu().add(0, MENU_SHARE_LOGS, 5, "Share logs");
+        popup.getMenu().add(0, MENU_BACKGROUND, 6, "Allow background running");
         popup.setOnMenuItemClickListener(item -> {
             handleMenuAction(item.getItemId());
             return true;
@@ -258,10 +260,40 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** On-demand battery exemption route from the menu. */
+    private void requestBatteryExemption() {
+        try {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            if (pm != null && pm.isIgnoringBatteryOptimizations(getPackageName())) {
+                Toast.makeText(this, "Background running already allowed.",
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+            startActivity(new Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:" + getPackageName())));
+        } catch (Throwable t) {
+            Diag.writeCrash(this, "battery exemption request", t);
+            Toast.makeText(this, "Could not open battery settings: " + t,
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /**
+     * Asks for the battery exemption ONCE: before the once-only flag this
+     * dialog reappeared on every cold start until granted - a modal nag on
+     * every app open. After the first showing (either button), it never
+     * auto-shows again; the on-demand route is menu -> "Allow background
+     * running".
+     */
     private void maybeAskBatteryExemption() {
         try {
             PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-            if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+            boolean seen = getSharedPreferences("sdrstream", MODE_PRIVATE)
+                    .getBoolean("battery_prompt_seen", false);
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName()) && !seen) {
+                getSharedPreferences("sdrstream", MODE_PRIVATE).edit()
+                        .putBoolean("battery_prompt_seen", true).apply();
                 batteryDialog = new AlertDialog.Builder(this)
                         .setTitle("Keep monitoring in the background")
                         .setMessage("Android battery saving can suspend the monitor. " +
@@ -322,6 +354,7 @@ public class MainActivity extends Activity {
         menu.add(0, MENU_STOP_ENGINE, 3, "Stop engine");
         menu.add(0, MENU_DIAGNOSTICS, 4, "Diagnostics");
         menu.add(0, MENU_SHARE_LOGS, 5, "Share logs");
+        menu.add(0, MENU_BACKGROUND, 6, "Allow background running");
         return true;
     }
 
@@ -372,6 +405,9 @@ public class MainActivity extends Activity {
                 return true;
             case MENU_SHARE_LOGS:
                 shareLogs();
+                return true;
+            case MENU_BACKGROUND:
+                requestBatteryExemption();
                 return true;
             default:
                 return false;
