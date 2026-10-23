@@ -364,6 +364,14 @@ func Chase(ctx context.Context, plan ChasePlan, outPath string,
 			}
 			continue
 		}
+		if len(samples) == 0 {
+			// No error, but also no audio: the same wedged-receiver
+			// symptom the watchdog targets. Count it as a failure so the
+			// next segment reconnects instead of stacking silent windows.
+			failures++
+			say("  segment returned no audio; reconnecting")
+			continue
+		}
 		failures = 0
 		if len(samples) > 0 {
 			collected = append(collected, samples...)
