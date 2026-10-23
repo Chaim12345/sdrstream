@@ -1401,6 +1401,9 @@ func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, ban
 			if mode == "morse" {
 				return "cw", "cw", detail, asr
 			}
+			if mode == "sstv" {
+				return "sstv", "sstv", detail, asr
+			}
 			return "data", mode, detail, asr
 		}
 	}
@@ -1614,8 +1617,19 @@ func (m *Monitor) decodeData(ctx context.Context, samples []float64, rate int, r
 			}
 			return "rtty", text, true
 		}
-		// SSTV is intentionally disabled in live classification until the
-		// independent per-line sync decoder passes real-frame review.
+	}
+	// SSTV is an image mode, not a narrowband text mode, so it sits
+	// outside the narrow-signal gate (a frame occupies most of an SSB
+	// channel). A VIS header names the mode up front, and the frame that
+	// follows either decodes with per-line sync evidence or fails loudly:
+	// the job path re-decodes with SSTVImageDetailed, and the publication
+	// gate (verify.SSTVImage) withholds anything whose geometry evidence
+	// is missing or whose coast fraction passes the fixture-derived
+	// ceiling. Only modes this build can actually decode classify here.
+	if hits := decode.SSTVDetect(samples, rate); len(hits) > 0 {
+		if _, supported := decode.SSTVModeSpec(hits[0].VIS); supported {
+			return "sstv", fmt.Sprintf("SSTV %s (VIS 0x%02X)", hits[0].Mode, hits[0].VIS), true
+		}
 	}
 	return "", "", false
 }

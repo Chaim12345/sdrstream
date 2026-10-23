@@ -63,6 +63,25 @@ type sstvModeSpec struct {
 	scottieSyncAt float64 // Scottie: sync offset from line start
 }
 
+// SSTVModeInfo is the decode geometry of one SSTV mode: pixel
+// dimensions and the full line period including sync.
+type SSTVModeInfo struct {
+	Name          string
+	Width, Height int
+	LineSec       float64
+}
+
+// SSTVModeSpec reports the decode geometry for a VIS code and whether
+// this build can decode it, so callers can classify only decodable
+// modes instead of failing after publication.
+func SSTVModeSpec(vis int) (SSTVModeInfo, bool) {
+	m, ok := sstvModeSpecs[vis]
+	if !ok {
+		return SSTVModeInfo{}, false
+	}
+	return SSTVModeInfo{Name: m.name, Width: m.width, Height: m.height, LineSec: m.lineSec()}, true
+}
+
 var sstvModeSpecs = map[int]sstvModeSpec{
 	0x2C: {name: "Martin M1", vis: 0x2C, family: familyMartin, width: 320, height: 256,
 		syncSec: 4.862e-3, gapSec: 0.572e-3, scanSec: 146.432e-3},
@@ -205,6 +224,14 @@ func findSyncsContext(ctx context.Context, samples []float64, rate int, m sstvMo
 	if err != nil {
 		return nil, nil, err
 	}
+	// tonePurityContext hops int(hopSec*rate) samples per index, which
+	// is not exactly hopSec at rates like 22050. Converting hop indexes
+	// with hopSec accumulates ~0.2% clock skew, drifting several ms per
+	// minute: late-line syncs fall outside the search and refinement
+	// windows and every remaining line coasts. Convert with the true
+	// hop duration instead.
+	hop := int(hopSec * float64(rate))
+	actualHopSec := float64(hop) / float64(rate)
 	syncs := make([]float64, m.height)
 	found := make([]bool, m.height)
 	lineSec := m.lineSec()
@@ -230,12 +257,12 @@ func findSyncsContext(ctx context.Context, samples []float64, rate int, m sstvMo
 		}
 		coarse := -1.0
 		best := 0.45
-		fromH := int((expected - search) / hopSec)
-		toH := int((expected + search) / hopSec)
+		fromH := int((expected - search) / actualHopSec)
+		toH := int((expected + search) / actualHopSec)
 		// The first sync cannot precede the image; this keeps the VIS
 		// stop bit (30 ms of 1200 Hz ending exactly at imageStartSec)
 		// out of the line-0 search window.
-		if minH := int((imageStartSec - 0.001) / hopSec); fromH < minH {
+		if minH := int((imageStartSec - 0.001) / actualHopSec); fromH < minH {
 			fromH = minH
 		}
 		if fromH < 0 {
@@ -244,7 +271,7 @@ func findSyncsContext(ctx context.Context, samples []float64, rate int, m sstvMo
 		for h := fromH; h < toH && h < len(p1200); h++ {
 			if p1200[h] > best {
 				best = p1200[h]
-				coarse = float64(h)*hopSec + winSec/2 // centre of the hot window
+				coarse = float64(h)*actualHopSec + winSec/2 // centre of the hot window
 			}
 		}
 		if coarse < 0 {
