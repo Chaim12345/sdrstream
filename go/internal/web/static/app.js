@@ -1078,6 +1078,28 @@ function activityCard(a, fresh) {
 let activitySearch = '';
 let activityMode = '';
 let activityWindowSec = 0;
+let activityVerdict = '';
+const verdictFilter = document.createElement('select');
+verdictFilter.id = 'activity-verdict';
+verdictFilter.setAttribute('aria-label', 'Filter by recorded quality gate verdict');
+[['', 'all gate verdicts'], ['passed', 'gate passed'], ['rejected', 'gate rejected'],
+ ['historical', 'historical / no gate proof'], ['ungated', 'no recorded verdict']].forEach(([v, label]) => {
+  const option = document.createElement('option'); option.value = v; option.textContent = label;
+  verdictFilter.appendChild(option);
+});
+el('activity-window').after(verdictFilter);
+verdictFilter.addEventListener('change', () => {
+  activityVerdict = verdictFilter.value; activityLimit = 0; renderActivity();
+});
+const activityReset = document.createElement('button');
+activityReset.type = 'button'; activityReset.className = 'chip'; activityReset.textContent = 'Reset filters';
+verdictFilter.after(activityReset);
+activityReset.addEventListener('click', () => {
+  activityKind = ''; activityMode = ''; activitySearch = ''; activityWindowSec = 0; activityVerdict = ''; activityLimit = 0;
+  el('activity-search').value = ''; el('activity-mode').value = ''; el('activity-window').value = ''; verdictFilter.value = '';
+  document.querySelectorAll('[data-kind]').forEach(b => b.classList.toggle('on', b.dataset.kind === ''));
+  renderActivity();
+});
 let activityLimit = 0; // 0 = fall back to settings.pageSize
 function activityHaystack(a) {
   return ((a.detail || '') + ' ' + (a.mode || '') + ' ' + (a.kind || '') + ' ' +
@@ -1089,7 +1111,8 @@ function filteredActivity() {
   return activityItems.filter(a => {
     if (activityKind && a.kind !== activityKind) return false;
     if (activityMode && (a.mode || '') !== activityMode) return false;
-    if (cutoff && new Date(a.started).getTime() < cutoff) return false;
+    if (activityVerdict && activityGateVerdict(a) !== activityVerdict) return false;
+    if (cutoff && !(new Date(a.started).getTime() >= cutoff)) return false;
     if (needle && !activityHaystack(a).includes(needle)) return false;
     return true;
   });
@@ -1184,21 +1207,40 @@ el('activity-export-json').addEventListener('click', () => {
   downloadFile(exportName('json'), JSON.stringify(rows, null, 2), 'application/json');
   toast('exported ' + rows.length + ' decodes as JSON', undefined, true);
 });
-const csvCell = v => {
-  const s = v === null || v === undefined ? '' : String(v);
-  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-};
+// BEGIN history export helpers (pure functions, exercised by Node regression tests).
+function activityGateVerdict(a) {
+  if (a.rejected) return 'rejected';
+  if (a.historical) return 'historical';
+  return a.verification ? 'passed' : 'ungated';
+}
+function csvCell(v) {
+  let s = v === null || v === undefined ? '' : String(v);
+  // Prefix untrusted text before CSV quoting. Quoting alone does not stop
+  // spreadsheet formulas. Keep the original whitespace and literal payload.
+  // Numeric API values remain numeric, including legitimate negative levels.
+  if (typeof v === 'string' && (/^[\s\x00-\x20]*[=+@-]/u.test(s) || /^[\t\r\n]/.test(s))) s = "'" + s;
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function activityCSV(rows) {
+  const header = ['started', 'ended', 'frequency_hz', 'bandwidth_hz', 'level_db', 'kind', 'mode',
+    'source', 'duration_sec', 'detail', 'gate_verdict', 'verification', 'rejected', 'historical',
+    'label', 'target', 'frequency_refined', 'frequency_uncertainty_hz', 'confidence',
+    'language', 'asr_model', 'asr_backend', 'asr_fallback'];
+  return [header.join(','), ...rows.map(a => header.map(k =>
+    csvCell(k === 'gate_verdict' ? activityGateVerdict(a) : a[k])).join(','))].join('\r\n');
+}
+// END history export helpers.
 el('activity-export-csv').addEventListener('click', () => {
   const rows = filteredActivity();
-  const header = ['started', 'ended', 'frequency_hz', 'bandwidth_hz', 'level_db', 'kind', 'mode', 'source', 'duration_sec', 'detail'];
-  const lines = [header.join(',')];
-  rows.forEach(a => lines.push([
-    a.started, a.ended || '', a.frequency_hz, a.bandwidth_hz || '', (a.level_db ?? ''),
-    a.kind || '', a.mode || '', a.source || '', a.duration_sec || '', a.detail || '',
-  ].map(csvCell).join(',')));
-  downloadFile(exportName('csv'), lines.join('\n'), 'text/csv');
-  toast('exported ' + rows.length + ' decodes as CSV', undefined, true);
+  downloadFile(exportName('csv'), activityCSV(rows), 'text/csv;charset=utf-8');
+  toast('exported ' + rows.length + ' decodes as CSV (spreadsheet-safe text)', undefined, true);
 });
+// Explain the extra verdict filter and literal-preserving export in place,
+// without changing the shared activity renderer or its summary.
+const historyNote = document.createElement('div'); historyNote.className = 'muted';
+historyNote.textContent = 'Filters and exports cover loaded history only. Gate verdict is recorded evidence, not independent confirmation. CSV prefixes risky text with an apostrophe; JSON retains exact values.';
+el('activity-export-csv').parentElement.after(historyNote);
+
 
 
 /* ---------- live pulse: signal meter, on-air pill, receivers, decodes ---------- */
