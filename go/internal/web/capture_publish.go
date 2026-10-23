@@ -1,6 +1,8 @@
 package web
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"sync"
 )
@@ -14,10 +16,13 @@ import (
 // post-rename, pre-sidecar window still reads as unknown to this
 // pruner. Every producer that writes WAV-then-sidecar into a captures
 // directory served by this process must go through BeginCapturePublish.
+// paths is a REFCOUNT per capture: two overlapping publishes of the
+// same filename (same-second captures) must not let the first finish
+// expose the second's in-progress file.
 var capturePublishes = struct {
 	sync.Mutex
-	paths map[string]struct{}
-}{paths: map[string]struct{}{}}
+	paths map[string]int
+}{paths: map[string]int{}}
 
 // BeginCapturePublish marks dir/name as being published by this
 // process and returns the finish func. The caller MUST invoke finish
@@ -27,18 +32,42 @@ var capturePublishes = struct {
 func BeginCapturePublish(dir, wavName string) (finish func()) {
 	key := filepath.Join(dir, wavName)
 	capturePublishes.Lock()
-	capturePublishes.paths[key] = struct{}{}
+	capturePublishes.paths[key]++
 	capturePublishes.Unlock()
+	var once sync.Once
 	return func() {
-		capturePublishes.Lock()
-		delete(capturePublishes.paths, key)
-		capturePublishes.Unlock()
+		once.Do(func() {
+			capturePublishes.Lock()
+			if capturePublishes.paths[key] > 1 {
+				capturePublishes.paths[key]--
+			} else {
+				delete(capturePublishes.paths, key)
+			}
+			capturePublishes.Unlock()
+		})
 	}
 }
 
 func capturePublishInProgress(dir, wavName string) bool {
 	capturePublishes.Lock()
 	defer capturePublishes.Unlock()
-	_, ok := capturePublishes.paths[filepath.Join(dir, wavName)]
-	return ok
+	return capturePublishes.paths[filepath.Join(dir, wavName)] > 0
+}
+
+// errPublishInProgress reports a prune attempt on a tracked capture.
+var errPublishInProgress = errors.New("capture publish in progress")
+
+// removeCaptureIfNotPublishing deletes dir/name only when no producer
+// is publishing it, atomically with respect to BeginCapturePublish:
+// the registry lock is held across the check AND the remove, so a
+// producer cannot register after the check and have its file deleted
+// mid-publish (the check-then-remove TOCTOU window).
+func removeCaptureIfNotPublishing(dir, wavName string) error {
+	key := filepath.Join(dir, wavName)
+	capturePublishes.Lock()
+	defer capturePublishes.Unlock()
+	if capturePublishes.paths[key] > 0 {
+		return errPublishInProgress
+	}
+	return os.Remove(key)
 }

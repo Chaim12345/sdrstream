@@ -96,7 +96,10 @@ func pruneCaptures(dir string, maxBytes int64) (removed int, freed int64) {
 		if total <= maxBytes {
 			break
 		}
-		if err := os.Remove(filepath.Join(dir, item.name)); err != nil {
+		// Atomic recheck: a producer may have begun publishing this
+		// name after the candidate scan. Check and delete under the
+		// registry lock so the publish can never slip between.
+		if err := removeCaptureIfNotPublishing(dir, item.name); err != nil {
 			continue
 		}
 		// The sidecar goes with its recording; a missing sidecar is fine.

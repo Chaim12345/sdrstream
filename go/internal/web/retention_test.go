@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -194,4 +195,71 @@ func TestPruneCapturesConcurrentPublishes(t *testing.T) {
 	if matches, _ := filepath.Glob(filepath.Join(dir, ".tmp-*")); len(matches) != 0 {
 		t.Errorf("atomic writes left temp litter: %v", matches)
 	}
+}
+
+// Two overlapping publishes of the SAME filename (same-second
+// captures): the registry is refcounted, so the first finish must not
+// expose the second publish's in-progress file.
+func TestCapturePublishRefcountSameName(t *testing.T) {
+	dir := t.TempDir()
+	name := writeCaptureFixture(t, dir, "SAME_145000kHz_sstv_x.wav", 600, 96*time.Hour, "")
+	writeCaptureFixture(t, dir, "OLD_145000kHz_voice_x.wav", 600, 96*time.Hour, "mode=voice\n")
+	finishA := BeginCapturePublish(dir, name)
+	finishB := BeginCapturePublish(dir, name)
+	finishA() // first publish ends; second still in flight
+	removed, _ := pruneCaptures(dir, 500)
+	if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+		t.Errorf("same-name publish exposed by sibling finish: %v", err)
+	}
+	finishB()
+	removed, _ = pruneCaptures(dir, 500)
+	if removed == 0 {
+		t.Error("finished same-name publish never became prunable")
+	}
+	// Double finish is a no-op, not a negative count.
+	finishB()
+	if capturePublishInProgress(dir, name) {
+		t.Error("double finish resurrected tracking")
+	}
+}
+
+// Check-then-delete TOCTOU: a producer that Begins while the pruner is
+// mid-run must never have its file removed. The delete path rechecks
+// under the registry lock, so hammering same-name republishes against
+// a looping pruner can only ever remove files outside any publish.
+// Run under -race.
+func TestPruneCapturesRepublishRace(t *testing.T) {
+	dir := t.TempDir()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				pruneCaptures(dir, 100)
+			}
+		}
+	}()
+	name := "RACE_145000kHz_sstv_x.wav"
+	for i := 0; i < 30; i++ {
+		finish := BeginCapturePublish(dir, name)
+		if err := common.WriteFileAtomic(filepath.Join(dir, name), make([]byte, 600), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := removeCaptureIfNotPublishing(dir, name); !errors.Is(err, errPublishInProgress) {
+			t.Errorf("remove during publish = %v, want errPublishInProgress", err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("tracked publish removed: %v", err)
+		}
+		finish()
+		// Outside the publish the file is fair game; the looping
+		// pruner may or may not have taken it already.
+	}
+	close(stop)
+	wg.Wait()
 }
