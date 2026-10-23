@@ -13,6 +13,8 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/monitor"
 )
 
+func f64(v float64) *float64 { return &v }
+
 // TestSimulatedFeedUIServer serves the REAL UI over httptest with an
 // honest simulated feed (one entry per verdict state: passed with its
 // gallery twin, rejected, ungated, historical) behind a permanent
@@ -28,9 +30,9 @@ func TestSimulatedFeedUIServer(t *testing.T) {
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	m := &monitor.Monitor{}
-	passedID := m.AddActivity(monitor.Activity{Started: now, FrequencyHz: 14491234.7, Kind: "sstv", Mode: "sstv", LevelDB: 18.2, Source: "simulated"})
-	rejectedID := m.AddActivity(monitor.Activity{Started: now.Add(-time.Minute), FrequencyHz: 7030000, Kind: "cw", Mode: "cw", LevelDB: 9.6, Detail: "CQ DE SIM", Source: "simulated"})
-	m.AddActivity(monitor.Activity{Started: now.Add(-2 * time.Minute), FrequencyHz: 145800000, Kind: "unknown", LevelDB: 6.1, Source: "simulated"})
+	passedID := m.AddActivity(monitor.Activity{Started: now, FrequencyHz: 14491234.7, Kind: "sstv", Mode: "sstv", LevelDB: f64(18.2), Source: "simulated"})
+	rejectedID := m.AddActivity(monitor.Activity{Started: now.Add(-time.Minute), FrequencyHz: 7030000, Kind: "cw", Mode: "cw", LevelDB: f64(9.6), Detail: "CQ DE SIM", Source: "simulated"})
+	m.AddActivity(monitor.Activity{Started: now.Add(-2 * time.Minute), FrequencyHz: 145800000, Kind: "unknown", LevelDB: f64(6.1), Source: "simulated"})
 	m.RecordGate(passedID, true, "live gate passed")
 	m.RecordGate(rejectedID, false, "text failed plausibility (simulated)")
 	s := &Server{}

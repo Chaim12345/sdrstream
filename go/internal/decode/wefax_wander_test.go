@@ -159,3 +159,26 @@ func TestWEFAXStartToneIOC576(t *testing.T) {
 		t.Errorf("phasing at %.1fs, want right after the 4 s start tone", rep.PhasingStartSec)
 	}
 }
+
+// TestWEFAXWideFastWanderDeskew is the counterexample guard for the
+// content-run veto: a recorder swinging +-5000 ppm on a 45-line
+// period produces legitimate per-line clock changes over a hop in
+// same-sign runs of ~20 lines, and the deskew must still track them.
+func TestWEFAXWideFastWanderDeskew(t *testing.T) {
+	rate := 12000.0
+	samples, _ := encodeWEFAXWandering(rate, 200, 300, 5000, 45)
+	pngData, rep, err := WEFAXImageDetailed(samples, int(rate), 120, 576)
+	if err != nil {
+		t.Fatalf("decode failed: %v (report %+v)", err, rep)
+	}
+	if rep.DeskewCorr < 0.55 {
+		t.Errorf("deskew row correlation %.2f, want >= 0.55 (slant left)", rep.DeskewCorr)
+	}
+	img, err := png.Decode(bytes.NewReader(pngData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.Bounds().Dy() < 150 {
+		t.Errorf("height %d, want most of 200 lines", img.Bounds().Dy())
+	}
+}

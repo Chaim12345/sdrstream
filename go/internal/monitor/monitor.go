@@ -44,7 +44,7 @@ type Activity struct {
 	Ended              *time.Time         `json:"ended,omitempty"` // nil when the transmission was not recorded
 	FrequencyHz        float64            `json:"frequency_hz"`
 	BandwidthHz        float64            `json:"bandwidth_hz"`
-	LevelDB            float64            `json:"level_db,omitempty"` // absent when the source recorded no level (gallery merges): never invent 0 dB
+	LevelDB            *float64           `json:"level_db,omitempty"`     // nil = no level recorded (gallery merges); a measured 0 dB is a valid non-nil value
 	Kind               string             `json:"kind"`                   // voice, data, cw, carrier, noise, unknown
 	Mode               string             `json:"mode,omitempty"`         // decoder or modulation that produced the detail
 	Detail             string             `json:"detail,omitempty"`       // decoded payload or transcript
@@ -257,6 +257,17 @@ func (m *Monitor) Activities() []Activity {
 		out = append(out, m.activities[i])
 	}
 	return out
+}
+
+// f64ptr boxes a measured float64 for optional JSON fields.
+func f64ptr(v float64) *float64 { return &v }
+
+// levelOfActivity renders the recorded level for logs; unrecorded is 0.
+func levelOfActivity(a Activity) float64 {
+	if a.LevelDB == nil {
+		return 0
+	}
+	return *a.LevelDB
 }
 
 // AddActivity appends an externally-produced activity (scanner or
@@ -616,7 +627,7 @@ func (m *Monitor) handleHit(ctx context.Context, frequency float64, hit decode.B
 	activity := Activity{
 		Started:     time.Now(),
 		FrequencyHz: frequency,
-		LevelDB:     hit.LevelDB,
+		LevelDB:     f64ptr(hit.LevelDB),
 		Kind:        "unknown",
 		Source:      m.opts.Name,
 		Label:       m.opts.Label,
@@ -1140,7 +1151,7 @@ func (m *Monitor) report(ctx context.Context, candidate *candidate) {
 		Started:     candidate.firstSeen,
 		FrequencyHz: candidate.frequency,
 		BandwidthHz: candidate.bandwidth,
-		LevelDB:     candidate.levelDB,
+		LevelDB:     f64ptr(candidate.levelDB),
 		Kind:        "unknown",
 		Source:      m.opts.Name,
 		Label:       m.opts.Label,
@@ -1172,7 +1183,7 @@ func (m *Monitor) report(ctx context.Context, candidate *candidate) {
 	m.mu.Unlock()
 	candidate.activityID = activity.ID
 	m.opts.Logf("activity #%d %.4f MHz (%.0f kHz wide, %.1f dB above the floor)",
-		activity.ID, activity.FrequencyHz/1e6, activity.BandwidthHz/1e3, activity.LevelDB)
+		activity.ID, activity.FrequencyHz/1e6, activity.BandwidthHz/1e3, levelOfActivity(activity))
 
 	// A coarse candidate that refinement could not match is a
 	// neighbourhood, not a frequency: tuning a narrowband receiver to
@@ -1221,7 +1232,7 @@ func (m *Monitor) modeBandwidth(candidate *candidate) float64 {
 func (m *Monitor) handleJob(ctx context.Context, work job) {
 	activity := Activity{
 		ID: work.activityID, Started: time.Now(), FrequencyHz: work.frequency,
-		BandwidthHz: work.bandwidth, LevelDB: work.levelDB, Kind: "unknown",
+		BandwidthHz: work.bandwidth, LevelDB: f64ptr(work.levelDB), Kind: "unknown",
 		Source: m.opts.Name, Label: m.opts.Label,
 	}
 	modes := work.modes
@@ -1268,7 +1279,7 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 		}
 		candidate := Activity{
 			ID: activity.ID, Started: activity.Started, Ended: &listenEnd,
-			FrequencyHz: work.frequency, BandwidthHz: work.bandwidth, LevelDB: work.levelDB,
+			FrequencyHz: work.frequency, BandwidthHz: work.bandwidth, LevelDB: f64ptr(work.levelDB),
 			Kind: kind, Mode: modeName, Detail: detail, Source: m.opts.Name, Label: m.opts.Label,
 			DurationSec: float64(len(samples)) / float64(rate),
 			Confidence:  asr.Confidence, Language: asr.Language, ASRModel: asr.Model, ASRFallback: asr.Fallback, ASRBackend: asr.Backend, VerificationAnchor: activity.VerificationAnchor,

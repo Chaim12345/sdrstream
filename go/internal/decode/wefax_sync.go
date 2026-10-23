@@ -253,6 +253,38 @@ func (t *wefaxTrace) trackLineClock(lineHops, anchorLine int, anchorStart, ancho
 				vok[l] = true
 			}
 		}
+		// Content-run veto: a diagonal coastline or weather front is
+		// ONE feature crossing many consecutive lines at the same
+		// per-line step, so it produces a long same-sign run of
+		// substantial votes that no clock can own - a steady recorder
+		// offset is absorbed by the anchor period (measured slant
+		// residuals are ~0.03 hops, scattered) and recorder wander
+		// reverses within its swing period, so legitimate clock votes
+		// never form such runs. Measured on the fixture corpus
+		// (2026-10-23): diagonal content runs 111-129 lines at
+		// 0.66-1.92 hops/line; the veto preserves the steady-slant,
+		// +-2500 ppm and wide-fast +-5000 ppm wander fixtures
+		// (TestWEFAXSlantFixture, TestWEFAXWanderingClockDeskew,
+		// TestWEFAXWideFastWanderDeskew).
+		const vetoRun = 40
+		const vetoMinMag = 0.5
+		for l := anchorLine; l+1 < nLines; {
+			if !vok[l] || math.Abs(vote[l]) < vetoMinMag {
+				l++
+				continue
+			}
+			pos := vote[l] > 0
+			j := l
+			for j+1 < nLines && vok[j] && (vote[j] > 0) == pos && math.Abs(vote[j]) >= vetoMinMag {
+				j++
+			}
+			if j-l > vetoRun {
+				for k := l; k < j; k++ {
+					vok[k] = false
+				}
+			}
+			l = j
+		}
 		// Median filter over +-15 lines; empty bins borrow the nearest
 		// smoothed value so flat chart regions keep the local clock.
 		sm := make([]float64, nLines-1)

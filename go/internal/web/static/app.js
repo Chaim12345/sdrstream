@@ -943,7 +943,8 @@ function activityCard(a, fresh) {
     rowEl.appendChild(freq);
   }
   rowEl.appendChild(badge); rowEl.appendChild(time);
-  if (a.level_db) {
+  if (a.level_db !== undefined && a.level_db !== null) {
+    // Presence means measured: a legitimately measured 0 dB shows.
     const level = document.createElement('span'); level.className = 'muted';
     level.textContent = a.level_db.toFixed(0) + ' dB' + (a.bandwidth_hz ? ' · ' + (a.bandwidth_hz / 1000).toFixed(0) + ' kHz' : '');
     rowEl.appendChild(level);
@@ -1088,7 +1089,7 @@ el('activity-export-csv').addEventListener('click', () => {
   const header = ['started', 'ended', 'frequency_hz', 'bandwidth_hz', 'level_db', 'kind', 'mode', 'source', 'duration_sec', 'detail'];
   const lines = [header.join(',')];
   rows.forEach(a => lines.push([
-    a.started, a.ended || '', a.frequency_hz, a.bandwidth_hz || '', a.level_db,
+    a.started, a.ended || '', a.frequency_hz, a.bandwidth_hz || '', (a.level_db ?? ''),
     a.kind || '', a.mode || '', a.source || '', a.duration_sec || '', a.detail || '',
   ].map(csvCell).join(',')));
   downloadFile(exportName('csv'), lines.join('\n'), 'text/csv');

@@ -935,8 +935,8 @@ func cmdMonitor(args []string) error {
 			if activity.Mode != "" {
 				line += " (" + activity.Mode + ")"
 			}
-			if activity.LevelDB > 0 {
-				line += fmt.Sprintf(" %.0f dB", activity.LevelDB)
+			if activity.LevelDB != nil {
+				line += fmt.Sprintf(" %.0f dB", *activity.LevelDB)
 			}
 			fmt.Println(line)
 			if activity.Detail != "" {

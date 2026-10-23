@@ -174,6 +174,8 @@ func TestHandleActivityFeedMatrix(t *testing.T) {
 	passedID := m.AddActivity(monitor.Activity{Started: now, FrequencyHz: 14491234.7, Kind: "sstv", Mode: "sstv"})
 	m.AddActivity(monitor.Activity{Started: now.Add(-time.Minute), FrequencyHz: 7030e3, Kind: "cw", Mode: "cw", Detail: "CQ DE R1"})
 	m.AddActivity(monitor.Activity{Started: now.Add(-2 * time.Minute), FrequencyHz: 145800000.0, Kind: "unknown"})
+	// A legitimately measured 0 dB is a real value and must survive.
+	m.AddActivity(monitor.Activity{Started: now.Add(-3 * time.Minute), FrequencyHz: 145810000.0, Kind: "unknown", LevelDB: f64(0)})
 	m.RecordGate(passedID, true, "live gate passed")
 	m.RecordGate(2, false, "text failed plausibility")
 	s := &Server{}
@@ -191,13 +193,15 @@ func TestHandleActivityFeedMatrix(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
 		t.Fatal(err)
 	}
-	// 4 entries: twin-merged SSTV, rejected CW, ungated unknown,
-	// historical legacy. The test fixture never enters the feed.
-	if len(items) != 4 {
-		t.Fatalf("%d feed items, want 4: %+v", len(items), items)
+	// 5 entries: twin-merged SSTV, rejected CW, two ungated
+	// detections (one with a measured 0 dB), historical legacy. The
+	// test fixture never enters the feed.
+	if len(items) != 5 {
+		t.Fatalf("%d feed items, want 5: %+v", len(items), items)
 	}
 	counted := 0
-	var twin, rejected, ungated, historical *monitor.Activity
+	ungated := 0
+	var twin, rejected, measuredZero, historical *monitor.Activity
 	for i := range items {
 		a := &items[i]
 		if a.Verification != "" && a.Rejected == "" {
@@ -211,7 +215,13 @@ func TestHandleActivityFeedMatrix(t *testing.T) {
 		case a.Historical:
 			historical = a
 		default:
-			ungated = a
+			ungated++
+			if a.Verification != "" || a.Rejected != "" {
+				t.Errorf("ungated detection must carry no verdict: %+v", a)
+			}
+			if a.FrequencyHz == 145810000.0 {
+				measuredZero = a
+			}
 		}
 	}
 	if counted != 1 {
@@ -223,10 +233,16 @@ func TestHandleActivityFeedMatrix(t *testing.T) {
 	if rejected == nil || rejected.Verification != "" || rejected.Historical {
 		t.Errorf("rejected entry must carry only the rejection: %+v", rejected)
 	}
-	if ungated == nil || ungated.Verification != "" || ungated.Rejected != "" || ungated.Historical {
-		t.Errorf("ungated detection must carry no verdict: %+v", ungated)
+	if ungated != 2 {
+		t.Errorf("%d ungated detections, want 2", ungated)
+	}
+	if measuredZero == nil || measuredZero.LevelDB == nil || *measuredZero.LevelDB != 0 {
+		t.Errorf("measured 0 dB lost its level: %+v", measuredZero)
 	}
 	if historical == nil || historical.Verification != "" {
 		t.Errorf("historical entry: %+v", historical)
+	}
+	if historical != nil && historical.LevelDB != nil {
+		t.Errorf("gallery merge invented a level: %+v", historical)
 	}
 }

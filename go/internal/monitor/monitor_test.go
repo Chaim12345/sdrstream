@@ -174,8 +174,8 @@ func TestSpectrumDetection(t *testing.T) {
 	if len(activities) == 0 {
 		t.Fatal("the peak in the spectrum was not reported")
 	}
-	if activities[0].LevelDB < 30 {
-		t.Errorf("level = %.1f dB, want about 60 dB above the floor", activities[0].LevelDB)
+	if activities[0].LevelDB == nil || *activities[0].LevelDB < 30 {
+		t.Errorf("level = %v dB, want about 60 dB above the floor", activities[0].LevelDB)
 	}
 	if activities[0].FrequencyHz < 144e6 || activities[0].FrequencyHz > 146e6 {
 		t.Errorf("frequency = %.0f Hz, want it inside the profile", activities[0].FrequencyHz)
