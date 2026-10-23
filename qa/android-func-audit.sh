@@ -62,13 +62,35 @@ done
 log "== settling ${SETTLE}s for live data =="; sleep "$SETTLE"
 log "== sweep t1 (after settle) =="; sweep t1
 adb exec-out screencap -p > "$R-after-settle.png"
-MON="${MONITOR_SERVER:-jukebox.spdns.eu:8073}"
+MON="${MONITOR_SERVER:-jukebox.spdns.eu:6166}"
 post() { curl -sS -m 40 -b $JAR -o /tmp/p.out -w "%{http_code}" -H "Origin: $BASE" -H "Referer: $BASE/" -X POST --data "$1" $BASE/api/monitor/control; }
 log "== monitor error path: bogus receiver =="
 c=$(post "action=start&kind=openwebrx&server=127.0.0.1:1&label=qa-bogus"); log "start bogus -> http=$c body=$(head -c 160 /tmp/p.out | tr '\n' ' ')"
 c=$(post "action=start&kind=bad&server=x.example:1"); log "start bad kind -> http=$c body=$(head -c 120 /tmp/p.out | tr '\n' ' ')"
 log "== monitor start on public receiver $MON (single bounded connection) =="
-c=$(post "action=start&kind=openwebrx&server=$MON&label=qa-audit"); log "start $MON -> http=$c body=$(head -c 200 /tmp/p.out | tr '\n' ' ')"
+# Real UI taps: Overview -> receiver address -> start.
+adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 3
+node_xy() { adb shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1; adb exec-out cat /sdcard/u.xml > /tmp/u.xml 2>/dev/null
+  python3 - /tmp/u.xml "$1" <<'PY'
+import re,sys
+x=open(sys.argv[1],errors='ignore').read(); k=sys.argv[2]
+for m in re.finditer(r'<node[^>]*?(?:text|content-desc|hint)="%s"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'%k,x):
+    a,b,c,d=map(int,m.groups())
+    if d>b and c>a: print((a+c)//2,(b+d)//2); break
+PY
+}
+UIOK=0
+for sw in 0 1 2 3 4 5; do
+  xy=$(node_xy 'Receiver address')
+  [ -n "$xy" ] && break
+  adb shell input swipe 360 1200 360 500 300; sleep 1
+done
+if [ -n "$xy" ]; then
+  adb shell input tap $xy; sleep 1; adb shell input text "$MON"; sleep 1; adb shell input keyevent KEYCODE_BACK; sleep 1
+  sxy=$(node_xy 'start')
+  if [ -n "$sxy" ]; then adb shell input tap $sxy; UIOK=1; log "UI: typed receiver and tapped start"; sleep 3; adb exec-out screencap -p > "$R-monitor-ui-start.png"; fi
+else log "UI: receiver address field not found after scrolling"; fi
+if [ "$UIOK" = 1 ]; then c=200; sleep 5; else c=$(post "action=start&kind=openwebrx&server=$MON&label=qa-audit"); log "UI path failed; HTTP start -> http=$c"; fi
 if [ "$c" = 200 ]; then
   sleep 90
   for e in status live spectrum activity captures; do
