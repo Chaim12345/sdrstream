@@ -2004,7 +2004,7 @@ function renderReceiverProof(entries) {
     .slice().sort((a, b) => String(b.provider_time).localeCompare(String(a.provider_time)));
   box.textContent = '';
   if (!mine.length) {
-    box.innerHTML = '<div class="empty">no receiver captures archived yet - scheduled captures land here with their audio, decode and verdict</div>';
+    box.innerHTML = '<div class="empty">no receiver captures archived yet - scheduled captures and archive imports land here with their audio, decode and verdict</div>';
     return;
   }
   mine.slice(0, 8).forEach(e => {
@@ -2029,6 +2029,13 @@ function renderReceiverProof(entries) {
     const src = document.createElement('span');
     src.className = 'badge scheduled'; src.textContent = 'decoded by sdrstream';
     badges.appendChild(src);
+    if (e.kind === 'archive') {
+      const im = document.createElement('span');
+      im.className = 'badge archive';
+      im.textContent = 'archive import';
+      im.title = 'imported clip - not captured by this server';
+      badges.appendChild(im);
+    }
     if (e.receiver) {
       const rx = document.createElement('span'); rx.className = 'badge blind'; rx.textContent = shortURL(e.receiver);
       badges.appendChild(rx);
