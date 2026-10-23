@@ -7,6 +7,7 @@
 package satnogs
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,10 +20,12 @@ import (
 )
 
 const (
-	networkAPI = "https://network.satnogs.org/api"
-	dbAPI      = "https://db.satnogs.org/api"
-	userAgent  = "sdrstream/0.1 (+satellite)"
+	dbAPI     = "https://db.satnogs.org/api"
+	userAgent = "sdrstream/0.1 (+satellite)"
 )
+
+// networkAPI is a var so tests can point the client at a local server.
+var networkAPI = "https://network.satnogs.org/api"
 
 // CacheDir defaults to ~/.cache/sdrstream unless SDRSTREAM_CACHE is set.
 var CacheDir = func() string {
@@ -174,6 +177,13 @@ func (o Observation) Summary() string {
 // connections and rate limits aggressively, so the request is retried with
 // a backoff before giving up.
 func getJSON(path string, target interface{}, timeout time.Duration) error {
+	return getJSONContext(context.Background(), path, target, timeout)
+}
+
+// getJSONContext is getJSON cancellable by ctx: a cancelled caller stops
+// a stalled request or retry backoff instead of waiting out the client
+// timeout, and the error is the context's.
+func getJSONContext(ctx context.Context, path string, target interface{}, timeout time.Duration) error {
 	cachePath := filepath.Join(CacheDir, "satnogs_"+strings.ReplaceAll(strings.ReplaceAll(path, "/", "_"), "?", "_")+".json")
 	if data, err := os.ReadFile(cachePath); err == nil {
 		if err := json.Unmarshal(data, target); err == nil {
@@ -191,21 +201,33 @@ func getJSON(path string, target interface{}, timeout time.Duration) error {
 	}
 	var lastErr error
 	for attempt := 0; attempt < 6; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+			timer := time.NewTimer(time.Duration(attempt) * 2 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
 		}
 		client := &http.Client{Timeout: timeout}
 		// Alternate between the direct host and the proxy: the SatNOGS
 		// host drops connections under load, so a retry on the other route
 		// often succeeds.
 		URL := targets[attempt%len(targets)]
-		request, err := http.NewRequest("GET", URL, nil)
+		request, err := http.NewRequestWithContext(ctx, "GET", URL, nil)
 		if err != nil {
 			return err
 		}
 		request.Header.Set("User-Agent", userAgent)
 		response, err := client.Do(request)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			lastErr = err
 			continue
 		}
@@ -276,6 +298,11 @@ func Recent(limit int, timeout time.Duration) ([]Observation, error) {
 // restricted to one satellite. This is how the gallery reaches finished
 // observations: the unfiltered feed only shows upcoming passes.
 func Between(start, end time.Time, noradID, limit int, timeout time.Duration) ([]Observation, error) {
+	return BetweenContext(context.Background(), start, end, noradID, limit, timeout)
+}
+
+// BetweenContext is Between cancellable by ctx.
+func BetweenContext(ctx context.Context, start, end time.Time, noradID, limit int, timeout time.Duration) ([]Observation, error) {
 	path := fmt.Sprintf("/observations/?format=json&start=%s&end=%s&limit=%d",
 		url.QueryEscape(start.UTC().Format(time.RFC3339)),
 		url.QueryEscape(end.UTC().Format(time.RFC3339)), limit)
@@ -283,7 +310,7 @@ func Between(start, end time.Time, noradID, limit int, timeout time.Duration) ([
 		path += fmt.Sprintf("&satellite=%d", noradID)
 	}
 	var observations []Observation
-	if err := getJSON(path, &observations, timeout); err != nil {
+	if err := getJSONContext(ctx, path, &observations, timeout); err != nil {
 		return nil, err
 	}
 	return onlyNorad(observations, noradID), nil

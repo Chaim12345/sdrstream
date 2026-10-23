@@ -1216,7 +1216,9 @@ async function refreshScanLog() {
       const title = document.createElement('div'); title.className = 'card-title';
       const tm = document.createElement('span'); tm.textContent = fmtDate(x.updated_at);
       const station = document.createElement('b'); station.textContent = String(x.station||'').replace(/[<>\u0000-\u001f]/g,'').slice(0,200);
-      const state = document.createElement('span'); state.className = 'scan-state ' + x.state; state.textContent = x.state;
+      // The log serves rows with their recorded origin; a restored row is
+      // labelled from that field only (live history stays unmarked).
+      const state = document.createElement('span'); state.className = 'scan-state ' + x.state; state.textContent = x.state + (x.origin === 'restored' ? ' · restored' : '');
       title.append(tm, station, state); row.appendChild(title);
       const meta = document.createElement('div'); meta.className = 'card-meta'; meta.textContent = mhz(x.frequency_hz) + ' · ' + (x.mode || '—') + ' · ' + ({decoded:'verified decode',timeout:'no response (timeout)',error:'connection issue',connecting:'connecting',listening:'listening',tuning:'tuning'}[x.state]||x.state); row.appendChild(meta);
       if(x.reason){const details=document.createElement('details');const summary=document.createElement('summary');summary.textContent='technical detail';const raw=document.createElement('pre');raw.textContent=x.reason;details.append(summary,raw);row.append(details)}

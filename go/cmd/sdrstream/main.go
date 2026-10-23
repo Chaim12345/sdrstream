@@ -1108,7 +1108,11 @@ func cmdGallery(args []string) error {
 	end := time.Now().UTC().AddDate(0, 0, 2)
 	start := end.AddDate(0, 0, -*days)
 	fmt.Printf("searching SatNOGS observations of %s from the last %d day(s)...\n", label, *days)
-	observations, err := satnogs.Between(start, end, norad, *limit, *timeout)
+	// An interrupt cancels stalled network fetches and in-flight decode
+	// through the context checks instead of waiting out HTTP timeouts.
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	observations, err := satnogs.BetweenContext(ctx, start, end, norad, *limit, *timeout)
 	if err != nil {
 		return err
 	}
@@ -1121,15 +1125,11 @@ func cmdGallery(args []string) error {
 	if dir == "" {
 		dir = filepath.Join(satnogs.CacheDir, "gallery")
 	}
-	saved, err := gallery.Fetch(items, dir, *timeout, *maxMB<<20, *raw)
+	saved, err := gallery.FetchContext(ctx, items, dir, *timeout, *maxMB<<20, *raw)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "some artefacts failed: %v\n", err)
 	}
 	sort.SliceStable(saved, func(i, j int) bool { return saved[i].Start.After(saved[j].Start) })
-	// An interrupt cancels an in-flight decode through the decoders'
-	// context checks instead of dying mid-frame.
-	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
 	frames := gallery.DecodeFramesContext(ctx, saved, dir)
 	if err := ctx.Err(); err != nil {
 		// Interrupted: say so and exit nonzero rather than print a

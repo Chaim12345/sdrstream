@@ -321,13 +321,13 @@ func (s *Server) refreshGallery() {
 	// behind the network's does not hide the newest recordings.
 	end := time.Now().UTC().AddDate(0, 0, 2)
 	start := end.AddDate(0, 0, -7)
-	observations, err := satnogs.Between(start, end, 0, 25, 60*time.Second)
+	observations, err := satnogs.BetweenContext(s.lifecycleCtx(), start, end, 0, 25, 60*time.Second)
 	if err != nil {
 		log.Printf("web: gallery observations: %v", err)
 		return
 	}
 	items := gallery.Collect(observations)
-	saved, err := gallery.Fetch(items, s.galleryDir, 120*time.Second, 20<<20, false)
+	saved, err := gallery.FetchContext(s.lifecycleCtx(), items, s.galleryDir, 120*time.Second, 20<<20, false)
 	if err != nil {
 		log.Printf("web: gallery fetch: %v", err)
 	}
@@ -1607,7 +1607,13 @@ func (s *Server) handleScanLog(w http.ResponseWriter, r *http.Request) {
 	for i, item := range logCopy {
 		seq := start + uint64(i) + 1
 		if seq > since {
-			items = append(items, map[string]any{"id": seq, "station": item.Station, "station_type": item.StationType, "frequency_hz": item.FrequencyHz, "mode": item.Mode, "state": item.State, "reason": item.Result, "updated_at": item.UpdatedAt})
+			row := map[string]any{"id": seq, "station": item.Station, "station_type": item.StationType, "frequency_hz": item.FrequencyHz, "mode": item.Mode, "state": item.State, "reason": item.Result, "updated_at": item.UpdatedAt}
+			// Origin travels so the log can label restored rows from the
+			// recorded field, not from inference about their age.
+			if item.Origin != "" {
+				row["origin"] = item.Origin
+			}
+			items = append(items, row)
 		}
 	}
 	sort.SliceStable(items, func(i, j int) bool { return fmt.Sprint(items[i]["updated_at"]) < fmt.Sprint(items[j]["updated_at"]) })

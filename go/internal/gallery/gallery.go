@@ -166,6 +166,13 @@ func looksText(data []byte) bool {
 // again unless keepBinary is set. The returned slice only contains items
 // that were saved and kept.
 func Fetch(items []Item, dir string, timeout time.Duration, maxBytes int64, keepBinary bool) ([]Item, error) {
+	return FetchContext(context.Background(), items, dir, timeout, maxBytes, keepBinary)
+}
+
+// FetchContext is Fetch cancellable by ctx: a cancelled caller stops a
+// stalled download and skips the remaining artefacts instead of fetching
+// the full list.
+func FetchContext(ctx context.Context, items []Item, dir string, timeout time.Duration, maxBytes int64, keepBinary bool) ([]Item, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -173,7 +180,10 @@ func Fetch(items []Item, dir string, timeout time.Duration, maxBytes int64, keep
 	var saved []Item
 	var firstErr error
 	for _, item := range items {
-		got, err := fetchOne(client, item, dir, maxBytes)
+		if err := ctx.Err(); err != nil {
+			return saved, err
+		}
+		got, err := fetchOne(ctx, client, item, dir, maxBytes)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -211,8 +221,9 @@ func WriteManifest(items []Item, dir string) error {
 // Decode bounds, kept tight so a small compressed payload cannot expand
 // into work that monopolises the single gallery refresh pass. Conversion
 // already carries a 2-minute ffmpeg timeout; these caps reject oversize
-// input BEFORE decoding starts (the pure-Go decoders have no mid-decode
-// cancellation, so the bound is applied at the input).
+// input BEFORE decoding starts, and the decoders honour context
+// cancellation mid-decode, so the caps bound memory while the deadline
+// and cancellation bound wall time.
 var (
 	// maxWAVBytes caps a converted or source WAV for frame decoding.
 	maxWAVBytes int64 = 64 << 20
@@ -492,8 +503,8 @@ func DecodeFramesContext(ctx context.Context, saved []Item, dir string) []Item {
 	return frames
 }
 
-func fetchOne(client *http.Client, item Item, dir string, maxBytes int64) (Item, error) {
-	request, err := http.NewRequest("GET", item.URL, nil)
+func fetchOne(ctx context.Context, client *http.Client, item Item, dir string, maxBytes int64) (Item, error) {
+	request, err := http.NewRequestWithContext(ctx, "GET", item.URL, nil)
 	if err != nil {
 		return item, err
 	}
