@@ -205,9 +205,10 @@ type Result struct {
 	Text       string  `json:"text"`
 	Language   string  `json:"language,omitempty"`
 	LangProb   float64 `json:"language_prob,omitempty"`
-	Confidence float64 `json:"confidence"`         // 0..1, mean token probability
+	Confidence float64 `json:"confidence"`         // 0..1, mean token probability; 0 means unknown (this path computed none), never an inferred score
 	Model      string  `json:"model,omitempty"`    // model file that produced the text
-	Fallback   bool    `json:"fallback,omitempty"` // true when the fallback model won
+	Fallback   bool    `json:"fallback,omitempty"` // true when a fallback backend/model won
+	Backend    string  `json:"backend,omitempty"`  // backend identity, e.g. whisper.cpp or nvidia-nim/<model>; empty means unknown
 	Chunks     int     `json:"chunks"`
 	SpeechSec  float64 `json:"speech_sec"`
 	Seconds    float64 `json:"seconds"`

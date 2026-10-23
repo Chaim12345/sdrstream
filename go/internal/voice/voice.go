@@ -34,6 +34,11 @@ type Transcript struct {
 	Seconds float64 `json:"seconds"`
 	Words   []Word  `json:"words,omitempty"`
 	Spoken  bool    `json:"spoken"`
+	// Fallback is true when the text came from a later entry of the
+	// TranscribeBest backend chain, not the preferred backend. There
+	// is deliberately no Confidence here: this path does not compute
+	// one, and an absent score must stay unknown, never inferred.
+	Fallback bool `json:"fallback,omitempty"`
 }
 
 // Word is one recognised word with its timing.

@@ -295,9 +295,10 @@ func TranscribeBest(ctx context.Context, samples []float64, rate int, options Op
 		chain = append(chain, second)
 	}
 	var failures []string
-	for _, o := range chain {
+	for i, o := range chain {
 		transcript, err := TranscribeNIM(ctx, samples, rate, o)
 		if err == nil {
+			transcript.Fallback = i > 0
 			return transcript, nil
 		}
 		failures = append(failures, fmt.Sprintf("%s: %v", nimModelName(o.FunctionID), err))
@@ -307,6 +308,7 @@ func TranscribeBest(ctx context.Context, samples []float64, rate int, options Op
 	}
 	fallback, ferr := Transcribe(ctx, samples, rate, options)
 	if ferr == nil {
+		fallback.Fallback = true // whisper won only after NIM failed
 		return fallback, nil
 	}
 	return fallback, fmt.Errorf("voice: NIM failed (%s); whisper fallback failed (%v)", strings.Join(failures, "; "), ferr)

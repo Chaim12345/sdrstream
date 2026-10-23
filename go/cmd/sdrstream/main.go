@@ -3575,6 +3575,10 @@ func kiwiVoiceActivityAt(ctx context.Context, host string, result decode.HFResul
 		Detail:      text,
 		Target:      result.Target.Name,
 		Source:      host,
+		// Only what the transcript actually carries; confidence stays
+		// unknown (absent) on this path.
+		ASRBackend:  transcript.Backend,
+		ASRFallback: transcript.Fallback,
 	}
 	activity.AudioPath = audioPath
 	if activity.AudioPath == "" && capturesDir != "" && len(result.AudioWAV) > 0 {

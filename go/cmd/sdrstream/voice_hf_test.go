@@ -18,7 +18,7 @@ import (
 func TestKiwiVoiceActivityUsesNIMTranscript(t *testing.T) {
 	old := transcribeHFVoice
 	transcribeHFVoice = func(context.Context, []float64, int) (voice.Transcript, error) {
-		return voice.Transcript{Text: "Shannon VOLMET, wind 200 degrees, 7 knots."}, nil
+		return voice.Transcript{Text: "Shannon VOLMET, wind 200 degrees, 7 knots.", Backend: "nvidia-nim/whisper-large-v3", Fallback: true}, nil
 	}
 	defer func() { transcribeHFVoice = old }()
 
@@ -44,6 +44,12 @@ func TestKiwiVoiceActivityUsesNIMTranscript(t *testing.T) {
 	}
 	if activity.FrequencyHz != 5505000 {
 		t.Errorf("frequency = %.0f Hz, want 5505000", activity.FrequencyHz)
+	}
+	if activity.ASRBackend != "nvidia-nim/whisper-large-v3" || !activity.ASRFallback {
+		t.Errorf("ASR metadata = backend %q fallback %v, want the transcript's real backend and fallback flag", activity.ASRBackend, activity.ASRFallback)
+	}
+	if activity.Confidence != 0 {
+		t.Errorf("confidence = %v, want 0 (unknown) on the TranscribeBest path - never inferred", activity.Confidence)
 	}
 	if activity.AudioPath == "" {
 		t.Fatal("verified voice activity has no audio capture")

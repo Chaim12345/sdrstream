@@ -63,6 +63,7 @@ type Activity struct {
 	Confidence             float64 `json:"confidence,omitempty"`
 	Language               string  `json:"language,omitempty"`
 	ASRModel               string  `json:"asr_model,omitempty"`
+	ASRBackend             string  `json:"asr_backend,omitempty"` // backend identity; empty means unknown
 	ASRFallback            bool    `json:"asr_fallback,omitempty"`
 }
 
@@ -1225,7 +1226,7 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 			FrequencyHz: work.frequency, BandwidthHz: work.bandwidth, LevelDB: work.levelDB,
 			Kind: kind, Mode: modeName, Detail: detail, Source: m.opts.Name, Label: m.opts.Label,
 			DurationSec: float64(len(samples)) / float64(rate),
-			Confidence:  asr.Confidence, Language: asr.Language, ASRModel: asr.Model, ASRFallback: asr.Fallback, VerificationAnchor: activity.VerificationAnchor,
+			Confidence:  asr.Confidence, Language: asr.Language, ASRModel: asr.Model, ASRFallback: asr.Fallback, ASRBackend: asr.Backend, VerificationAnchor: activity.VerificationAnchor,
 		}
 		if m.opts.OutDir != "" && (m.opts.SaveAudio == nil || m.opts.SaveAudio(kind)) {
 			// Archive before the noise/unknown filter. The detector already
@@ -1379,6 +1380,11 @@ func (m *Monitor) classify(ctx context.Context, samples []float64, rate int, ban
 					m.opts.Logf("voice: transcript dropped: %s", verdict.Reason)
 					return "voice", "speech", "", asr
 				}
+				// Wire only what the transcript actually carries:
+				// backend identity and whether a fallback produced the
+				// text. Confidence stays zero (unknown) - this path
+				// computes none.
+				asr.Backend, asr.Fallback = transcript.Backend, transcript.Fallback
 				return "voice", "speech", verdict.Text, asr
 			}
 		}

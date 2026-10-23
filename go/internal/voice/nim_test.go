@@ -27,6 +27,7 @@ type fakeRiva struct {
 	functionID string
 	request    *rivaspeech.RecognizeRequest
 	err        error
+	errFor     string // when set, only this function ID fails
 	text       string
 	calls      int
 }
@@ -38,7 +39,7 @@ func (f *fakeRiva) Recognize(ctx context.Context, request *rivaspeech.RecognizeR
 		f.functionID = strings.Join(md.Get("function-id"), ",")
 	}
 	f.request = request
-	if f.err != nil {
+	if f.err != nil && (f.errFor == "" || f.errFor == f.functionID) {
 		return nil, f.err
 	}
 	return &rivaspeech.RecognizeResponse{
@@ -180,6 +181,27 @@ func TestTranscribeBestFallbackError(t *testing.T) {
 	}
 }
 
+func TestTranscribeBestChainFallbackIsMarked(t *testing.T) {
+	// The preferred model fails, the second chain entry answers: the
+	// transcript must say so, with the answering backend's identity.
+	server := &fakeRiva{err: errors.New("quota exceeded"), errFor: WhisperLargeV3FunctionID, text: "recuperado"}
+	restore := dialFake(t, server)
+	defer restore()
+
+	transcript, err := TranscribeBest(context.Background(), toneSamples(8000), 8000,
+		Options{Binary: "/nonexistent/whisper", Model: "/nonexistent/model.bin"},
+		func() NIMOptions { o := testNIMOptions(); o.FunctionID = WhisperLargeV3FunctionID; return o }())
+	if err != nil {
+		t.Fatalf("TranscribeBest: %v", err)
+	}
+	if !transcript.Fallback {
+		t.Error("second chain entry produced the text but Fallback is false")
+	}
+	if want := "nvidia-nim/parakeet-1.1b-multilingual"; transcript.Backend != want {
+		t.Errorf("backend = %q, want %q (the model that answered)", transcript.Backend, want)
+	}
+}
+
 func TestTranscribeBestForcedBackend(t *testing.T) {
 	server := &fakeRiva{text: "forzado"}
 	restore := dialFake(t, server)
@@ -192,6 +214,9 @@ func TestTranscribeBestForcedBackend(t *testing.T) {
 	}
 	if transcript.Text != "forzado" {
 		t.Errorf("text = %q", transcript.Text)
+	}
+	if transcript.Fallback {
+		t.Error("forced single-backend call must not be marked fallback")
 	}
 }
 
