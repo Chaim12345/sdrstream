@@ -296,3 +296,23 @@ func Plan(entries []Entry, now time.Time, horizon time.Duration) []Occurrence {
 	})
 	return out
 }
+
+var noaaValidRE = regexp.MustCompile(`^Valid\s+(.+?)\s*$`)
+var noaaUpdatedRE = regexp.MustCompile(`^Updated\s+(.+?)\s*$`)
+
+// NOAAValidity reads the "Valid <date>" and "Updated <date>" header lines of
+// the hosted Boston NMF timetable so the operator sees the real header date
+// instead of a hardcoded year. Missing lines return empty strings.
+func NOAAValidity(r io.Reader) (valid, updated string) {
+	sc := bufio.NewScanner(r)
+	for i := 0; i < 20 && sc.Scan(); i++ {
+		line := sc.Text()
+		if m := noaaValidRE.FindStringSubmatch(line); m != nil && valid == "" {
+			valid = m[1]
+		}
+		if m := noaaUpdatedRE.FindStringSubmatch(line); m != nil && updated == "" {
+			updated = m[1]
+		}
+	}
+	return valid, updated
+}

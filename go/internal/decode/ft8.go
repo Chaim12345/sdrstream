@@ -40,6 +40,7 @@ type FTXMessage struct {
 	CRC      uint16  // CRC-14 that matched
 	Type     string  // message type label (std, nonstd, free, telemetry, unsupported)
 	SlotUnix int64   // slot start (Unix seconds), set by FTXDecodeStream
+	Engine   string  // decode engine: "go" or the reference tool name (empty = Go)
 }
 
 var (

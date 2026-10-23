@@ -1502,6 +1502,8 @@ func cmdWeb(args []string) error {
 	scanGuardMaxRSS := fs.Uint64("scan-guard-max-rss-mib", 512, "hard RSS cap in MiB: reaching it forces an immediate step down")
 	scanGuardMaxFDs := fs.Int("scan-guard-max-fds", 400000, "hard open file descriptor cap: reaching it forces an immediate step down")
 	scanGuardMaxGoroutines := fs.Int("scan-guard-max-goroutines", 256000, "hard goroutine cap: reaching it forces an immediate step down")
+	scanPoolMode := fs.String("scan-pool", "health", "scanner receiver pool: 'health' = rotating 1-3 receivers chosen by the receiver health table; 'wide' = legacy ramp over the whole roster")
+	scanPoolSize := fs.Int("scan-pool-size", 3, "health-pool receiver connections (1-3)")
 	monitorServer := fs.String("monitor-server", "", "receiver to monitor for live traffic (empty = no monitoring)")
 	monitorLabel := fs.String("monitor-label", "", "programme or station label for monitor activities and gallery entries")
 	monitorKind := fs.String("monitor-kind", "openwebrx", "monitor receiver protocol: openwebrx, websdr or kiwi")
@@ -1537,6 +1539,12 @@ func cmdWeb(args []string) error {
 	fs.Parse(args)
 	if *capturesMaxGB < 0 || *capturesRetain < 0 || *scanDirectoryRefresh < 0 {
 		return fmt.Errorf("--captures-max-gb, --captures-retain and --scan-directory-refresh cannot be negative")
+	}
+	if *scanPoolMode != "health" && *scanPoolMode != "wide" {
+		return fmt.Errorf("--scan-pool must be 'health' or 'wide'")
+	}
+	if *scanPoolSize < 1 || *scanPoolSize > 3 {
+		return fmt.Errorf("--scan-pool-size must be 1..3")
 	}
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
@@ -1580,16 +1588,18 @@ func cmdWeb(args []string) error {
 		})
 		log.Printf("rdio: uploading verified live captures to %s", *rdioURL)
 	}
+	// The proof ledger is not a feed: the receiver-capture ledger and the
+	// metrics endpoints need it even when the public feeds are disabled.
+	feedsManager := feeds.New(0, nil)
+	ledgerBytes, ledgerOK := feeds.LedgerBytesFromEnv(os.Getenv)
+	if !ledgerOK {
+		log.Printf("feeds: ignoring invalid SDRSTREAM_LEDGER_MAX_MB (want 1-%d); using %d MiB", feeds.MaxLedgerMB, ledgerBytes>>20)
+	}
+	ledger := feeds.NewLedger(web.StateFile("sdrstream-ledger.jsonl"), ledgerBytes)
+	defer ledger.Close()
+	feedsManager.SetLedger(ledger)
+	server.SetFeeds(feedsManager)
 	if !*noFeeds {
-		feedsManager := feeds.New(0, nil)
-		ledgerBytes, ledgerOK := feeds.LedgerBytesFromEnv(os.Getenv)
-		if !ledgerOK {
-			log.Printf("feeds: ignoring invalid SDRSTREAM_LEDGER_MAX_MB (want 1-%d); using %d MiB", feeds.MaxLedgerMB, ledgerBytes>>20)
-		}
-		ledger := feeds.NewLedger(web.StateFile("sdrstream-ledger.jsonl"), ledgerBytes)
-		defer ledger.Close()
-		feedsManager.SetLedger(ledger)
-		server.SetFeeds(feedsManager)
 		feedsCtx, feedsCancel := context.WithCancel(ctx)
 		defer feedsCancel()
 		feeds.Start(feedsCtx, feedsManager, *feedsLat, *feedsLon, *aisKey)
@@ -1656,7 +1666,20 @@ func cmdWeb(args []string) error {
 		config.recordAll = *scanRecordAll
 		guard := newLoadGuard(*scanGuardWindow, *scanGuardDropFor, *scanGuardRestoreFor, *scanGuardDropRatio, *scanGuardRestoreRatio, *scanGuardMaxRSS<<20, *scanGuardMaxFDs, *scanGuardMaxGoroutines)
 		scannerCaptureDir = *capturesDir
+		if *scanPoolMode == "health" {
+			pool, err := newHealthPool(*scanPoolSize, healthTablePath(), log.Printf)
+			if err != nil {
+				return err
+			}
+			scanHealth = pool
+			defer pool.save()
+			go pool.saveLoop(ctx)
+			go pool.beaconProber(ctx, roster)
+			log.Printf("scan: health pool on, holding %d rotating receiver connection(s)", pool.size)
+		}
 		go runParallelScan(ctx, server, roster, *monitorMultimon, *monitorDirewolf, config, guard)
+	} else if strings.TrimSpace(*scanStations) != "" {
+		log.Printf("scan: ROSTER EMPTY: --scan-stations produced no usable entries (each needs a Kind| prefix, e.g. KiwiSDR|host:8073); scanner not started")
 	}
 	// The dedicated HF capture schedule is independent of directory scanning.
 	if *scanHFServer != "" {
@@ -2176,7 +2199,11 @@ func blockStation(server *web.Server, host, reason string, duration time.Duratio
 	server.UpsertScanStatus(web.ScanStatus{Station: host, State: "blocked", Result: reason, BlockedUntil: &t, UpdatedAt: time.Now()})
 }
 
-func stationHostPortKey(_ string, raw string) string {
+// stationHostPortKey normalises a roster host to lowercase host:port for
+// dedup and health-table keys. The receiver kind is deliberately not part
+// of the key: one receiver gets one health record no matter which roster
+// entry form (or call site) named it.
+func stationHostPortKey(raw string) string {
 	if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
 		port := u.Port()
 		if port == "" {
@@ -2196,14 +2223,14 @@ func appendUsableKiwiStations(existing []string, candidates []kiwisdr.Receiver) 
 	for _, item := range existing {
 		parts := strings.SplitN(strings.TrimSpace(item), "|", 2)
 		if len(parts) == 2 {
-			seen[stationHostPortKey(parts[0], parts[1])] = true
+			seen[stationHostPortKey(parts[1])] = true
 		}
 	}
 	for _, receiver := range candidates {
 		if !receiver.Usable() {
 			continue
 		}
-		key := stationHostPortKey("KiwiSDR", receiver.ServerURL())
+		key := stationHostPortKey(receiver.ServerURL())
 		if seen[key] {
 			continue
 		}
@@ -2212,6 +2239,10 @@ func appendUsableKiwiStations(existing []string, candidates []kiwisdr.Receiver) 
 	}
 	return existing
 }
+
+// scanEmptyRoster makes an empty scan roster loud; the scan loop re-enters
+// every 20 s, so without throttling the lines would drown the log.
+var scanEmptyRoster = newEmptyRosterAlerter(log.Printf)
 
 func runParallelScan(ctx context.Context, server *web.Server, roster *scanRoster, multimonPath, direwolfPath string, cfg scanConfig, guard *loadGuard) {
 	for ctx.Err() == nil {
@@ -2246,7 +2277,7 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 			continue
 		}
 		kind, host := strings.TrimSpace(parts[0]), strings.TrimSpace(strings.TrimRight(parts[1], "/"))
-		key := stationHostPortKey(kind, host)
+		key := stationHostPortKey(host)
 		if host == "" || seen[key] {
 			continue
 		}
@@ -2254,6 +2285,7 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 		unique = append(unique, kind+"|"+host)
 	}
 	if len(unique) == 0 {
+		scanEmptyRoster.empty("no stations", fmt.Sprintf("roster snapshot yielded 0 usable Kind|host entries from %d raw entries; check --scan-stations kinds and the directory refresh", len(receivers)))
 		return
 	}
 	blockMu.Lock()
@@ -2270,10 +2302,21 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 		}
 		activeUnique = append(activeUnique, entry)
 	}
+	dropped := len(unique) - len(activeUnique)
 	unique = activeUnique
 	if len(unique) == 0 {
+		scanEmptyRoster.empty("all stations blocklisted", fmt.Sprintf("all %d roster stations are on the blocklist", dropped))
 		return
 	}
+	rosterAll := unique
+	if scanHealth != nil {
+		unique = scanHealth.pickStations(unique)
+		if len(unique) == 0 {
+			scanEmptyRoster.empty("health pool picked nothing", fmt.Sprintf("0 of %d roster stations eligible; every receiver may be in failure cooldown", len(rosterAll)))
+			return
+		}
+	}
+	scanEmptyRoster.populated(len(unique))
 	steps := cfg.ramp
 	var current atomic.Int64
 	current.Store(int64(min(cfg.maximum, cfg.start)))
@@ -2340,6 +2383,9 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 		if !server.ScanControlManual() {
 			limit = min(limit, int(current.Load()))
 		}
+		if scanHealth != nil {
+			limit = min(limit, scanHealth.size)
+		}
 		for inFlight < limit && ctx.Err() == nil {
 			dispatched := false
 			for checked := 0; checked < len(unique); checked++ {
@@ -2351,6 +2397,11 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 				}
 				host := parts[1]
 				if activeStations[host] || time.Now().Before(backoffUntil[host]) {
+					continue
+				}
+				// A host reserved for a beacon measurement stays idle: the
+				// prober must never be a second connection during a capture.
+				if scanHealth != nil && !scanHealth.tryStartVisit(host) {
 					continue
 				}
 				activeStations[host] = true
@@ -2402,7 +2453,14 @@ func runParallelScanOnce(ctx context.Context, server *web.Server, roster *scanRo
 			// pause/target changes must not wait for the next finished
 			// station (visits can run for minutes).
 			updateMetrics()
+			if scanHealth != nil && scanHealth.repickDue() {
+				unique = scanHealth.pickStations(rosterAll)
+				nextStation = 0
+			}
 		case r := <-results:
+			if scanHealth != nil {
+				scanHealth.observeOutcome(r.host, r.outcome)
+			}
 			receiverAtFault := (r.outcome.refused || r.outcome.timedOut) && !r.outcome.localResource
 			if receiverAtFault {
 				reason := "receiver refused or timed out"
@@ -2706,6 +2764,9 @@ func scanStation(ctx context.Context, server *web.Server, stationType, host stri
 	// "refused". Only guess from the name when the caller gave no type.
 	if strings.EqualFold(stationType, "KiwiSDR") || (stationType == "" && looksLikeKiwi(host)) {
 		preflight := kiwiPreflight.Check(ctx, host)
+		if scanHealth != nil {
+			scanHealth.observeProbe(host, preflight)
+		}
 		if !preflight.Free() {
 			outcome := preflightOutcome(preflight.Verdict)
 			state := "refused/skipped"
@@ -3078,13 +3139,23 @@ func runDirectoryHFScan(ctx context.Context, server *web.Server, host string, ws
 			}
 			var lines []string
 			if target.Kind == "ft8" {
-				for _, m := range decode.FTXDecodeStream(f, rate, float64(start.UnixNano())/1e9, "FT8") {
-					lines = append(lines, fmt.Sprintf("%s FT8 %+.1f %.0f Hz %s", time.Unix(m.SlotUnix, 0).UTC().Format("150405"), m.SNR, m.FreqHz, m.Text))
+				msgs, _, derr := decode.FTXDecodeStreamAuto(ctx, f, rate, float64(start.UnixNano())/1e9, "FT8")
+				if derr != nil {
+					setScanResult(server, key, "error", "decode: "+derr.Error())
+					continue
+				}
+				for _, m := range msgs {
+					lines = append(lines, fmt.Sprintf("%s FT8 %+.1f %.0f Hz %s engine=%s", time.Unix(m.SlotUnix, 0).UTC().Format("150405"), m.SNR, m.FreqHz, m.Text, m.Engine))
 				}
 			} else {
-				for _, w := range decode.WSPRWindows(f, rate, float64(start.UnixNano())/1e9) {
+				windows, _, derr := decode.WSPRWindowsAuto(ctx, f, rate, float64(start.UnixNano())/1e9)
+				if derr != nil {
+					setScanResult(server, key, "error", "decode: "+derr.Error())
+					continue
+				}
+				for _, w := range windows {
 					for _, m := range w.Messages {
-						lines = append(lines, fmt.Sprintf("%s WSPR %+.0f %.1f %.1f Hz %s", time.Unix(w.Start, 0).UTC().Format("1504"), m.SNR, m.DT, m.FreqHz, m.Text))
+						lines = append(lines, fmt.Sprintf("%s WSPR %+.0f %.1f %.1f Hz %s engine=%s", time.Unix(w.Start, 0).UTC().Format("1504"), m.SNR, m.DT, m.FreqHz, m.Text, m.Engine))
 					}
 				}
 			}

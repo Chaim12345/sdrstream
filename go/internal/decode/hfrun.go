@@ -51,7 +51,7 @@ func RunHFTarget(ctx context.Context, server string, target HFTarget, listen tim
 	if err != nil {
 		return HFResult{Target: target, Server: server, Started: started}, fmt.Errorf("record: %w", err)
 	}
-	result := decodeHF(target, server, samples16, rate)
+	result := decodeHF(ctx, target, server, samples16, rate)
 	result.Started = started
 	result.AudioWAV = WriteWAV16(samples16, rate)
 	return result, nil
@@ -133,7 +133,7 @@ func RunHFSession(ctx context.Context, server string, targets []HFTarget, opts S
 			remaining = append(remaining, targets[i:]...)
 			return results, remaining, fmt.Errorf("record: %w", rerr)
 		}
-		result := decodeHF(target, server, samples16, rate)
+		result := decodeHF(ctx, target, server, samples16, rate)
 		if !result.Gate.Live || opts.RecordFullAudio {
 			result.AudioWAV = WriteWAV16(samples16, rate)
 		}
@@ -146,11 +146,11 @@ func RunHFSession(ctx context.Context, server string, targets []HFTarget, opts S
 // without a built-in decoder (voice, dsc, hfdl, ft8, wspr) are real
 // captures but must never publish: the gate rejects them here.
 // HFDecodeForScan decodes already captured samples using the target's decoder and quality gate.
-func HFDecodeForScan(target HFTarget, server string, samples16 []int16, rate int) HFResult {
-	return decodeHF(target, server, samples16, rate)
+func HFDecodeForScan(ctx context.Context, target HFTarget, server string, samples16 []int16, rate int) HFResult {
+	return decodeHF(ctx, target, server, samples16, rate)
 }
 
-func decodeHF(target HFTarget, server string, samples16 []int16, rate int) HFResult {
+func decodeHF(ctx context.Context, target HFTarget, server string, samples16 []int16, rate int) HFResult {
 	result := HFResult{Target: target, Server: server, Started: time.Now().UTC()}
 	samples := make([]float64, len(samples16))
 	for i, s := range samples16 {
@@ -191,17 +191,27 @@ func decodeHF(target HFTarget, server string, samples16 []int16, rate int) HFRes
 		}
 		start := float64(result.Started.UnixNano())/1e9 - float64(len(samples))/float64(rate)
 		var lines []string
-		for _, m := range FTXDecodeStream(samples, rate, start, proto) {
-			lines = append(lines, fmt.Sprintf("%s %s %+.1f %.0f Hz %s", time.Unix(m.SlotUnix, 0).UTC().Format("150405"), m.Protocol, m.DT, m.FreqHz, m.Text))
+		msgs, _, derr := FTXDecodeStreamAuto(ctx, samples, rate, start, proto)
+		if derr != nil {
+			result.Gate = verify.Result{Live: false, Reason: "decode: " + derr.Error()}
+			break
+		}
+		for _, m := range msgs {
+			lines = append(lines, fmt.Sprintf("%s %s %+.1f %.0f Hz %s engine=%s", time.Unix(m.SlotUnix, 0).UTC().Format("150405"), m.Protocol, m.DT, m.FreqHz, m.Text, m.Engine))
 		}
 		result.Text = strings.Join(lines, "\n")
 		result.Gate = verify.FTX(len(lines), proto == "FT8", result.Text)
 	case "wspr":
 		start := float64(result.Started.UnixNano())/1e9 - float64(len(samples))/float64(rate)
 		var lines []string
-		for _, w := range WSPRWindows(samples, rate, start) {
+		windows, _, derr := WSPRWindowsAuto(ctx, samples, rate, start)
+		if derr != nil {
+			result.Gate = verify.Result{Live: false, Reason: "decode: " + derr.Error()}
+			break
+		}
+		for _, w := range windows {
 			for _, m := range w.Messages {
-				lines = append(lines, fmt.Sprintf("%s WSPR %+.0f %+.1f %.1f Hz %s", time.Unix(w.Start, 0).UTC().Format("1504"), m.SNR, m.DT, m.FreqHz, m.Text))
+				lines = append(lines, fmt.Sprintf("%s WSPR %+.0f %+.1f %.1f Hz %s engine=%s", time.Unix(w.Start, 0).UTC().Format("1504"), m.SNR, m.DT, m.FreqHz, m.Text, m.Engine))
 			}
 		}
 		result.Text = strings.Join(lines, "\n")

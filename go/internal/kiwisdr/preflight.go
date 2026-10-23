@@ -54,6 +54,10 @@ type Status struct {
 	Verdict    string
 	Err        string
 	CheckedAt  time.Time
+	// Latency is how long the successful HTTP /status probe took. It is a
+	// wall-clock measurement (the injectable Now clock is logical), zero
+	// when the probe never got an answer.
+	Latency time.Duration
 }
 
 // Free reports whether a slot is available.
@@ -275,6 +279,7 @@ func (p *Preflighter) EgressDiagnostic() string {
 
 func (p *Preflighter) probe(ctx context.Context, host string) Status {
 	st := Status{Host: host}
+	started := time.Now()
 	var lastErr error
 	var body []byte
 	for _, scheme := range []string{"https", "http"} {
@@ -320,6 +325,9 @@ func (p *Preflighter) probe(ctx context.Context, host string) Status {
 		return st
 	}
 	st.Users, st.UsersMax, st.Preempt, st.ExtAPI = parsed.Users, parsed.UsersMax, parsed.Preempt, parsed.ExtAPI
+	// The host answered: latency counts for busy hosts too, a full receiver
+	// is still a reachable one.
+	st.Latency = time.Since(started)
 	if st.Users >= st.UsersMax && st.Preempt == 0 {
 		st.Verdict = VerdictBusy
 		return st

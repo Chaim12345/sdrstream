@@ -43,16 +43,19 @@ func load(ctx context.Context, path, url string) ([]byte, error) {
 }
 func main() {
 	eibi := flag.String("eibi", "", "local EiBi eibi.txt (otherwise fetch once)")
+	extra := flag.String("extra", "", "local supplemental EiBi-format file merged into the schedule (e.g. NAVTEX slots)")
 	noaa := flag.String("noaa", "", "local NOAA Boston text (otherwise fetch once)")
 	source := flag.String("source", "both", "eibi, noaa, or both")
-	match := flag.String("match", "", "case-insensitive station/product substring")
+	match := flag.String("match", "", "case-insensitive station/product substring; comma-separated alternatives match any")
 	freq := flag.Float64("freq", 0, "optional exact carrier frequency in kHz")
 	kind := flag.String("kind", "", "optional broadcast, rtty, navtex or wefax filter")
 	receivers := flag.String("receivers", "", "JSON receiver array file, required for capture")
 	out := flag.String("out", "captures/hfschedule", "isolated state and capture directory")
 	listen := flag.Duration("listen", 30*time.Second, "capture length, capped by broadcast end and 20 minutes")
-	run := flag.Bool("run", false, "record due entries (default is plan only)")
+	run := flag.Bool("run", false, "record due entries as a continuous service (default is plan only)")
 	once := flag.Bool("once", false, "perform at most one due capture and exit")
+	poll := flag.Duration("poll", hfschedule.DefaultPollInterval, "service poll interval between due-entry checks")
+	reload := flag.Duration("reload", hfschedule.DefaultReloadInterval, "service schedule reload interval; a failed reload keeps the previous schedule")
 	horizon := flag.Duration("horizon", 24*time.Hour, "plan horizon")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -63,39 +66,79 @@ func main() {
 	if *listen < time.Second || *listen > 20*time.Minute {
 		log.Fatal("-listen must be 1s to 20m")
 	}
-	var entries []hfschedule.Entry
-	if *source != "noaa" {
-		b, err := load(ctx, *eibi, hfschedule.EiBiURL)
-		if err != nil {
-			log.Fatal(err)
+	// loadEntries fetches and filters the schedule; the service reuses it
+	// for every reload, so a run never drives tonight's listening from a
+	// stale snapshot.
+	noaaWarned := false
+	loadEntries := func(lctx context.Context) ([]hfschedule.Entry, error) {
+		var entries []hfschedule.Entry
+		if *source != "noaa" {
+			b, err := load(lctx, *eibi, hfschedule.EiBiURL)
+			if err != nil {
+				return nil, err
+			}
+			v, err := hfschedule.ParseEiBi(strings.NewReader(string(b)))
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, v...)
 		}
-		v, err := hfschedule.ParseEiBi(strings.NewReader(string(b)))
-		if err != nil {
-			log.Fatal(err)
+		if *source != "eibi" {
+			b, err := load(lctx, *noaa, hfschedule.NOAAURL)
+			if err != nil {
+				return nil, err
+			}
+			v, err := hfschedule.ParseNOAA(strings.NewReader(string(b)))
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, v...)
+			if !noaaWarned {
+				valid, updated := hfschedule.NOAAValidity(strings.NewReader(string(b)))
+				log.Printf("NOAA Boston timetable header: valid %q, updated %q; the hosted schedule is a planning source, not proof of transmission", valid, updated)
+				noaaWarned = true
+			}
 		}
-		entries = append(entries, v...)
-	}
-	if *source != "eibi" {
-		b, err := load(ctx, *noaa, hfschedule.NOAAURL)
-		if err != nil {
-			log.Fatal(err)
+		if *extra != "" {
+			b, err := os.ReadFile(*extra)
+			if err != nil {
+				return nil, err
+			}
+			v, err := hfschedule.ParseEiBi(strings.NewReader(string(b)))
+			if err != nil {
+				return nil, fmt.Errorf("extra schedule: %w", err)
+			}
+			entries = append(entries, v...)
 		}
-		v, err := hfschedule.ParseNOAA(strings.NewReader(string(b)))
-		if err != nil {
-			log.Fatal(err)
+		var terms []string
+		for _, term := range strings.Split(*match, ",") {
+			if t := strings.TrimSpace(strings.ToLower(term)); t != "" {
+				terms = append(terms, t)
+			}
 		}
-		entries = append(entries, v...)
-		log.Print("NOAA Boston source is dated 2018; current hosted timetable is not proof of transmission")
-	}
-	var filtered []hfschedule.Entry
-	for _, e := range entries {
-		if strings.Contains(strings.ToLower(e.Target.Name), strings.ToLower(*match)) && (*kind == "" || e.Target.Kind == *kind) && (*freq == 0 || e.Target.CarrierKHz == *freq) {
-			filtered = append(filtered, e)
+		var filtered []hfschedule.Entry
+		for _, e := range entries {
+			name := strings.ToLower(e.Target.Name)
+			matched := len(terms) == 0
+			for _, t := range terms {
+				if strings.Contains(name, t) {
+					matched = true
+					break
+				}
+			}
+			if matched && (*kind == "" || e.Target.Kind == *kind) && (*freq == 0 || e.Target.CarrierKHz == *freq) {
+				filtered = append(filtered, e)
+			}
 		}
+		return filtered, nil
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if !*run {
+		filtered, err := loadEntries(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
 		if err := enc.Encode(hfschedule.Plan(filtered, time.Now(), *horizon)); err != nil {
 			log.Fatal(err)
 		}
@@ -113,9 +156,11 @@ func main() {
 		log.Fatal(err)
 	}
 	runner := hfschedule.Runner{Dir: *out, Receivers: rs, Listen: *listen}
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-	for {
+	if *once {
+		filtered, err := loadEntries(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
 		a, err := runner.RunOnce(ctx, filtered)
 		if err != nil {
 			log.Fatal(err)
@@ -125,13 +170,21 @@ func main() {
 				log.Fatal(err)
 			}
 		}
-		if *once {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
+		return
+	}
+	svc := hfschedule.Service{
+		Runner:         &runner,
+		Load:           loadEntries,
+		PollInterval:   *poll,
+		ReloadInterval: *reload,
+		Logf:           log.Printf,
+		OnAudit: func(a hfschedule.Audit) {
+			if err := enc.Encode(a); err != nil {
+				log.Printf("hfschedule: encode audit: %v", err)
+			}
+		},
+	}
+	if err := svc.Run(ctx); err != nil {
+		log.Fatal(err)
 	}
 }

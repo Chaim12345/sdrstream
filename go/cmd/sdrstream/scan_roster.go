@@ -32,14 +32,37 @@ func newScanRoster(logf func(string, ...interface{})) *scanRoster {
 	return &scanRoster{logf: logf}
 }
 
+// AddManual records hand-picked stations. Every entry must name the
+// receiver kind: "KiwiSDR|host:8073", "OpenWebRX|http://host:8073/", ... A
+// bare host:port used to be stored and then silently dropped by Snapshot,
+// which split on "|" and skipped entries without a kind; now it is rejected
+// here, loudly, so the operator sees the mistake at startup instead of
+// wondering why a receiver never scans. An empty kind ("|host") stays
+// allowed - scanStation guesses the type from the host name - but that is
+// logged too, because a wrong guess drives the receiver with the wrong
+// protocol.
 func (r *scanRoster) AddManual(stations ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, station := range stations {
 		station = strings.TrimSpace(station)
-		if station != "" {
-			r.manual = append(r.manual, station)
+		if station == "" {
+			continue
 		}
+		kind, host, found := strings.Cut(station, "|")
+		if !found {
+			r.logf("scan: --scan-stations entry %q has no Kind| prefix and will never scan; dropping it (use e.g. KiwiSDR|%[1]s; kinds: KiwiSDR, OpenWebRX, WebSDR)", station)
+			continue
+		}
+		kind, host = strings.TrimSpace(kind), strings.TrimSpace(host)
+		if host == "" {
+			r.logf("scan: --scan-stations entry %q has an empty host after the Kind| prefix; dropping it", station)
+			continue
+		}
+		if kind == "" {
+			r.logf("scan: --scan-stations entry %q has an empty Kind; the scanner will guess the receiver type from the host name", station)
+		}
+		r.manual = append(r.manual, kind+"|"+host)
 	}
 }
 
@@ -71,7 +94,7 @@ func (r *scanRoster) Snapshot() []string {
 		if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
 			continue
 		}
-		key := stationHostPortKey(parts[0], parts[1])
+		key := stationHostPortKey(parts[1])
 		if seen[key] {
 			continue
 		}
@@ -153,14 +176,14 @@ func countRosterDelta(old, next []string) (added, removed int) {
 	for _, station := range old {
 		parts := strings.SplitN(station, "|", 2)
 		if len(parts) == 2 {
-			oldKeys[stationHostPortKey(parts[0], parts[1])] = true
+			oldKeys[stationHostPortKey(parts[1])] = true
 		}
 	}
 	newKeys := map[string]bool{}
 	for _, station := range next {
 		parts := strings.SplitN(station, "|", 2)
 		if len(parts) == 2 {
-			newKeys[stationHostPortKey(parts[0], parts[1])] = true
+			newKeys[stationHostPortKey(parts[1])] = true
 		}
 	}
 	for key := range newKeys {
@@ -297,4 +320,50 @@ func resetKiwiRotation(host string) {
 	delete(kiwiCursorByHost, host)
 	kiwiCursorMu.Unlock()
 	persistRotation()
+}
+
+// emptyRosterAlerter makes an empty scan roster loud without flooding the
+// log: the scan loop re-enters every 20 s, so the empty state is logged at
+// most once per emptyRosterLogInterval, plus once when the roster recovers.
+type emptyRosterAlerter struct {
+	mu       sync.Mutex
+	logf     func(string, ...interface{})
+	now      func() time.Time
+	lastLog  time.Time
+	wasEmpty bool
+}
+
+const emptyRosterLogInterval = 10 * time.Minute
+
+func newEmptyRosterAlerter(logf func(string, ...interface{})) *emptyRosterAlerter {
+	if logf == nil {
+		logf = func(string, ...interface{}) {}
+	}
+	return &emptyRosterAlerter{logf: logf, now: time.Now}
+}
+
+// empty reports one roster-empty pass. reason names where the roster ran
+// dry; detail says what each stage saw.
+func (a *emptyRosterAlerter) empty(reason, detail string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := a.now()
+	if a.wasEmpty && now.Sub(a.lastLog) < emptyRosterLogInterval {
+		return
+	}
+	a.wasEmpty = true
+	a.lastLog = now
+	a.logf("scan: ROSTER EMPTY (%s): %s; nothing will scan until this changes", reason, detail)
+}
+
+// populated reports a pass with stations; after an empty stretch it logs
+// the recovery once.
+func (a *emptyRosterAlerter) populated(n int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.wasEmpty {
+		return
+	}
+	a.wasEmpty = false
+	a.logf("scan: roster populated again: %d station(s) to scan", n)
 }

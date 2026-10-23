@@ -36,10 +36,16 @@ the decode gate. Other utility codes are not treated as AM broadcasts.
   final date. Numeric weekdays use Monday=1. Simple weekday names, one-off
   dates, midnight wrapping and 2400 are supported. Complex/irregular/alternate
   day rules fail closed: they do not trigger recordings.
-* NOAA Boston NMF: https://ocean.weather.gov/radiofax_update.txt. The official
-  feed still says valid September 2018 when fetched on 2026-10-22. A warning is
-  printed every startup. This is a planning source, not proof that any chart
-  will be broadcast today. The parser respects per-frequency UTC windows,
+* NOAA Boston NMF: https://ocean.weather.gov/radiofax_update.txt. Re-verified
+  2026-10-22: the hosted file header still reads "Valid 19 September 2018 /
+  Updated 7 August 2018", and it remains the current published Boston schedule
+  (the live schedule page https://ocean.weather.gov/shtml/atlsch.php carries
+  the same 19 September 2018 date with current chart timestamps), so the
+  apparent staleness is the upstream's own. Startup logs the actual header
+  dates. NWS Public Information Statement 26-48 (2026-06-09) proposes
+  discontinuing all HF radiofax broadcasts, Boston NMF included, towards the
+  end of 2026: treat the timetable as a planning source, never proof that any
+  chart will be broadcast today. The parser respects per-frequency UTC windows,
   paired chart start times, 120 RPM/576 IOC and the next-chart boundary.
   It does not claim support for other NOAA stations or NAVTEX timetables.
   NOAA NAVTEX entries come from EiBi when present.
@@ -66,8 +72,17 @@ is disabled. The process closes each receiver after capture. Short/silent audio
 is not marked as a valid recording/decode. Do not run this against a host that
 forbids automated reception.
 
+`-extra /path` merges a local supplemental EiBi-format file (with its own
+validity header) into the schedule; `examples/hfschedule/eibi-extra.txt` adds
+NAVTEX 518 kHz NAVAREA I slots (times from the ITU NAVTEX station list,
+cross-checked against the Wikipedia station list), hourly DWD 4583 windows and
+time-signal carrier windows. `-match` accepts comma-separated substrings.
+
 State and sidecars are private files under `-out`: `state.json`, per-occurrence
-JSON, PCM WAV, text and optional PNG. A UTC occurrence key prevents duplicate
+JSON, PCM WAV, text and optional PNG. Every completed attempt also appends one
+JSON line to `proof-ledger.jsonl` (capture key, target, receiver, UTC window,
+status, decode-gate verdict and reason, artifact paths); a ledger write error
+stops the command rather than silently losing proof. A UTC occurrence key prevents duplicate
 captures across restarts. State writes are atomic; corrupt state fails closed.
 An in-flight attempt is saved before connecting and is not replayed after a
 crash. `scheduler.lock` prevents concurrent access to the same store. After an

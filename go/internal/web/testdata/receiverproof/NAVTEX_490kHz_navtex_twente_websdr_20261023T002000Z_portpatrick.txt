@@ -1,0 +1,10 @@
+frequency_hz=490000
+mode=navtex
+receiver=websdr.ewi.utwente.nl:8901
+decode=station=C subject=E serial=27 ISSUED BY THE MET OFFICE AT 0001 UTC ON FRI 23 OCT 2026 INSHORE WATERS FCST TO 12 MILES OFFSHORE GENERAL SITUATION A DEEP AREA OF LOW PRURE, NAMED STOM AUSTN IS CURRENTLY MOV E-NORTHEASTWARDS ACROSS SOUTHERN COASTAL AREAS
+kind=data
+target=NAVTEX 490 kHz Portpatrick
+gate=NNNN ran past the capture window (gate-incomplete)
+started=2026-10-23T00:20:00Z
+duration_sec=540.000
+verified=false

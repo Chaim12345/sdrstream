@@ -238,6 +238,11 @@ func (c *Client) tuneSend(freqHz int64, mode string) error {
 // shorten it.
 var tuneSettle = 250 * time.Millisecond
 
+// recordEndGrace is how far past the requested duration a Record read
+// deadline may extend, so the duration timer always ends the record
+// before the read can time out (see Record's readTimeout clamp).
+const recordEndGrace = 500 * time.Millisecond
+
 // settleAfterTune reads and drops post-tune-pending audio until the
 // settle instant. Compressed frames are still decoded (and discarded) so
 // the ADPCM predictor state stays continuous. Text/MSG frames are handled
@@ -368,7 +373,13 @@ func (c *Client) Record(ctx context.Context, duration time.Duration) ([]int16, i
 			}
 		}
 		if until := time.Until(end); until < readTimeout {
-			readTimeout = until
+			// The read deadline must never decide the end of the record:
+			// a gorilla read timeout poisons the connection for every
+			// later read, which would wedge the next Record on this
+			// receiver. The duration timer wins instead; the read gets a
+			// small grace past `end` and only a genuinely silent server
+			// (dead connection anyway) trips the timeout path below.
+			readTimeout = until + recordEndGrace
 		}
 		if readTimeout < 50*time.Millisecond {
 			readTimeout = 50 * time.Millisecond

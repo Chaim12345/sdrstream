@@ -20,7 +20,7 @@ const link = (href, text) => {
   a.textContent = text;
   return a;
 };
-const shortURL = u => { try { return new URL(u).host; } catch { return u; } };
+const shortURL = u => { try { return new URL(u).host || u; } catch { return u; } };
 const relTime = iso => {
   const s = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
   if (s < 60) return s + 's ago';
@@ -150,6 +150,7 @@ async function refreshStatus() {
     renderNextPass(status);
     renderPasses(status);
     renderCaptures(status);
+    renderHealth();
   } catch (err) { el('msg').textContent = 'status unavailable: ' + err; }
 }
 
@@ -181,10 +182,203 @@ function renderPasses(status) {
 }
 
 /* ---------- captures ---------- */
+/* Per-item proof for one archived receiver capture (PR #5 record-all
+   archive): the saved audio, decode text, receiver ID and UTC time, read
+   from the capture sidecar the scanner writes next to every clip. */
+/* The Go live quality gate and an independent reference cross-check are
+   separate proof facets. Both are shown explicitly; a legacy capture whose
+   summary bool is true passed the gate (that was its documented meaning),
+   while a cross-check is never inferred - "none recorded" when absent. */
+function gateFacetOf(c) { return c.gate_verdict || (c.verified ? 'passed' : ''); }
+function facetChips(c) {
+  const gv = gateFacetOf(c);
+  const g = document.createElement('span');
+  g.className = 'badge ' + (gv === 'passed' ? 'verified' : (gv === 'failed' ? 'unverified' : 'blind'));
+  g.textContent = 'gate: ' + (gv || 'not recorded');
+  if (c.gate) g.title = 'quality gate: ' + c.gate;
+  const cv = c.crosscheck || '';
+  const x = document.createElement('span');
+  x.className = 'badge ' + (cv === 'verified' ? 'verified' : (cv === 'mismatch' ? 'unverified' : 'blind'));
+  x.textContent = 'cross-check: ' + (cv || 'none recorded');
+  if (c.crosscheck_ref) x.title = 'reference: ' + c.crosscheck_ref;
+  return [g, x];
+}
+
+/* Clip length from the parsed WAV header values (samples / rate), shown so a
+   card carries the real duration even before a browser loads media metadata. */
+const fmtDuration = sec => {
+  if (!isFinite(sec) || sec <= 0) return '';
+  const m = Math.floor(sec / 60), r = Math.round(sec - m * 60);
+  return (m ? m + 'm ' : '') + r + 's';
+};
+
+function captureProof(c) {
+  const wrap = document.createElement('div');
+  const pb = document.createElement('button');
+  pb.className = 'chip proof-toggle'; pb.type = 'button'; pb.textContent = 'proof';
+  const pf = document.createElement('div');
+  pf.className = 'capture-proof'; pf.hidden = true;
+  const row = (label, valueNode) => {
+    const r = document.createElement('div'); r.className = 'proof-row';
+    const l = document.createElement('span'); l.className = 'proof-label'; l.textContent = label;
+    const v = document.createElement('span'); v.className = 'proof-value';
+    if (typeof valueNode === 'string') v.textContent = valueNode; else v.appendChild(valueNode);
+    r.append(l, v); pf.appendChild(r);
+  };
+  row('saved audio', c.url ? link(c.url, c.path) : c.path);
+  if (c.url) {
+    const audio = document.createElement('audio');
+    audio.className = 'proof-audio'; audio.controls = true; audio.preload = 'none'; audio.src = c.url;
+    row('listen', audio);
+    if (/\.wav$/i.test(c.url)) {
+      const spec = document.createElement('img');
+      spec.className = 'proof-spec'; spec.loading = 'lazy'; spec.alt = 'spectrogram of the archived clip';
+      spec.src = c.url + '.spec.png';
+      spec.onerror = () => { spec.hidden = true; };
+      row('spectrogram', spec);
+    }
+  } else {
+    const none = document.createElement('span'); none.className = 'muted';
+    none.textContent = 'audio unavailable - only the decode text survives';
+    row('listen', none);
+  }
+  row('receiver', c.receiver || 'unknown');
+  const started = new Date(c.start);
+  row('recorded (UTC)', isNaN(started) ? String(c.start || 'unknown') : started.toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z'));
+  if (c.frequency_hz) row('frequency', mhz(c.frequency_hz) + (c.mode ? ' ' + c.mode : ''));
+  const raw = document.createElement('pre');
+  raw.className = 'proof-decode';
+  raw.textContent = c.decode || 'no decode text saved for this clip';
+  row('raw decode', raw);
+  row('live gate (Go)', (gateFacetOf(c) || 'not recorded') + (c.gate ? ' - ' + c.gate : ''));
+  row('cross-check', (c.crosscheck || 'none recorded') + (c.crosscheck_ref ? ' via ' + c.crosscheck_ref : ''));
+  row('verdict', c.crosscheck === 'verified' && gateFacetOf(c) === 'passed'
+    ? 'verified live - gate passed and independently confirmed'
+    : (c.verified ? 'gate passed - no independent cross-check recorded' : 'unverified'));
+  row('origin', c.target ? 'scheduled target "' + c.target + '"' : 'blind scan (no named target)');
+  row('archive', c.samples + ' samples at ' + c.rate + ' Hz' + (c.samples && c.rate ? ' (' + fmtDuration(c.samples / c.rate) + ')' : ''));
+  pb.onclick = () => { pf.hidden = !pf.hidden; };
+  wrap.append(pb, pf);
+  return wrap;
+}
+
+/* ---------- receiver health & capture success ----------
+   Summarises /api/metrics.json (uptime, scan outcomes, feed sources), the
+   proof ledger (/api/ledger.json) and the archived captures from
+   status.json: verified vs unverified, scheduled target vs blind scan. */
+const SCAN_OK_STATES = new Set(['decoded', 'listening', 'recording', 'decoding', 'tuned', 'connecting', 'idle', 'waiting', 'ok']);
+let healthSnapshot = { metrics: null, ledger: null, atMs: 0 };
+
+const fmtUptime = total => {
+  let s = Math.max(0, Math.round(total));
+  const d = Math.floor(s / 86400); s -= d * 86400;
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60);
+  return (d ? d + 'd ' : '') + (d || h ? h + 'h ' : '') + m + 'm';
+};
+
+function hbar(box, segs) {
+  box.textContent = '';
+  const total = segs.reduce((n, x) => n + x.count, 0);
+  if (!total) { const e = document.createElement('div'); e.className = 'hbar-empty'; box.appendChild(e); return; }
+  segs.forEach(x => {
+    if (!x.count) return;
+    const seg = document.createElement('div');
+    seg.className = 'hbar-seg ' + x.tone;
+    seg.style.width = Math.max(1.5, x.count / total * 100) + '%';
+    seg.title = x.label + ': ' + x.count;
+    box.appendChild(seg);
+  });
+}
+function hlegend(box, segs, emptyText) {
+  box.textContent = '';
+  const total = segs.reduce((n, x) => n + x.count, 0);
+  if (!total) { box.textContent = emptyText; return; }
+  segs.forEach((x, i) => {
+    if (!x.count) return;
+    if (i) box.appendChild(document.createTextNode(' · '));
+    const dot = document.createElement('span'); dot.className = 'hbar-dot ' + x.tone;
+    const t = document.createElement('span'); t.textContent = x.label + ' ' + x.count;
+    box.append(dot, t);
+  });
+}
+
+async function refreshHealth() {
+  try {
+    const [metrics, ledger] = await Promise.all([
+      fetchJSON('/api/metrics.json'),
+      fetchJSON('/api/ledger.json?limit=5000'),
+    ]);
+    healthSnapshot = { metrics, ledger, atMs: Date.now() };
+    renderHealth();
+  } catch {
+    el('health-updated').textContent = 'health data unavailable';
+  }
+}
+
+function renderHealth() {
+  const m = healthSnapshot.metrics;
+  if (!m) return;
+  el('health-updated').textContent = 'updated ' + relTime(new Date(healthSnapshot.atMs).toISOString());
+  el('health-uptime').textContent = fmtUptime(m.uptime_seconds || 0);
+  el('health-stations').textContent = m.scan_stations != null ? m.scan_stations : '–';
+  el('health-captures').textContent = m.captures != null ? m.captures : '–';
+
+  const outcomes = m.scan_outcomes || {};
+  const scanSegs = Object.keys(outcomes).sort().map(k => ({
+    label: k, count: outcomes[k], tone: SCAN_OK_STATES.has(k) ? 'good' : 'bad',
+  }));
+  hbar(el('health-scan-bar'), scanSegs);
+  hlegend(el('health-scan-legend'), scanSegs, 'no scan outcomes recorded since boot');
+  el('health-scan-note').textContent = m.scan_stations ? '' : 'scanner not running since boot';
+
+  const caps = (latestStatus && latestStatus.captures) || [];
+  const verified = caps.filter(c => c.verified).length;
+  const unverified = caps.length - verified;
+  el('health-success').textContent = caps.length ? Math.round(verified / caps.length * 100) + '%' : '–';
+  hbar(el('health-success-bar'), [
+    { label: 'verified live', count: verified, tone: 'good' },
+    { label: 'unverified', count: unverified, tone: 'warn' },
+  ]);
+  const gates = {};
+  caps.forEach(c => { if (!c.verified && c.gate) gates[c.gate] = (gates[c.gate] || 0) + 1; });
+  const gateText = Object.keys(gates).sort((a, b) => gates[b] - gates[a]).slice(0, 3).map(g => g + ' ×' + gates[g]).join(', ');
+  hlegend(el('health-success-legend'), [
+    { label: 'verified live', count: verified, tone: 'good' },
+    { label: 'unverified', count: unverified, tone: 'warn' },
+  ], 'no archived captures yet');
+  if (gateText) el('health-success-legend').appendChild(document.createTextNode(' · gates: ' + gateText));
+
+  const scheduled = caps.filter(c => c.target).length;
+  const blind = caps.length - scheduled;
+  hbar(el('health-origin-bar'), [
+    { label: 'scheduled target', count: scheduled, tone: 'accent' },
+    { label: 'blind scan', count: blind, tone: 'dim' },
+  ]);
+  hlegend(el('health-origin-legend'), [
+    { label: 'scheduled target', count: scheduled, tone: 'accent' },
+    { label: 'blind scan', count: blind, tone: 'dim' },
+  ], 'no archived captures yet');
+
+  const entries = (healthSnapshot.ledger && healthSnapshot.ledger.entries) || [];
+  const ours = entries.filter(e => e.decoded_by === 'sdrstream').length;
+  const feeds = m.feeds || {};
+  let text = 'proof ledger: ' + (entries.length
+    ? entries.length + (entries.length >= 5000 ? '+' : '') + ' first sightings (' + ours + ' decoded by sdrstream, ' + (entries.length - ours) + ' relayed from providers)'
+    : 'no entries yet');
+  if (feeds.sources && feeds.sources.length) text += ' · feeds: ' + (feeds.sources_live || 0) + '/' + feeds.sources.length + ' sources live';
+  el('health-ledger').textContent = text + ' · ';
+  const feedsLink = document.createElement('button');
+  feedsLink.className = 'linklike'; feedsLink.textContent = 'open live data'; feedsLink.onclick = () => showView('feeds');
+  el('health-ledger').appendChild(feedsLink);
+
+  renderReceiverProof(entries);
+}
+
 function renderCaptures(status) {
   const captures = (status.captures || []).slice().reverse();
   const box = el('captures-list');
-  const key = captures.map(c => c.path + '|' + c.url + '|' + c.decode).join(',');
+  const key = captures.map(c => c.path + '|' + c.url + '|' + c.decode + '|' + c.verified + '|' + c.target + '|' + c.gate).join(',');
   if (box.dataset.key !== key) {
     box.dataset.key = key;
     box.textContent = '';
@@ -197,8 +391,20 @@ function renderCaptures(status) {
       title.appendChild(when);
       card.appendChild(title);
       const meta = document.createElement('div'); meta.className = 'card-meta';
-      meta.textContent = shortURL(c.receiver) + ' · ' + c.samples + ' samples · ' + c.rate + ' Hz' + (c.frequency_hz ? ' · ' + mhz(c.frequency_hz) : '') + (c.mode ? ' · ' + c.mode : '');
+      meta.textContent = shortURL(c.receiver) + ' · ' + c.samples + ' samples · ' + c.rate + ' Hz' + (c.samples && c.rate ? ' · ' + fmtDuration(c.samples / c.rate) : '') + (c.frequency_hz ? ' · ' + mhz(c.frequency_hz) : '') + (c.mode ? ' · ' + c.mode : '');
       card.appendChild(meta);
+      const badges = document.createElement('div'); badges.className = 'badge-row';
+      const vb = document.createElement('span');
+      vb.className = 'badge ' + (c.verified ? 'verified' : 'unverified');
+      vb.textContent = c.verified ? 'verified live' : 'unverified';
+      if (!c.verified && c.gate) vb.title = 'quality gate: ' + c.gate;
+      badges.appendChild(vb);
+      const ob = document.createElement('span');
+      ob.className = 'badge ' + (c.target ? 'scheduled' : 'blind');
+      ob.textContent = c.target ? 'scheduled: ' + c.target : 'blind scan';
+      badges.appendChild(ob);
+      facetChips(c).forEach(ch => badges.appendChild(ch));
+      card.appendChild(badges);
       if (c.decode) { const d=document.createElement('div'); d.className='detail'; d.textContent=c.decode; card.appendChild(d); }
       if (c.url) {
         const audio = document.createElement('audio');
@@ -213,6 +419,7 @@ function renderCaptures(status) {
         const p = document.createElement('div'); p.className = 'card-meta'; p.textContent = c.path;
         card.appendChild(p);
       }
+      card.appendChild(captureProof(c));
       box.appendChild(card);
     });
     if (!captures.length) box.innerHTML = '<div class="empty">none yet — run a capture</div>';
@@ -1180,7 +1387,7 @@ function renderFeeds() {
  const note=el('feeds-note'); note.textContent='updated '+relTime(feedsSnapshot.updated_at)+staleSrc.map(s=>' · '+s.name+': STALE, last fetch '+relTime(s.last_ok)).join('')+sources.filter(s=>s.state==='disabled'||s.state==='error').map(s=>' · '+s.name+': '+(s.last_error||s.detail||s.state)).join('');
  const list=el('feeds-list'); list.textContent=''; const shown=items.filter(i=>!feedsSourceFilter||i.source===feedsSourceFilter);
  if(!shown.length){list.innerHTML='<div class="empty">no live data yet - feeds are connecting</div>';return}
- shown.slice(0,120).forEach(it=>{const c=document.createElement('div');c.className='card-activity feed-'+(it.kind||'data');const r=document.createElement('div');r.className='row';const label=document.createElement('span');label.className='freq';label.textContent=it.label;const badge=document.createElement('span');badge.className='badge feed-src';badge.textContent=it.source;const t=document.createElement('span');t.className='muted';t.textContent=relTime(it.time);r.append(label,badge,t);if(it.ref){const a=document.createElement('a');a.href=safeURL(it.ref);a.target='_blank';a.rel='noopener noreferrer';a.textContent='source';r.append(a)}const pb=document.createElement('button');pb.className='chip';pb.textContent='proof';const pf=document.createElement('div');pf.className='meta';pf.hidden=true;pf.textContent='provider time '+fmtDate(it.time)+' · fetched '+(it.fetched_at?fmtDate(it.fetched_at):'unknown')+' · decoded by '+(it.decoded_by||'provider')+' · source '+it.source+(((feedsSnapshot.sources||[]).find(x=>x.name===it.source)||{}).license?' · licence '+(feedsSnapshot.sources.find(x=>x.name===it.source).license):'');pb.onclick=()=>{pf.hidden=!pf.hidden};r.append(pb);c.appendChild(r);c.appendChild(pf);if(it.detail){const d=document.createElement('div');d.className='detail';d.textContent=it.detail;c.appendChild(d)}if(it.has_pos){const m=document.createElement('div');m.className='meta';m.textContent=it.lat.toFixed(3)+', '+it.lon.toFixed(3);c.appendChild(m)}list.appendChild(c)});
+ shown.slice(0,120).forEach(it=>{const c=document.createElement('div');c.className='card-activity feed-'+(it.kind||'data');const r=document.createElement('div');r.className='row';const label=document.createElement('span');label.className='freq';label.textContent=it.label;const badge=document.createElement('span');badge.className='badge feed-src';badge.textContent=it.source;const t=document.createElement('span');t.className='muted';t.textContent=relTime(it.time);r.append(label,badge,t);if(it.ref){const a=document.createElement('a');a.href=safeURL(it.ref);a.target='_blank';a.rel='noopener noreferrer';a.textContent='source';r.append(a)}const pb=document.createElement('button');pb.className='chip';pb.textContent='proof';const pf=document.createElement('div');pf.className='meta';pf.hidden=true;pf.textContent='provider time '+fmtDate(it.time)+' · fetched '+(it.fetched_at?fmtDate(it.fetched_at):'unknown')+' · decoded by '+(it.decoded_by||'provider')+' · source '+it.source+(((feedsSnapshot.sources||[]).find(x=>x.name===it.source)||{}).license?' · licence '+(feedsSnapshot.sources.find(x=>x.name===it.source).license):'');if(it.receiver)pf.textContent+=' · receiver '+it.receiver;if(it.ref&&it.ref.indexOf('/audio/')===0){const au=document.createElement('audio');au.className='proof-audio';au.controls=true;au.preload='none';au.src=it.ref;pf.appendChild(au)};pb.onclick=()=>{pf.hidden=!pf.hidden};r.append(pb);c.appendChild(r);c.appendChild(pf);if(it.detail){const d=document.createElement('div');d.className='detail';d.textContent=it.detail;c.appendChild(d)}if(it.has_pos){const m=document.createElement('div');m.className='meta';m.textContent=it.lat.toFixed(3)+', '+it.lon.toFixed(3);c.appendChild(m)}list.appendChild(c)});
 }
 
 function renderPublicPanels(sources) {
@@ -1589,11 +1796,12 @@ if (location.hash && el('view-' + location.hash.slice(1))) showView(location.has
 refreshReceiverPanel(); renderMsglog();
 setInterval(refreshReceiverPanel, 3000);
 setInterval(renderMsglog, 4000);
-refreshStatus(); refreshSats(); refreshGallery(); refreshStations(); refreshScans(); refreshActivity(); refreshFeeds(); refreshSources(false); refreshBandCond(); refreshLive();
+refreshStatus(); refreshSats(); refreshGallery(); refreshStations(); refreshScans(); refreshActivity(); refreshFeeds(); refreshSources(false); refreshBandCond(); refreshLive(); refreshHealth();
 el('sources-refresh').onclick = () => refreshSources(true);
 setInterval(refreshStatus, 5000);
 applyTimers();
 setInterval(refreshFeeds, 15000);
+setInterval(refreshHealth, 30000);
 setInterval(refreshScans, 2000);
 setInterval(refreshScanLog, 1500);
 setInterval(refreshLive, 1000);
@@ -1601,12 +1809,85 @@ setInterval(refreshGallery, 60000);
 setInterval(refreshStations, 300000);
 setInterval(refreshBandCond, 900000);
 
-// Installable-app support: register the service worker that caches the
-// static shell. Live data (/api, /audio) always bypasses it.
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch((err) => {
-      console.warn('service worker registration failed:', err);
-    });
+/* ---------- receiver proof ledger (own captures, honest verdicts) ---------- */
+/* Every archived receiver capture lands one proof-ledger entry
+   (source="receiver"). Each entry keeps the live quality gate's verdict as
+   an explicit evidence class - "verified live" only when the gate passed,
+   otherwise "unverified" with the gate reason - plus the playable clip and
+   the raw decode, so the archive can never show a rejected clip as more
+   than it is. */
+function renderReceiverProof(entries) {
+  const box = el('rxproof-list');
+  if (!box) return;
+  const mine = (entries || []).filter(e => e.source === 'receiver')
+    .slice().sort((a, b) => String(b.provider_time).localeCompare(String(a.provider_time)));
+  box.textContent = '';
+  if (!mine.length) {
+    box.innerHTML = '<div class="empty">no receiver captures archived yet - scheduled captures land here with their audio, decode and verdict</div>';
+    return;
+  }
+  mine.slice(0, 8).forEach(e => {
+    const card = document.createElement('div'); card.className = 'card rxproof-card';
+    const title = document.createElement('div'); title.className = 'card-title';
+    const b = document.createElement('b'); b.textContent = e.label || 'capture';
+    const when = document.createElement('span'); when.className = 'muted';
+    when.textContent = ' ' + fmtDate(e.provider_time);
+    title.append(b, when); card.appendChild(title);
+    const badges = document.createElement('div'); badges.className = 'badge-row';
+    const ev = document.createElement('span');
+    if (e.evidence === 'verified') {
+      ev.className = 'badge verified'; ev.textContent = 'verified live';
+      ev.title = 'Go live quality gate passed' + (e.crosscheck === 'verified' ? ' and independently cross-checked' : ' - no independent cross-check recorded');
+    } else {
+      ev.className = 'badge unverified';
+      ev.textContent = e.evidence === 'unverified' ? 'unverified' : 'not gated';
+      if (e.gate) ev.title = 'quality gate: ' + e.gate;
+    }
+    badges.appendChild(ev);
+    const src = document.createElement('span');
+    src.className = 'badge scheduled'; src.textContent = 'decoded by sdrstream';
+    badges.appendChild(src);
+    if (e.receiver) {
+      const rx = document.createElement('span'); rx.className = 'badge blind'; rx.textContent = shortURL(e.receiver);
+      badges.appendChild(rx);
+    }
+    facetChips({ gate_verdict: e.gate_verdict || (e.evidence === 'verified' ? 'passed' : ''),
+      crosscheck: e.crosscheck, crosscheck_ref: e.crosscheck_ref, gate: e.gate,
+      verified: e.evidence === 'verified' }).forEach(ch => badges.appendChild(ch));
+    card.appendChild(badges);
+    if (e.gate) {
+      const g = document.createElement('div'); g.className = 'card-meta';
+      g.textContent = 'quality gate: ' + e.gate;
+      card.appendChild(g);
+    }
+    if (e.detail) {
+      const d = document.createElement('pre'); d.className = 'proof-decode'; d.textContent = e.detail;
+      card.appendChild(d);
+    }
+    if (e.ref && e.ref.indexOf('/audio/') === 0) {
+      const au = document.createElement('audio');
+      au.className = 'proof-audio'; au.controls = true; au.preload = 'none'; au.src = e.ref;
+      au.setAttribute('aria-label', 'listen to ' + (e.label || 'capture'));
+      card.appendChild(au);
+      card.appendChild(recordButtonFor(au));
+      if (/\.wav$/i.test(e.ref)) {
+        const spec = document.createElement('img');
+        spec.className = 'proof-spec'; spec.loading = 'lazy'; spec.alt = 'spectrogram of the archived clip';
+        spec.src = e.ref + '.spec.png';
+        spec.onerror = () => { spec.hidden = true; };
+        card.appendChild(spec);
+      }
+    } else {
+      const none = document.createElement('div'); none.className = 'card-meta';
+      none.textContent = 'audio unavailable - only the decode text survives';
+      card.appendChild(none);
+    }
+    card.appendChild(Object.assign(document.createElement('div'), { className: 'card-meta', textContent: 'archived ' + e.id }));
+    box.appendChild(card);
   });
+  if (mine.length > 8) {
+    const more = document.createElement('div'); more.className = 'muted';
+    more.textContent = '+ ' + (mine.length - 8) + ' older receiver entries in the full proof ledger (live data view)';
+    box.appendChild(more);
+  }
 }

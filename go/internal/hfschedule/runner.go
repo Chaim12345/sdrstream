@@ -67,10 +67,92 @@ func Record(ctx context.Context, r Receiver, t decode.HFTarget, d time.Duration)
 	if err != nil {
 		return decode.HFResult{}, err
 	}
-	result := decode.HFDecodeForScan(t, r.URL, s, rate)
+	result := decode.HFDecodeForScan(ctx, t, r.URL, s, rate)
 	result.Started = started
 	result.AudioWAV = decode.WriteWAV16(s, rate)
 	return result, nil
+}
+
+// ReceiverMetrics is the persisted per-receiver success record. A success
+// is a complete, valid capture (status recorded or silent); refusals,
+// timeouts and truncated audio are failures.
+type ReceiverMetrics struct {
+	Attempts            int       `json:"attempts"`
+	Successes           int       `json:"successes"`
+	Failures            int       `json:"failures"`
+	ConsecutiveFailures int       `json:"consecutive_failures,omitempty"`
+	LastSuccess         time.Time `json:"last_success,omitempty"`
+	LastFailure         time.Time `json:"last_failure,omitempty"`
+	LastError           string    `json:"last_error,omitempty"`
+}
+
+// SuccessRate ranks receivers; no history rates neutral so a new receiver
+// keeps its operator priority until it has a record.
+func (m ReceiverMetrics) SuccessRate() float64 {
+	if m.Attempts == 0 {
+		return 0.5
+	}
+	return float64(m.Successes) / float64(m.Attempts)
+}
+
+// cooldown grows with the consecutive-failure streak: one hour after the
+// first failure, doubling per further failure, capped at a day.
+func (m ReceiverMetrics) cooldown() time.Duration {
+	if m.ConsecutiveFailures <= 0 {
+		return 0
+	}
+	d := time.Hour
+	for i := 1; i < m.ConsecutiveFailures && d < 24*time.Hour; i++ {
+		d *= 2
+	}
+	return min(d, 24*time.Hour)
+}
+
+// benched reports whether the receiver is inside its failure cooldown.
+func (m ReceiverMetrics) benched(now time.Time) bool {
+	if m.ConsecutiveFailures <= 0 || m.LastFailure.IsZero() {
+		return false
+	}
+	return now.Sub(m.LastFailure) < m.cooldown()
+}
+
+// noteResult folds one capture outcome into the metrics.
+func (m *ReceiverMetrics) noteResult(ok bool, errText string, now time.Time) {
+	m.Attempts++
+	if ok {
+		m.Successes++
+		m.ConsecutiveFailures = 0
+		m.LastSuccess = now
+		m.LastError = ""
+		return
+	}
+	m.Failures++
+	m.ConsecutiveFailures++
+	m.LastFailure = now
+	m.LastError = errText
+}
+
+// selectReceiver picks the healthiest eligible receiver: benched receivers
+// sit out their cooldown; among the rest the highest persisted success rate
+// wins, ties keep the operator priority order ReceiversFor established.
+func selectReceiver(receivers []Receiver, metrics map[string]ReceiverMetrics, now time.Time) (Receiver, bool) {
+	best := -1
+	bestRate := -1.0
+	bestStreak := 1 << 30
+	for i, r := range receivers {
+		m := metrics[r.URL]
+		if m.benched(now) {
+			continue
+		}
+		rate := m.SuccessRate()
+		if best < 0 || rate > bestRate || (rate == bestRate && m.ConsecutiveFailures < bestStreak) {
+			best, bestRate, bestStreak = i, rate, m.ConsecutiveFailures
+		}
+	}
+	if best < 0 {
+		return Receiver{}, false
+	}
+	return receivers[best], true
 }
 
 type Audit struct {
@@ -87,8 +169,13 @@ type Audit struct {
 	DecodeReason        string
 }
 type State struct {
-	Attempts         map[string]Audit
+	Attempts map[string]Audit
+	// ReceiverFailures is kept for backward compatibility with existing
+	// state files; Metrics supersedes it for selection.
 	ReceiverFailures map[string]time.Time
+	// Metrics holds the persisted per-receiver success record, keyed by
+	// receiver URL.
+	Metrics map[string]ReceiverMetrics `json:",omitempty"`
 }
 type Runner struct {
 	Dir       string
@@ -162,6 +249,9 @@ func (r *Runner) RunOnce(ctx context.Context, entries []Entry) (*Audit, error) {
 	if state.ReceiverFailures == nil {
 		state.ReceiverFailures = map[string]time.Time{}
 	}
+	if state.Metrics == nil {
+		state.Metrics = map[string]ReceiverMetrics{}
+	}
 	if state.Attempts == nil {
 		state.Attempts = map[string]Audit{}
 	}
@@ -185,14 +275,8 @@ func (r *Runner) RunOnce(ctx context.Context, entries []Entry) (*Audit, error) {
 		if len(receivers) == 0 {
 			continue
 		}
-		var receiver Receiver
-		for _, candidate := range receivers {
-			if failed, ok := state.ReceiverFailures[candidate.URL]; !ok || now.Sub(failed) >= time.Hour {
-				receiver = candidate
-				break
-			}
-		}
-		if receiver.URL == "" {
+		receiver, ok := selectReceiver(receivers, state.Metrics, now)
+		if !ok {
 			continue
 		}
 		// Persist before touching the receiver: restarts cannot duplicate in-flight work.
@@ -222,6 +306,7 @@ func (r *Runner) RunOnce(ctx context.Context, entries []Entry) (*Audit, error) {
 			state.ReceiverFailures[receiver.URL] = now
 		} else if len(result.AudioWAV) < 46 || string(result.AudioWAV[:4]) != "RIFF" {
 			a.Error = "capture returned no PCM WAV"
+			state.ReceiverFailures[receiver.URL] = now
 		} else {
 			wav := result.AudioWAV
 			a.SampleRate = int(binary.LittleEndian.Uint32(wav[24:28]))
@@ -261,7 +346,13 @@ func (r *Runner) RunOnce(ctx context.Context, entries []Entry) (*Audit, error) {
 				}
 			}
 		}
+		m := state.Metrics[receiver.URL]
+		m.noteResult(a.Status == "recorded" || a.Status == "silent", a.Error, now)
+		state.Metrics[receiver.URL] = m
 		if err := saveJSON(filepath.Join(r.Dir, o.Key()+".json"), a); err != nil {
+			return nil, err
+		}
+		if err := AppendLedger(r.Dir, a); err != nil {
 			return nil, err
 		}
 		state.Attempts[o.Key()] = a
