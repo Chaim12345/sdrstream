@@ -1145,7 +1145,20 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, filepath.Join(s.capturesDir, name))
+	serveAudioFile(w, r, filepath.Join(s.capturesDir, name))
+}
+
+// serveAudioFile serves one audio file with an explicit Content-Type for
+// WAV: Go's extension-based detection of .wav is toolchain- and
+// host-dependent (built-in table versus /etc/mime.types gives audio/wav
+// or audio/x-wav), which made the same contract test pass on one machine
+// and fail on another. Players accept either; pin the registered
+// audio/wav so behavior is deterministic everywhere.
+func serveAudioFile(w http.ResponseWriter, r *http.Request, path string) {
+	if strings.EqualFold(filepath.Ext(path), ".wav") {
+		w.Header().Set("Content-Type", "audio/wav")
+	}
+	http.ServeFile(w, r, path)
 }
 
 // handleGallery lists the saved artefacts. URLs are rewritten to local
@@ -1495,7 +1508,7 @@ func (s *Server) handleLiveAudio(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, filepath.Join(s.galleryDir, name))
+	serveAudioFile(w, r, filepath.Join(s.galleryDir, name))
 }
 
 // handleGalleryFile serves one downloaded artefact, but only names that are
@@ -1525,7 +1538,7 @@ func (s *Server) handleGalleryFile(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, filepath.Join(s.galleryDir, name))
+	serveAudioFile(w, r, filepath.Join(s.galleryDir, name))
 }
 
 // SetFeeds attaches live public feeds to the server.
