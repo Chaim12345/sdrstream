@@ -67,15 +67,15 @@ WEATHER_SATELLITES: Dict[str, Satellite] = {
     for s in [
         Satellite(
             "NOAA 15", 25338, downlink_hz=137_620_000, mode="FM", group="weather",
-            notes="Decommissioned 2025-08-19 per NOAA OSPO; APT still reported on air. APT 137.620 MHz, wide FM.",
+            status="decommissioned", notes="Decommissioned 2025-08-19 per NOAA OSPO. APT transmitter status UNVALIDATED - no verified reception by this project. Pass predictions are orbital facts, not transmission promises. APT 137.620 MHz, wide FM.",
         ),
         Satellite(
             "NOAA 18", 28654, downlink_hz=137_912_500, mode="FM", group="weather",
-            notes="Decommissioned 2025-06-06 per NOAA OSPO; APT still reported on air. APT 137.9125 MHz, wide FM.",
+            status="decommissioned", notes="Decommissioned 2025-06-06 per NOAA OSPO. APT transmitter status UNVALIDATED - no verified reception by this project. Pass predictions are orbital facts, not transmission promises. APT 137.9125 MHz, wide FM.",
         ),
         Satellite(
             "NOAA 19", 33591, downlink_hz=137_100_000, mode="FM", group="weather",
-            notes="Decommissioned 2025-08-13 per NOAA OSPO; APT still reported on air. APT 137.100 MHz, wide FM.",
+            status="decommissioned", notes="Decommissioned 2025-08-13 per NOAA OSPO. APT transmitter status UNVALIDATED - no verified reception by this project. Pass predictions are orbital facts, not transmission promises. APT 137.100 MHz, wide FM.",
         ),
     ]
 }

@@ -166,6 +166,10 @@ func (s *Service) plan() (*candidate, time.Duration) {
 		if ev := satellites.EventCovering(sat.Name, now, windowEnd); ev != nil {
 			sat.DownlinkHz = ev.DownlinkHz
 			sat.Mode = ev.Mode
+			// The catalogue beacon list belongs to the normal operating
+			// plan; during an event the event downlink is the target, so
+			// the beacon preference must not win it back.
+			sat.Beacons = nil
 			eventName = ev.Name
 		}
 		receivers := catalogue.ForFrequency(float64(sat.DownlinkHz))

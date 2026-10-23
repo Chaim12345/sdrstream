@@ -615,3 +615,5 @@ kbd {
 .diag-log { max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: 11px; margin-top: 8px; }
 
 .sat-note { font-size: 11px; opacity: 0.75; margin-top: 2px; }
+
+.pass-warn { font-size: 12px; color: #e0a458; margin-top: 4px; }

@@ -42,7 +42,7 @@ EVENTS = [
         # capture planning; not a silent reconciliation.
         source=(
             "https://www.amsat.org/?page_id=fulsovcs (2026-10-18); corroborated by "
-            "DARC darc.de 2026-10-20, darc-e39.org 2026-10-21, w5pro.com 2026-10-20"
+            "DARC darc.de 2026-10-20, darc-e39.org 2026-10-21, w5pro.com 2026-10-20. Re-verified 2026-10-23: primary announcements (ARISS via sbarc.co.uk 2026-10-14, slowscantv.com) say Oct 22-25; no source extends beyond Oct 26 17:45 UTC."
         ),
         notes=(
             "36 s on, 2 min off; allow +/-10 kHz Doppler. After the event the Service Module "

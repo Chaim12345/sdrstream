@@ -150,6 +150,12 @@ function renderNextPass(status) {
   el('np-sat').textContent = nextPass.satellite;
   el('np-receiver').textContent = shortURL(nextPass.receiver);
   el('np-meta').textContent = 'rise ' + fmtTime(nextPass.rise) + ' · peak ' + fmtTime(nextPass.peak) + ' · max el ' + (nextPass.max_elevation || 0).toFixed(1) + '°';
+  let warn = el('np-warn');
+  if (!warn) { warn = document.createElement('div'); warn.id = 'np-warn'; warn.className = 'pass-warn'; card.appendChild(warn); }
+  if (nextPass.status && nextPass.status !== 'active') {
+    warn.hidden = false;
+    warn.textContent = nextPass.status + ' - orbital prediction only; transmitter unvalidated, no reception promised';
+  } else { warn.hidden = true; }
 }
 setInterval(() => {
   if (nextPass) el('np-countdown').textContent = countdownTo(nextPass.rise);
@@ -195,6 +201,11 @@ function renderPasses(status) {
     const meta = document.createElement('div'); meta.className = 'card-meta';
     meta.textContent = shortURL(p.receiver) + ' · rise ' + fmtTime(p.rise) + ' · peak ' + fmtTime(p.peak) + ' · set ' + fmtTime(p.set) + ' · max el ' + (p.max_elevation || 0).toFixed(1) + '°';
     card.appendChild(title); card.appendChild(meta);
+    if (p.status && p.status !== 'active') {
+      const w = document.createElement('div'); w.className = 'pass-warn';
+      w.textContent = p.status + ' - orbital prediction only; transmitter unvalidated';
+      card.appendChild(w);
+    }
     box.appendChild(card);
   });
 }
@@ -473,7 +484,8 @@ async function refreshSats() {
       if (s.event) {
         const line = document.createElement('div');
         line.className = 'sat-note';
-        line.textContent = 'event: ' + s.event + (s.event_downlink_hz ? ' on ' + (s.event_downlink_hz / 1e6).toFixed(4) + ' MHz' : '');
+        line.textContent = 'event: ' + s.event + (s.event_downlink_hz ? ' on ' + (s.event_downlink_hz / 1e6).toFixed(4) + ' MHz' : '') +
+          (s.event_mode ? ' · ' + s.event_mode : '') + (s.event_end_utc ? ' · ends ' + s.event_end_utc.replace('T', ' ').replace(':00Z', ' UTC') : '');
         tr.children[2].appendChild(line);
       }
       if (s.notes) {

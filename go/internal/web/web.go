@@ -111,6 +111,11 @@ type PassInfo struct {
 	Peak         time.Time `json:"peak"`
 	Set          time.Time `json:"set"`
 	MaxElevation float64   `json:"max_elevation"`
+	// Status/Notes carry the catalogue's honesty about the bird (e.g.
+	// decommissioned, TX unvalidated) so a pass is never presented as
+	// readiness to receive.
+	Status string `json:"status,omitempty"`
+	Notes  string `json:"notes,omitempty"`
 }
 
 // SatelliteInfo describes one satellite in the table.
@@ -130,6 +135,8 @@ type SatelliteInfo struct {
 	// catalogue downlink (e.g. an ARISS SSTV series on 70cm).
 	Event           string `json:"event,omitempty"`
 	EventDownlinkHz int64  `json:"event_downlink_hz,omitempty"`
+	EventMode       string `json:"event_mode,omitempty"`
+	EventEndUTC     string `json:"event_end_utc,omitempty"`
 }
 
 // Server holds the state and serves the UI and API.
@@ -423,6 +430,7 @@ func (s *Server) loadPasses() {
 					Satellite: sat.Name, NoradID: sat.NoradID, Receiver: receiver.URL,
 					Rise: pass.Rise, Peak: pass.Peak.Time, Set: pass.Set,
 					MaxElevation: pass.MaxElevation(),
+					Status:       sat.Status, Notes: sat.Notes,
 				})
 			}
 			break
@@ -2161,6 +2169,8 @@ func (s *Server) handleSatellites(w http.ResponseWriter, r *http.Request) {
 		if ev := satellites.ActiveEvent(sat.Name, time.Now()); ev != nil {
 			info.Event = ev.Name
 			info.EventDownlinkHz = ev.DownlinkHz
+			info.EventMode = ev.ImageMode
+			info.EventEndUTC = ev.EndUTC
 		}
 		out = append(out, info)
 	}

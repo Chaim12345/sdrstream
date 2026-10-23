@@ -53,9 +53,9 @@ var Table = []Sat{
 // receiving them; the notes carry the official status and the decoder
 // confirms what is actually on the air.
 var WeatherTable = []Sat{
-	{Name: "NOAA 15", NoradID: 25338, DownlinkHz: 137620000, Mode: "FM", Status: "active", Group: "weather", Notes: "Decommissioned 2025-08-19 per NOAA OSPO; APT still reported on air. APT 137.620 MHz, wide FM (~34 kHz)."},
-	{Name: "NOAA 18", NoradID: 28654, DownlinkHz: 137912500, Mode: "FM", Status: "active", Group: "weather", Notes: "Decommissioned 2025-06-06 per NOAA OSPO; APT still reported on air. APT 137.9125 MHz, wide FM (~34 kHz)."},
-	{Name: "NOAA 19", NoradID: 33591, DownlinkHz: 137100000, Mode: "FM", Status: "active", Group: "weather", Notes: "Decommissioned 2025-08-13 per NOAA OSPO; APT still reported on air. APT 137.100 MHz, wide FM (~34 kHz)."},
+	{Name: "NOAA 15", NoradID: 25338, DownlinkHz: 137620000, Mode: "FM", Status: "decommissioned", Group: "weather", Notes: "Decommissioned 2025-08-19 per NOAA OSPO. APT transmitter status UNVALIDATED - no verified reception by this project (2026-10-23 attempts were noise-only). Pass predictions are orbital facts, not transmission promises."},
+	{Name: "NOAA 18", NoradID: 28654, DownlinkHz: 137912500, Mode: "FM", Status: "decommissioned", Group: "weather", Notes: "Decommissioned 2025-06-06 per NOAA OSPO. APT transmitter status UNVALIDATED - no verified reception by this project. Pass predictions are orbital facts, not transmission promises."},
+	{Name: "NOAA 19", NoradID: 33591, DownlinkHz: 137100000, Mode: "FM", Status: "decommissioned", Group: "weather", Notes: "Decommissioned 2025-08-13 per NOAA OSPO. APT transmitter status UNVALIDATED - no verified reception by this project. Pass predictions are orbital facts, not transmission promises."},
 }
 
 // All returns the amateur table plus the weather table as one slice.
