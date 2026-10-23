@@ -367,3 +367,29 @@ func TestReceiverIOFaultStillBenches(t *testing.T) {
 		t.Fatalf("io fault must count: %+v", m)
 	}
 }
+
+func TestWeakSignalFullAudioDoesNotBenchReceiver(t *testing.T) {
+	// A full-duration capture of valid PCM whose decode finds nothing
+	// (weak signal, idle slot) is a recorded audit with a gate reject -
+	// never a receiver failure. Benching is reserved for transport
+	// faults (early stream closure, read errors, missing PCM).
+	dir := t.TempDir()
+	r := Runner{
+		Dir:       dir,
+		Receivers: []Receiver{{URL: "a", Type: "kiwi", MaxKHz: 30000}},
+		Listen:    240 * time.Second,
+		Now:       func() time.Time { return utc("2026-10-22T06:00:00Z") },
+		Record:    okRecord(2880000), // 240s at 12 kHz: full length, no decodable content
+	}
+	a, err := r.RunOnce(context.Background(), []Entry{daylongEntry("w1")})
+	if err != nil || a == nil {
+		t.Fatal(a, err)
+	}
+	if a.Status != "recorded" || a.FailureClass != "" {
+		t.Fatalf("full-length weak audio must record clean, got %s/%s: %s", a.Status, a.FailureClass, a.Error)
+	}
+	m := readState(t, dir).Metrics["a"]
+	if m.Attempts != 1 || m.Successes != 1 || m.ConsecutiveFailures != 0 {
+		t.Fatalf("weak-signal full audio must count as receiver success: %+v", m)
+	}
+}
