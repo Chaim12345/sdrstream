@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Whole-app functional audit on an emulator running the app's native engine.
+# Logs in over the forwarded port with the on-device password (read in CI,
+# masked), sweeps every /api endpoint, taps every bottom-nav tab with
+# screenshots, and re-sweeps after a settle period to see whether live data
+# ever appears. Usage: android-func-audit.sh <label> [settle_seconds]
+set -u
+adb() { timeout 40 command adb "$@"; }
+LABEL="$1"; SETTLE="${2:-240}"; APK="${3:-}"; PKG=com.chaim12345.sdrstream
+OUT=qa-results; mkdir -p "$OUT"; R="$OUT/$LABEL"
+log() { echo "[audit] $*" | tee -a "$R-audit.txt"; }
+if [ -n "$APK" ]; then
+  adb uninstall $PKG >/dev/null 2>&1
+  adb install -r "$APK" 2>&1 | tail -1 | tee -a "$R-audit.txt"
+  adb shell pm grant $PKG android.permission.POST_NOTIFICATIONS 2>/dev/null
+  adb shell input keyevent KEYCODE_WAKEUP
+  adb shell am start -n $PKG/.MainActivity >/dev/null
+  sleep 60
+fi
+PW=$(adb shell run-as $PKG cat shared_prefs/sdrstream.xml 2>/dev/null | sed -n 's/.*name="ui_password">\([^<]*\)<.*/\1/p')
+echo "::add-mask::$PW"
+adb forward tcp:18081 tcp:8080 >/dev/null
+BASE=http://127.0.0.1:18081; JAR=/tmp/jar
+curl -sS -m 10 -c $JAR -o /dev/null -w "login http=%{http_code}\n" -H "Origin: $BASE" -H "Referer: $BASE/login" --data-urlencode "password=$PW" $BASE/login | tee -a "$R-audit.txt"
+ENDPOINTS="status scans scanlog activity live spectrum captures satellites observations gallery feeds ledger metrics sources bandconditions stations map tune"
+sweep() { # sweep <tag>
+  for e in $ENDPOINTS; do
+    f="$R-$1-$e.json"
+    code=$(curl -sS -m 20 -b $JAR -o "$f" -w "%{http_code}" "$BASE/api/$e.json" 2>/dev/null)
+    size=$(wc -c < "$f" 2>/dev/null || echo 0)
+    shape=$(python3 - "$f" <<'PY' 2>/dev/null
+import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception as ex: print("not-json"); sys.exit()
+def desc(v):
+    if isinstance(v,list): return "list[%d]"%len(v)
+    if isinstance(v,dict): return "{"+",".join("%s:%s"%(k,desc(x) if isinstance(x,(list,dict)) else repr(x)[:24]) for k,x in list(v.items())[:12])+"}"
+    return repr(v)[:40]
+print(desc(d)[:400])
+PY
+)
+    log "$1 /api/$e.json http=$code bytes=$size $shape"
+  done
+}
+log "== sweep t0 (just after login) =="; sweep t0
+adb shell input keyevent KEYCODE_WAKEUP
+adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 5
+tabs="Overview Map Activity Decodes Passes Gallery Captures Scan Stations Satellites Live_data Settings"
+for t in $tabs; do
+  adb shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1; adb exec-out cat /sdcard/u.xml > /tmp/u.xml 2>/dev/null
+  lbl=${t//_/ }
+  xy=$(python3 - /tmp/u.xml "$lbl" <<'PY'
+import re,sys
+x=open(sys.argv[1],errors='ignore').read(); l=sys.argv[2]
+for m in re.finditer(r'<node[^>]*?(?:text|content-desc)="[^"]*%s[^"]*"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'%re.escape(l),x):
+    a,b,c,d=map(int,m.groups())
+    if c-a>0: print((a+c)//2,(b+d)//2); break
+PY
+)
+  if [ -n "$xy" ]; then adb shell input tap $xy; sleep 4; adb exec-out screencap -p > "$R-tab-$t.png"; adb shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1; adb exec-out cat /sdcard/u.xml > "$R-tab-$t.xml"; log "tab $t: tapped, $(grep -oE 'text="[^"]{3,60}"' $R-tab-$t.xml | wc -l) text nodes"; else log "tab $t: NO tappable node found"; fi
+done
+log "== settling ${SETTLE}s for live data =="; sleep "$SETTLE"
+log "== sweep t1 (after settle) =="; sweep t1
+adb exec-out screencap -p > "$R-after-settle.png"
+adb shell run-as $PKG sh -c 'tail -60 files/engine.log 2>/dev/null' | sed "s/$PW/<pw>/g" > "$R-engine-tail.txt"
+adb shell run-as $PKG sh -c 'ls -la files/ files/state ../captures 2>&1 | head -40' > "$R-files.txt" 2>&1
+adb shell top -b -n 1 | grep -iE 'sdrstream|libsdr' | head -3 | tee -a "$R-audit.txt"
+adb logcat -d -v threadtime | grep -E 'FATAL EXCEPTION|AndroidRuntime' | head > "$R-fatal.txt"; log "fatal lines: $(wc -l < $R-fatal.txt)"

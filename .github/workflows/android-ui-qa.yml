@@ -40,6 +40,10 @@ jobs:
           (cd go && CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android34-clang" go build -trimpath -ldflags "-s -w" -o ../android/app/src/main/jniLibs/x86_64/libsdrstreamd.so ./cmd/sdrstream)
           (cd android && ./gradlew assembleDebug -PsdrstreamAbis=arm64-v8a,x86_64)
           cp android/app/build/outputs/apk/debug/app-debug.apk ../fat.apk
+          # Variant B: x86_64 engine built CGO_ENABLED=0 (pure-Go resolver, like the shipping arm64 build)
+          (cd go && CGO_ENABLED=0 GOOS=android GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o ../android/app/src/main/jniLibs/x86_64/libsdrstreamd.so ./cmd/sdrstream)
+          (cd android && ./gradlew assembleDebug -PsdrstreamAbis=arm64-v8a,x86_64)
+          cp android/app/build/outputs/apk/debug/app-debug.apk ../fat-cgo0.apk
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -51,7 +55,10 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_6
-          script: timeout 900 bash -x qa-src/qa/android-ui-qa.sh fat.apk ui 2>&1 | tee -a qa-results-trace.txt
+          script: |
+            timeout 700 bash -x qa-src/qa/android-ui-qa.sh fat.apk ui 2>&1 | tee -a qa-results-trace.txt
+            timeout 600 bash qa-src/qa/android-func-audit.sh cgo1 200 fat.apk 2>&1 | tee -a qa-results-trace.txt
+            timeout 600 bash qa-src/qa/android-func-audit.sh cgo0 200 fat-cgo0.apk 2>&1 | tee -a qa-results-trace.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
