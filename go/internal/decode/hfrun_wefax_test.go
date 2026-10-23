@@ -25,13 +25,13 @@ func TestDecodeHFWEFAXGateSemantics(t *testing.T) {
 		wantLive bool
 	}{
 		// Charts need 240+ rendered lines to pass the structural
-		// image gate, same as real broadcasts. KNOWN OPEN QUESTION:
-		// phasing-synced synthetic charts of this length come back
-		// with blown tracker wander (drift +3509/+4213 ppm, span
-		// ~5000) where the 80-line equivalents track tightly - not
-		// yet established whether that is a long-capture tracker
-		// limitation or a fixture artifact, so those cases are not
-		// pinned here; the gate verdicts below hold either way.
+		// image gate, same as real broadcasts. Phasing-synced
+		// synthetic charts of this length hit the slow-diagonal
+		// tracker limitation (TestWEFAXLongChartSlowDiagonalLimitation:
+		// content motion under 2.5 hops/line votes as drift), so
+		// they are gate-rejected here not because the chart is bad
+		// but because the tracker cannot hold it yet; the gate
+		// verdicts below hold either way.
 		{"good mid-chart capture", wefaxFixture{rate: 12000, imageLines: 280, bars: true, lineSec: 0.5004, noiseAmp: 0.3}, true},
 		{"misaligned flat gradient, real wedge", wefaxFixture{rate: 12000, phasingLines: 60, imageLines: 260, startToneSec: 3, flatGradient: true, noiseAmp: 0.15}, false},
 		{"biased mid-chart gray bars", wefaxFixture{rate: 12000, imageLines: 280, bars: true, barGradient: true, gradBands: 4, lineSec: 0.5004, noiseAmp: 0.3}, false},

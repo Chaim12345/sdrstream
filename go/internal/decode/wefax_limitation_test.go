@@ -82,3 +82,34 @@ func TestWEFAXMidChartFalseWedgeFixed(t *testing.T) {
 		t.Logf("remaining limitation stands: line-correlation fallback, drift %.0f ppm vs true 800, period score %.2f (gate rejects)", rep.DriftPPM, rep.PeriodScore)
 	}
 }
+
+func TestWEFAXLongChartSlowDiagonalLimitation(t *testing.T) {
+	// LIMITATION (investigated 2026-10-23, mechanism confirmed): the
+	// clock tracker's vote rule rejects chart features moving more
+	// than 2.5 hops/line as content motion, but a SLOW coherent
+	// feature is indistinguishable from recorder drift and votes.
+	// This fixture's diagonal moves 250 hops over imageLines/2 lines:
+	// 6.25 hops/line at 80 lines and 3.57 at 140 (rejected, votes
+	// stay clean, drift fits ~-163 ppm against a true 0), crossing
+	// the acceptance threshold at 200 lines (2.5 hops/line) where the
+	// measured drift jumps to +3571 ppm. Real charts have long gentle
+	// diagonals (coastlines, weather fronts), so this is a decoder
+	// limitation, not a fixture artifact. The render visibly smears:
+	// the straight diagonal becomes a wide curved wedge and the
+	// checkerboard dissolves. The verify.WEFAXImage geometry tier
+	// rejects it via the wander span (~5000 ppm vs the 1500 floor),
+	// so it cannot be published as verified. A principled fix
+	// (slope-coherent vote rejection or a robust period fit that the
+	// wedge-anchor can veto) turns the assertions below into a
+	// correctness test.
+	f := wefaxFixture{rate: 12000, phasingLines: 60, imageLines: 260, startToneSec: 3}
+	_, rep := decodeWEFAXFixture(t, f)
+	span := rep.DriftMaxPPM - rep.DriftMinPPM
+	if math.Abs(rep.DriftPPM) < 1500 && span < 1500 {
+		t.Errorf("drift %+.0f ppm span %.0f now honest on slow-diagonal content: limitation fixed - convert to a correctness assertion (true drift is 0)", rep.DriftPPM, span)
+	}
+	if span <= 1500 {
+		t.Errorf("wander span %.0f now under the gate floor while drift is %+.0f: re-check the geometry tier still rejects this render", span, rep.DriftPPM)
+	}
+	t.Logf("limitation stands: drift %+.0f ppm vs true 0, wander span %.0f ppm (gate rejects)", rep.DriftPPM, span)
+}
