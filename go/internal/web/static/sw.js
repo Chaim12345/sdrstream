@@ -5,7 +5,7 @@
  * under /api/, /audio/, /gallery/ and /login goes straight to the network.
  * Bump CACHE when the shell assets change so old caches are dropped.
  */
-const CACHE = 'sdrstream-shell-v1';
+const CACHE = 'sdrstream-shell-v2';
 const SHELL = [
   '/',
   '/static/app.css',
@@ -57,14 +57,16 @@ self.addEventListener('fetch', (event) => {
     );
     return;
   }
-  // Static assets: cache first, then network (and cache the result).
+  // Static assets: network first, cache as offline fallback. Cache-first
+  // here would pin an old app.js after an app update (the engine serves new
+  // assets but the worker would keep answering from the old shell cache).
   event.respondWith(
-    caches.match(event.request).then((hit) => hit || fetch(event.request).then((resp) => {
-      if (resp.ok && url.pathname.startsWith('/static/')) {
+    fetch(event.request)
+      .then((resp) => {
         const copy = resp.clone();
         caches.open(CACHE).then((cache) => cache.put(event.request, copy));
-      }
-      return resp;
-    }))
+        return resp;
+      })
+      .catch(() => caches.match(event.request))
   );
 });

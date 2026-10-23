@@ -186,6 +186,17 @@
     </div>
     <div class="panel">
       <div class="panel-head">
+        <h2>API diagnostics</h2>
+        <button class="linklike" id="diag-refresh" title="Re-render this table">refresh</button>
+      </div>
+      <div class="diag-list" id="diag-list"><div class="empty">no API calls recorded yet</div></div>
+      <div class="toolbar">
+        <button class="chip" id="diag-logtail" type="button">load engine log tail</button>
+      </div>
+      <pre class="diag-log" id="diag-log" hidden></pre>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
         <h2>Spectrum</h2>
         <button class="linklike" id="bookmark-add" title="Bookmark the tuned frequency">+ bookmark</button>
       </div>

@@ -605,3 +605,11 @@ kbd {
 
 /* Spectrogram evidence in proof views */
 .proof-spec { display: block; max-width: 100%; width: 460px; border-radius: 6px; margin-top: 6px; border: 1px solid var(--line); }
+
+/* API diagnostics */
+.diag-list { font-size: 12px; }
+.diag-row { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-bottom: 1px solid rgba(128,128,128,.2); }
+.diag-row b { font-weight: 500; }
+.diag-bad span { color: #e06060; }
+.diag-ok span { opacity: .75; }
+.diag-log { max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: 11px; margin-top: 8px; }

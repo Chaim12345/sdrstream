@@ -1154,11 +1154,48 @@ func NewLogRing(max int) *LogRing {
 	return &LogRing{max: max}
 }
 
-// Write implements io.Writer; each write appends whole lines, truncated
-// to 500 chars so one noisy line cannot dominate the tail.
+var (
+	// logURLRe matches absolute http(s) URLs so their userinfo and query
+	// string (which is where private feed URLs carry approximate receiver
+	// coordinates and access keys) can be stripped from the ring.
+	logURLRe = regexp.MustCompile(`https?://[^\s"']+`)
+	// logCredRe redacts key=value / key: value credentials, including
+	// Cookie headers, wherever they appear in a log line.
+	logCredRe = regexp.MustCompile(`(?i)\b(password|passwd|token|secret|api[-_]?key|session[-_]?id|cookie|authorization)(\s*[:=]\s*)("?)[^\s,"']*("?)`)
+	// logCoordRe redacts keyed coordinates (lat=..., lon: ...) even
+	// outside URLs. Bare decimal numbers stay: frequencies and levels are
+	// legitimate diagnostics.
+	logCoordRe = regexp.MustCompile(`(?i)\b(lat|lon|latitude|longitude)(\s*[:=]\s*)-?\d+(\.\d+)?`)
+)
+
+// redactLogLine strips credentials, cookies, URL queries/userinfo and
+// keyed coordinates before a line enters the ring, so the tail endpoint
+// can never serve them. The redaction is lossy by design: diagnostics
+// need hosts and paths, never secrets or positions.
+func redactLogLine(line string) string {
+	line = logURLRe.ReplaceAllStringFunc(line, func(u string) string {
+		if i := strings.Index(u, "://"); i >= 0 {
+			rest := u[i+3:]
+			if at := strings.Index(rest, "@"); at >= 0 && !strings.Contains(rest[:at], "/") {
+				u = u[:i+3] + rest[at+1:]
+			}
+		}
+		if q := strings.Index(u, "?"); q >= 0 {
+			u = u[:q] + "?[redacted]"
+		}
+		return u
+	})
+	line = logCredRe.ReplaceAllString(line, "$1$2[redacted]")
+	line = logCoordRe.ReplaceAllString(line, "$1$2[redacted]")
+	return line
+}
+
+// Write implements io.Writer; each write appends whole redacted lines,
+// truncated to 500 chars so one noisy line cannot dominate the tail.
 func (r *LogRing) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+		line = redactLogLine(line)
 		if len(line) > 500 {
 			line = line[:500]
 		}
@@ -1191,8 +1228,9 @@ func (s *Server) SetLogRing(ring *LogRing) {
 }
 
 // handleLogTail serves recent engine log lines. Like every route but
-// /login it sits behind the session gate, and the engine never logs
-// passwords or tokens (verified: only receiver URLs and decode text).
+// /login it sits behind the session gate, and every line passed through
+// redactLogLine before entering the ring: no credentials, cookies, URL
+// queries/userinfo (feed coordinates, keys) or keyed positions.
 func (s *Server) handleLogTail(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	ring := s.logRing

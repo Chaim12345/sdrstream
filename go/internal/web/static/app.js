@@ -3,11 +3,29 @@
    plus /api/map.json and /api/tiles/ (same-origin tile proxy). */
 
 const el = id => document.getElementById(id);
+/* Per-endpoint diagnostics: every API call records its outcome so the
+   Health view can show which endpoint failed, when, and how fast - on the
+   device itself, without ADB. A hung request must never leave a control at
+   its placeholder forever, so every call has a timeout. */
+const apiDiag = {};
+const FETCH_TIMEOUT_MS = 10000;
 const fetchJSON = async (url, options = {}) => {
-  const response = await fetch(url, { credentials: 'same-origin', ...options });
-  if (response.status === 401) { toast('Login expired. Sign in again.', undefined, true); setTimeout(()=>{location.href='/login'},250); throw new Error('login required'); }
-  if (!response.ok) throw new Error(url + ' → HTTP ' + response.status);
-  try { return await response.json(); } catch { throw new Error(url + ' → not JSON'); }
+  const key = url.split('?')[0];
+  const started = Date.now();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), options.timeout || FETCH_TIMEOUT_MS);
+  const note = (ok, err) => { apiDiag[key] = { ok, ms: Date.now() - started, at: Date.now(), err: err || '' }; renderApiDiag(); };
+  try {
+    const response = await fetch(url, { credentials: 'same-origin', ...options, signal: ctrl.signal });
+    if (response.status === 401) { toast('Login expired. Sign in again.', undefined, true); setTimeout(()=>{location.href='/login'},250); note(false, 'login required'); throw new Error('login required'); }
+    if (!response.ok) { note(false, 'HTTP ' + response.status); throw new Error(url + ' → HTTP ' + response.status); }
+    try { const data = await response.json(); note(true); return data; }
+    catch { note(false, 'not JSON'); throw new Error(url + ' → not JSON'); }
+  } catch (err) {
+    if (err && err.name === 'AbortError') { note(false, 'timeout'); throw new Error(url + ' → timeout'); }
+    if (!(key in apiDiag)) note(false, String(err && err.message || err));
+    throw err;
+  } finally { clearTimeout(timer); }
 };
 const fmtTime = iso => new Date(iso).toLocaleTimeString([], { hour12: false });
 const fmtDate = iso => new Date(iso).toLocaleString([], { hour12: false });
@@ -692,12 +710,10 @@ async function refreshSpectrum() {
       pushWaterfall(spec.bins);
       renderBookmarkBar();
       setMonitor('monitoring');
-    } else {
-      setMonitor('no spectrum');
     }
-  } catch {
-    setMonitor('no monitor');
-  }
+    // The monitor pill is driven by refreshLive (live.json), not by this
+    // poller: spectrum can be disabled or slow while the monitor runs fine.
+  } catch { /* spectrum unavailable - pill state comes from live.json */ }
 }
 function setMonitor(state) {
   monitorState = state;
@@ -727,7 +743,11 @@ async function refreshActivity() {
       if (activityItems.length) activitySeenKey = activityKey(activityItems[0]);
     }
     renderActivity();
-  } catch { /* monitor offline */ }
+  } catch (err) {
+    const pill = el('activity-count');
+    pill.textContent = '!';
+    pill.title = 'activity feed unavailable: ' + (err && err.message || err);
+  }
 }
 function activityCard(a, fresh) {
   const card = document.createElement('div');
@@ -886,10 +906,11 @@ async function refreshLive() {
   try {
     const live = await fetchJSON('/api/live.json');
     lastLive = live;
+    setMonitor(live && live.available ? 'monitoring' : 'no monitor');
     renderSignal(live);
     renderOnAirPill(live);
     renderReceivers(live);
-  } catch { /* endpoint older than the UI or server busy */ }
+  } catch { setMonitor('monitor status unavailable'); /* endpoint older than the UI or server busy */ }
 }
 
 function renderSignal(live) {
@@ -1873,6 +1894,35 @@ function initSettingsView() {
     toast('settings reset', undefined, true);
   });
 }
+
+/* ---------- API diagnostics ---------- */
+function renderApiDiag() {
+  const box = el('diag-list');
+  if (!box) return;
+  const keys = Object.keys(apiDiag).sort();
+  if (!keys.length) { box.innerHTML = '<div class="empty">no API calls recorded yet</div>'; return; }
+  box.textContent = '';
+  keys.forEach(k => {
+    const d = apiDiag[k];
+    const row = document.createElement('div');
+    row.className = 'diag-row ' + (d.ok ? 'diag-ok' : 'diag-bad');
+    const name = document.createElement('b'); name.textContent = k;
+    const state = document.createElement('span');
+    state.textContent = (d.ok ? 'ok' : 'FAILED') + ' · ' + d.ms + ' ms · ' + relTime(new Date(d.at).toISOString()) + (d.ok ? '' : ' · ' + d.err);
+    row.append(name, state);
+    box.appendChild(row);
+  });
+}
+el('diag-refresh') && el('diag-refresh').addEventListener('click', renderApiDiag);
+el('diag-logtail') && el('diag-logtail').addEventListener('click', async () => {
+  const pre = el('diag-log');
+  pre.hidden = false;
+  pre.textContent = 'loading…';
+  try {
+    const resp = await fetch('/api/logs/tail?lines=80', { credentials: 'same-origin' });
+    pre.textContent = resp.ok ? (await resp.text()) || '(log buffer empty)' : 'log tail failed: HTTP ' + resp.status;
+  } catch (err) { pre.textContent = 'log tail failed: ' + (err && err.message || err); }
+});
 
 /* ---------- boot ---------- */
 // Route the initial hash only now: the map module's state is declared below

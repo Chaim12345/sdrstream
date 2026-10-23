@@ -1,6 +1,11 @@
 package com.chaim12345.sdrstream;
 
 import android.app.Notification;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
+import android.net.NetworkCapabilities;
+import android.net.Network;
+import android.net.ConnectivityManager;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -15,9 +20,7 @@ import java.io.File;
 import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.InetAddress;
-import java.net.NetworkInterface;
 import java.util.ArrayList;
-import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
 
@@ -248,19 +251,27 @@ public class EngineService extends Service {
     }
 
     /**
-     * Returns this device's Tailscale (CGNAT 100.64.0.0/10) IPv4 address,
-     * or null when Tailscale is not running. Tailnet addresses are stable
-     * per node, so the UI URL does not churn the way the wireless
-     * debugging port does.
+     * Returns this device's Tailscale IPv4 address, or null when no VERIFIED
+     * VPN network carries a Tailscale CGNAT (100.64.0.0/10) address. The
+     * CGNAT range alone proves nothing (carrier networks use it too), so an
+     * address is accepted only on a network Android reports with
+     * TRANSPORT_VPN - Tailscale tunnels register as VPN, carrier interfaces
+     * never do. Ambiguity fails closed: no extra bind, loopback only,
+     * never 0.0.0.0.
      */
-    static String tailnetAddress() {
+    String tailnetAddress() {
         try {
-            Enumeration<NetworkInterface> ifs = NetworkInterface.getNetworkInterfaces();
-            while (ifs != null && ifs.hasMoreElements()) {
-                NetworkInterface ni = ifs.nextElement();
-                Enumeration<InetAddress> addrs = ni.getInetAddresses();
-                while (addrs.hasMoreElements()) {
-                    InetAddress addr = addrs.nextElement();
+            ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+            if (cm == null) return null;
+            for (Network network : cm.getAllNetworks()) {
+                NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+                if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                    continue;
+                }
+                LinkProperties lp = cm.getLinkProperties(network);
+                if (lp == null) continue;
+                for (LinkAddress la : lp.getLinkAddresses()) {
+                    InetAddress addr = la.getAddress();
                     if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
                         byte[] b = addr.getAddress();
                         if ((b[0] & 0xff) == 100 && (b[1] & 0xc0) == 0x40) {
