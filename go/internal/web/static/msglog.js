@@ -24,6 +24,8 @@
   let lastKey = '';
   let force = true;
   let loadingOlder = false;
+  let frozen = null;
+  let currentShown = [];
   const tools = document.createElement('div');
   tools.className = 'toolbar msglog-tools';
   const label = document.createElement('label');
@@ -40,10 +42,10 @@
   const resume = document.createElement('button'); resume.className = 'chip'; resume.type = 'button';
   resume.textContent = 'Resume latest';
   const note = document.createElement('span'); note.className = 'muted msglog-export-note';
-  note.textContent = 'Copy and export include all matching messages in this loaded history.';
+  note.textContent = 'Decoder counts follow search. Paused rows stay fixed; resume for new messages. Copy/export include all matches in loaded history.';
   nav.append(older, resume, note); box.after(nav);
 
-  function resetPage() { limit = PAGE; force = true; msglogStuck = false; }
+  function resetPage() { limit = PAGE; force = true; msglogStuck = false; frozen = null; }
   input.addEventListener('input', () => { search = input.value; resetPage(); renderMsglog(); });
   reset.addEventListener('click', () => {
     input.value = ''; search = ''; msglogMode = ''; resetPage(); renderMsglog();
@@ -67,12 +69,29 @@
     if (oldMode !== msglogMode) { oldMode = msglogMode; resetPage(); }
     const all = decodedItems();
     const matched = select(all, msglogMode, search);
-    const shown = matched.slice(-limit);
-    const modeCounts = counts(all);
+    // Occurrence keys distinguish repeated equal messages in this chronological snapshot.
+    const occurrences = new Map();
+    const keyed = matched.map(a => {
+      const base = JSON.stringify([a.started, a.mode, a.frequency_hz, a.detail]);
+      const occurrence = occurrences.get(base) || 0; occurrences.set(base, occurrence + 1);
+      return { item: a, key: base + '#' + occurrence };
+    });
+    if (!msglogStuck) frozen = null;
+    if (msglogStuck && !frozen) frozen = currentShown.slice();
+    if (loadingOlder && frozen && frozen.length) {
+      const start = keyed.findIndex(a => a.key === frozen[0].key);
+      if (start >= 0) frozen = keyed.slice(Math.max(0, start - PAGE), start).concat(frozen);
+    }
+    const windowRows = frozen || keyed.slice(-limit);
+    currentShown = windowRows;
+    const shown = windowRows.map(a => a.item);
+    // Chips describe decoder totals AFTER detail search, before decoder selection.
+    const searched = select(all, '', search);
+    const modeCounts = counts(searched);
     // A decoder disappearing must not silently clear the operator's filter.
     if (msglogMode && !modeCounts.has(msglogMode)) modeCounts.set(msglogMode, 0);
     const bar = document.getElementById('msglog-modes');
-    const barKey = JSON.stringify([Array.from(modeCounts), msglogMode]);
+    const barKey = JSON.stringify([Array.from(modeCounts), msglogMode, search]);
     if (bar.dataset.historyKey !== barKey) {
       bar.dataset.historyKey = barKey; bar.textContent = '';
       function chip(mode, count) {
@@ -83,7 +102,7 @@
         b.addEventListener('click', () => { msglogMode = mode; renderMsglog(); });
         bar.appendChild(b);
       }
-      chip('', all.length);
+      chip('', searched.length);
       Array.from(modeCounts.keys()).sort().forEach(m => chip(m, modeCounts.get(m)));
     }
     const key = JSON.stringify([shown, msglogMode, search, limit]);
@@ -100,9 +119,9 @@
           'No messages match these filters. Try another decoder or reset filters.';
         box.appendChild(empty);
       }
-      shown.forEach(a => {
+      windowRows.forEach(({ item: a, key: occurrenceKey }) => {
         const line = document.createElement('div'); line.className = 'msgline ' + (a.kind || '');
-        line.dataset.messageKey = JSON.stringify([a.started, a.mode, a.frequency_hz, a.detail]);
+        line.dataset.messageKey = occurrenceKey;
         [['msg-time', fmtTime(a.started)], ['msg-mode', a.mode],
           ['msg-freq', a.frequency_hz ? mhz(a.frequency_hz) : ''], ['msg-detail', a.detail]].forEach(([cls, text]) => {
           const span = document.createElement('span'); span.className = cls; span.textContent = text;
@@ -117,12 +136,15 @@
       }
       lastKey = key; force = false; loadingOlder = false;
     }
-    older.hidden = matched.length <= shown.length;
-    older.textContent = 'Load ' + Math.min(PAGE, matched.length - shown.length) + ' older messages';
+    const olderCount = windowRows.length ? keyed.findIndex(a => a.key === windowRows[0].key) : 0;
+    older.hidden = olderCount <= 0;
+    older.textContent = 'Load ' + Math.min(PAGE, Math.max(0, olderCount)) + ' older messages';
     reset.disabled = !search && !msglogMode;
     state(all.length, matched.length, shown.length);
   };
   box.addEventListener('scroll', () => {
+    if (msglogStuck && !frozen) frozen = currentShown.slice();
+    if (!msglogStuck) frozen = null;
     state(decodedItems().length, select(decodedItems(), msglogMode, search).length, box.querySelectorAll('.msgline').length);
   });
   renderMsglog();
