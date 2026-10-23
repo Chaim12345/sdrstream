@@ -22,6 +22,8 @@ type wefaxFixture struct {
 	bars         bool    // image content: horizontal bars (mid-chart captures)
 	gradient     bool    // image content: vertical gray-scale bands (tone fidelity)
 	gradBands    int     // number of gradient bands; 0 -> 6
+	flatGradient bool    // LIMITATION fixture: flat bands, no per-line structure
+	barGradient  bool    // LIMITATION fixture: gray bars reaching the right edge
 	carrierHz    float64 // steady carrier near the white tone (beat test)
 	carrierAmp   float64
 }
@@ -68,9 +70,39 @@ func encodeWEFAX(f wefaxFixture) []float64 {
 					// Horizontal bars 3 lines tall every 7 lines at
 					// varying x extents: chart-like content with no
 					// periodic white wedge.
-					if il%7 < 3 && px > 0.1+0.3*math.Abs(math.Sin(float64(il/7))) && px < 0.8 {
-						grey = 1.0
+					right := 0.8
+					if f.barGradient {
+						// LIMITATION fixture: light content reaching
+						// the right edge mimics a phasing wedge.
+						right = 0.98
 					}
+					if il%7 < 3 && px > 0.1+0.3*math.Abs(math.Sin(float64(il/7))) && px < right {
+						grey = 1.0
+						if f.barGradient {
+							nb := f.gradBands
+							if nb == 0 {
+								nb = 4
+							}
+							band := int(px * float64(nb))
+							if band >= nb {
+								band = nb - 1
+							}
+							grey = float64(band) / float64(nb - 1)
+						}
+					}
+				} else if f.flatGradient {
+					// LIMITATION fixture: flat vertical bands give the
+					// tracker no per-line structure; plateau content
+					// biases the local clock votes.
+					nb := f.gradBands
+					if nb == 0 {
+						nb = 6
+					}
+					band := int(px * float64(nb))
+					if band >= nb {
+						band = nb - 1
+					}
+					grey = float64(band) / float64(nb - 1)
 				} else if f.gradient {
 					// Checkerboard cells take the x-band gray level
 					// instead of white: the proven tracker-friendly
