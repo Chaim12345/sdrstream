@@ -17,6 +17,25 @@ if [ -n "$APK" ]; then
   adb shell am start -n $PKG/.MainActivity >/dev/null
   sleep 60
 fi
+R_FG="$R"
+dump() { adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; adb exec-out cat /sdcard/ui.xml > "$R-$1.xml" 2>/dev/null; }
+ensure_fg() { # relaunch and dismiss any battery dialog until the app owns focus
+  for i in 1 2 3 4; do
+    if adb shell dumpsys window 2>/dev/null | grep -E 'mCurrentFocus' | grep -q "$PKG"; then
+      dump fg; if grep -q 'text="Not now"' "$R-fg.xml"; then
+        xy=$(python3 - "$R-fg.xml" <<'PY'
+import re,sys
+x=open(sys.argv[1],errors='ignore').read()
+m=re.search(r'text="Not now"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"',x)
+if m:
+    a,b,c,d=map(int,m.groups()); print((a+c)//2,(b+d)//2)
+PY
+); [ -n "$xy" ] && adb shell input tap $xy; sleep 2; continue; fi
+      return 0
+    fi
+    adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 4
+  done; log "WARN: app not in foreground"
+}
 PW=$(adb shell run-as $PKG cat shared_prefs/sdrstream.xml 2>/dev/null | sed -n 's/.*name="ui_password">\([^<]*\)<.*/\1/p')
 echo "::add-mask::$PW"
 adb forward tcp:18081 tcp:8080 >/dev/null
@@ -44,7 +63,24 @@ PY
 }
 log "== sweep t0 (just after login) =="; sweep t0
 adb shell input keyevent KEYCODE_WAKEUP
-adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 5
+
+# UI login (the WebView has no session yet). PKG foreground guarded.
+ensure_fg
+dump a-login; for k in 1 2; do
+  C=$(python3 - "$R-a-login.xml" <<'PY'
+import re,sys
+x=open(sys.argv[1],errors='ignore').read(); best=None
+for m in re.finditer(r'<node[^>]*class="android.widget.EditText"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"',x):
+    a,b,c,d=map(int,m.groups()); best=((a+c)//2,(b+d)//2)
+print("%d %d"%best if best else "")
+PY
+)
+  if [ -n "$C" ]; then adb shell input tap $C; sleep 1; adb shell input text "$PW"; adb shell input keyevent KEYCODE_ENTER; sleep 8; log "UI login attempted"; break
+  else adb shell input keyevent KEYCODE_BACK; sleep 2; ensure_fg; dump a-login; fi
+done
+adb exec-out screencap -p > "$R-ui-after-login.png"
+dump a-after; if grep -q 'Open monitor' "$R-a-after.xml"; then log "UI LOGIN: still on login form"; elif grep -qE 'Overview|Settings|Scan' "$R-a-after.xml"; then log "UI LOGIN: PASS (app tabs visible)"; else log "UI LOGIN: unclear"; fi
+adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 5; ensure_fg
 tabs="Overview Map Activity Decodes Passes Gallery Captures Scan Stations Satellites Live_data Settings"
 for t in $tabs; do
   adb shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1; adb exec-out cat /sdcard/u.xml > /tmp/u.xml 2>/dev/null
@@ -69,7 +105,7 @@ c=$(post "action=start&kind=openwebrx&server=127.0.0.1:1&label=qa-bogus"); log "
 c=$(post "action=start&kind=bad&server=x.example:1"); log "start bad kind -> http=$c body=$(head -c 120 /tmp/p.out | tr '\n' ' ')"
 log "== monitor start on public receiver $MON (single bounded connection) =="
 # Real UI taps: Overview -> receiver address -> start.
-adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 3
+adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 3; ensure_fg
 node_xy() { adb shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1; adb exec-out cat /sdcard/u.xml > /tmp/u.xml 2>/dev/null
   python3 - /tmp/u.xml "$1" <<'PY'
 import re,sys
@@ -96,7 +132,17 @@ if [ "$c" = 200 ]; then
   for e in status live spectrum activity captures; do
     curl -sS -m 20 -b $JAR -o "$R-mon-$e.json" -w "mon /api/$e.json http=%{http_code} bytes=%{size_download}\n" $BASE/api/$e.json | tee -a "$R-audit.txt"
   done
-  curl -sS -m 15 -b $JAR --max-time 12 -o "$R-live-audio.bin" -w "live audio http=%{http_code} bytes=%{size_download} type=%{content_type}\n" $BASE/audio/live/ | tee -a "$R-audit.txt"
+  AU=$(python3 -c "
+import json
+try:
+    d=json.load(open('$R-mon-activity.json'))
+    for it in (d if isinstance(d,list) else d.get('items',[])):
+        u=it.get('audio_url') or it.get('AudioURL')
+        if u: print(u); break
+except Exception: pass
+")
+  log "first activity audio_url: ${AU:-none}"
+  [ -n "$AU" ] && curl -sS -m 20 -b $JAR -o "$R-activity-audio.bin" -w "activity audio http=%{http_code} bytes=%{size_download} type=%{content_type}\n" "$BASE$AU" | tee -a "$R-audit.txt"
   adb exec-out screencap -p > "$R-monitor-running.png"
   c=$(post "action=stop"); log "stop -> http=$c body=$(head -c 120 /tmp/p.out | tr '\n' ' ')"
 fi

@@ -103,6 +103,7 @@ if [ -s /tmp/field.txt ]; then
   adb shell input text "wrongpass"; adb shell input keyevent KEYCODE_ENTER; sleep 3
   shot 05-wrong-password; dump 05-wrong-password
   log "wrong-password page text: $(grep -oiE 'invalid[^"]*|incorrect[^"]*' $R-05-wrong-password.xml | head -2 | tr '\n' ' ')"
+  adb shell input keyevent KEYCODE_BACK; sleep 3; dump 05back; if grep -q 'class="android.widget.EditText"' "$R-05back.xml"; then log "after wrong password: Back returns to login form"; else log "after wrong password: Back does NOT return to form (dead end)"; fi
   dump 05b; python3 - "$R-05b.xml" <<'PY' > /tmp/field.txt
 import re,sys
 x=open(sys.argv[1],errors='ignore').read()
@@ -138,7 +139,7 @@ if [ "$S1" = ok ]; then
   sleep 2; dump 06c; S2=$(tapnode "$R-06c.xml" 'text="Set UI password"'); log "set-pw: tap Set UI password: $S2"
   sleep 2; dump 06d; shot 06d-set-dialog
   adb shell input tap $(edit_center "$R-06d.xml"); sleep 1; adb shell input text "$NEWPW"; sleep 1; shot 06e-typed
-  dump 06e; S3=$(tapnode "$R-06e.xml" 'text="Save"'); log "set-pw: tap Save: $S3"
+  dump 06e; S3=$(tapnode "$R-06e.xml" 'text="SAVE"|text="Save"'); log "set-pw: tap Save: $S3"
   sleep 25; shot 06f-after-save; dump 06f
   log "after save: engine process $(alive); toast/page text: $(grep -oE 'text="[^"]+"' $R-06f.xml | head -8 | tr '\n' ' ')"
   for TRY in old new; do
