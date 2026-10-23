@@ -1536,7 +1536,12 @@ function initMonitorLifecycle() {
     msg.textContent = 'starting...';
     startBtn.disabled = true;
     try {
-      await postMonitorLifecycle({ action: 'start', server, kind: kindSel.value, profile: profile.value.trim() });
+      const startMHz = parseFloat(el('monitor-start-mhz').value);
+      const endMHz = parseFloat(el('monitor-end-mhz').value);
+      const fields = { action: 'start', server, kind: kindSel.value, profile: profile.value.trim() };
+      if (startMHz > 0) fields.start_hz = Math.round(startMHz * 1e6);
+      if (endMHz > 0) fields.end_hz = Math.round(endMHz * 1e6);
+      await postMonitorLifecycle(fields);
       msg.textContent = 'monitor starting';
     } catch (err) {
       msg.textContent = 'start failed: ' + err.message;

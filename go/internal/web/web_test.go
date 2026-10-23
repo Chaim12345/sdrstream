@@ -1037,7 +1037,7 @@ func TestMonitorLifecycleControl(t *testing.T) {
 		t.Fatalf("kind case-insensitive: status = %d", rec.Code)
 	}
 	if got.Kind != "websdr" {
-		t.Fatalf("kind = %q, want websdr", got)
+		t.Fatalf("kind = %q, want websdr", got.Kind)
 	}
 	if rec := post(server, "action=stop"); rec.Code != http.StatusOK || stopped != 1 {
 		t.Fatalf("stop: status = %d, stopped = %d", rec.Code, stopped)

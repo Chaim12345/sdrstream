@@ -1826,6 +1826,13 @@ func (m *runtimeMonitor) start(ctx context.Context, spec web.MonitorStartSpec, l
 	if spec.Label != "" {
 		label = spec.Label
 	}
+	startHz, endHz := m.cfg.StartHz, m.cfg.EndHz
+	if spec.StartHz > 0 {
+		startHz = spec.StartHz
+	}
+	if spec.EndHz > 0 {
+		endHz = spec.EndHz
+	}
 	instance := monitor.New(monitor.Options{
 		OnActivity:      monitorOnActivity(m.server),
 		OnImage:         monitorOnImage(m.server),
@@ -1834,8 +1841,8 @@ func (m *runtimeMonitor) start(ctx context.Context, spec web.MonitorStartSpec, l
 		Strategy:        m.cfg.Strategy,
 		Channels:        m.cfg.Channels,
 		ChannelPause:    m.cfg.ChannelPause,
-		StartHz:         m.cfg.StartHz,
-		EndHz:           m.cfg.EndHz,
+		StartHz:         startHz,
+		EndHz:           endHz,
 		StepHz:          m.cfg.StepHz,
 		ThresholdDB:     m.cfg.ThresholdDB,
 		Dwell:           m.cfg.Dwell,

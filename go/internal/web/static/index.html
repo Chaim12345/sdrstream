@@ -132,6 +132,13 @@
         <input id="monitor-profile" placeholder="optional" aria-label="OpenWebRX profile" autocomplete="off">
       </div>
       <div class="ctl-row">
+        <span class="ctl-label">band</span>
+        <input id="monitor-start-mhz" class="mhz-input" value="144" aria-label="Sweep start, MHz" inputmode="decimal">
+        <span class="muted">to</span>
+        <input id="monitor-end-mhz" class="mhz-input" value="146" aria-label="Sweep end, MHz" inputmode="decimal">
+        <span class="muted">MHz, must be inside receiver coverage</span>
+      </div>
+      <div class="ctl-row">
         <span class="ctl-label"></span>
         <button id="monitor-start" class="seg-btn" type="button">start</button>
         <button id="monitor-stop" class="seg-btn" type="button" hidden>stop</button>

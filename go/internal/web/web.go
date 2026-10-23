@@ -1446,6 +1446,23 @@ func parseMonitorStartSpec(r *http.Request) (MonitorStartSpec, error) {
 	if len(spec.Label) > 80 {
 		spec.Label = spec.Label[:80]
 	}
+	if raw := strings.TrimSpace(r.FormValue("start_hz")); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil || v <= 0 || v > 2e9 {
+			return spec, fmt.Errorf("start_hz must be a frequency in Hz")
+		}
+		spec.StartHz = v
+	}
+	if raw := strings.TrimSpace(r.FormValue("end_hz")); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil || v <= 0 || v > 2e9 {
+			return spec, fmt.Errorf("end_hz must be a frequency in Hz")
+		}
+		spec.EndHz = v
+	}
+	if spec.StartHz > 0 && spec.EndHz > 0 && spec.EndHz <= spec.StartHz {
+		return spec, fmt.Errorf("end_hz must be greater than start_hz")
+	}
 	return spec, nil
 }
 
@@ -1498,6 +1515,11 @@ type MonitorStartSpec struct {
 	Kind    string
 	Profile string
 	Label   string
+	// StartHz and EndHz optionally override the sweep range; they must
+	// sit inside the receiver's coverage or tuning fails honestly.
+	// Zero keeps the command's configured defaults.
+	StartHz float64
+	EndHz   float64
 }
 
 // MonitorHooks are registered by the embedding command, which owns
