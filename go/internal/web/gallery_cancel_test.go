@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"math"
 	"math/rand"
@@ -60,5 +61,31 @@ func TestServerShutdownCancelsInFlightGalleryDecode(t *testing.T) {
 	matches, _ := filepath.Glob(filepath.Join(dir, "*.png"))
 	if len(matches) != 0 {
 		t.Fatalf("partial frame left on disk: %v", matches)
+	}
+}
+
+// TestServeContextCancellationStopsLifecycle verifies the full chain:
+// ServeContext's serving context ends -> deferred cancel -> the server
+// lifecycle context (which drives gallery decode) is cancelled.
+func TestServeContextCancellationStopsLifecycle(t *testing.T) {
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "")
+	s := New("", t.TempDir())
+	s.NoAuth = true
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.ServeContext(ctx, "127.0.0.1:0") }()
+	// Let it bind, then end serving.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ServeContext: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("ServeContext did not return after cancel")
+	}
+	if s.lifecycleCtx().Err() == nil {
+		t.Fatal("server lifecycle context not cancelled after ServeContext returned")
 	}
 }

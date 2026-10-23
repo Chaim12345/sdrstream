@@ -1131,6 +1131,11 @@ func cmdGallery(args []string) error {
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	frames := gallery.DecodeFramesContext(ctx, saved, dir)
+	if err := ctx.Err(); err != nil {
+		// Interrupted: say so and exit nonzero rather than print a
+		// manifest that looks like a completed run.
+		return fmt.Errorf("gallery: interrupted: %v", err)
+	}
 	for _, item := range saved {
 		if item.DecodeStatus != "" {
 			fmt.Printf("  %s: %s\n", item.Name, item.DecodeStatus)

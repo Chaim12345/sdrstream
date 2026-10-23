@@ -1249,11 +1249,14 @@ async function refreshScans() {
       const card = document.createElement('div'); card.className = 'card';
       const title = document.createElement('div'); title.className = 'card-title';
       const b = document.createElement('b'); b.textContent = String(x.station||'').replace(/[<>\u0000-\u001f]/g,'').slice(0,200);
-      const state = document.createElement('span'); state.className = 'scan-state ' + (x.state || 'idle'); state.textContent = x.state || 'idle';
+      // Origin honesty, same treatment as dropped rows: a row loaded from
+      // the saved state file is history, not this session's activity.
+      const restored = x.origin === 'restored';
+      const state = document.createElement('span'); state.className = 'scan-state ' + (x.state || 'idle'); state.textContent = (x.state || 'idle') + (restored ? ' · restored' : '');
       title.appendChild(b); title.appendChild(state);
       card.appendChild(title);
       const meta = document.createElement('div'); meta.className = 'card-meta';
-      meta.textContent = mhz(x.frequency_hz) + ' · ' + (x.mode || '—') + (x.band_condition ? ' · ' + x.band_condition + ' (advisory)' : '') + (x.result ? ' · ' + x.result : '');
+      meta.textContent = mhz(x.frequency_hz) + ' · ' + (x.mode || '—') + (x.band_condition ? ' · ' + x.band_condition + ' (advisory)' : '') + (x.result ? ' · ' + x.result : '') + (restored ? ' · restored from saved state - not this session' : '');
       card.appendChild(meta);
       box.appendChild(card);
     });

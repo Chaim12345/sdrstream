@@ -763,3 +763,22 @@ func TestDecodeFramesContextCancelNoPartialFrame(t *testing.T) {
 		t.Fatalf("partial frame left on disk: %v (%v)", matches, err)
 	}
 }
+
+// Once the parent context is cancelled, remaining decodable artefacts
+// are marked without their audio being loaded.
+func TestDecodeFramesContextMarksRemainingWithoutLoad(t *testing.T) {
+	dir := t.TempDir()
+	// A path that does not exist: if ReadWAV ran, the status would say
+	// "unreadable audio"; the loop-top cancel check must fire first.
+	missing := Item{Kind: "audio", Mode: "SSTV", Name: "ghost.wav", Path: filepath.Join(dir, "ghost.wav"), Source: "satnogs"}
+	items := []Item{missing}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	frames := DecodeFramesContext(ctx, items, dir)
+	if len(frames) != 0 {
+		t.Fatalf("cancelled pass produced %d frame(s)", len(frames))
+	}
+	if items[0].DecodeStatus != "frame decode skipped: decode cancelled" {
+		t.Fatalf("status = %q, want the cancel marker (audio must not be loaded)", items[0].DecodeStatus)
+	}
+}

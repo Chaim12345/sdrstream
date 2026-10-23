@@ -345,6 +345,18 @@ func DecodeFramesContext(ctx context.Context, saved []Item, dir string) []Item {
 	var frames []Item
 	for i := range saved {
 		item := &saved[i]
+		// Once cancelled, mark remaining decodable artefacts without
+		// loading their audio: the decode loops are not the only work
+		// worth skipping, ReadWAV would still read every file.
+		if ctx.Err() != nil {
+			if item.Kind == "audio" {
+				m := strings.ToUpper(item.Mode)
+				if strings.Contains(m, "SSTV") || strings.Contains(m, "APT") {
+					item.DecodeStatus = "frame decode skipped: decode cancelled"
+				}
+			}
+			continue
+		}
 		if item.Kind != "audio" {
 			continue
 		}
