@@ -1,7 +1,7 @@
 # Decoder regression harness
 
 `go/cmd/decoderegress` runs the Go decoders (FT8, WSPR, POCSAG, FLEX, ACARS,
-HFDL, APRS/AFSK1200) over public real recordings and prints a table of decode
+HFDL, APRS/AFSK1200, SSTV) over public real recordings and prints a table of decode
 counts against reference decodes.
 
     cd go
@@ -25,6 +25,11 @@ pauses `-delay` (default 1 s) after each download.
 | INFO | no reference decoder available, decodes listed only |
 | SKIP | recording not in the cache |
 
+Cases marked `Negative` are ground truth that must NOT decode: any decoded
+item fails the case, so a detector that fires on everything cannot pass.
+Image decoders gate on a full frame decode, not only a header detect -
+header-only clips stay a failure (see the SSTV unit tests).
+
 Columns: EXPECTED reference messages, GOT distinct decodes, MATCHED, MISSED,
 EXTRA (not in the reference nor the second decoder), BONUS (not in WSJT-X but
 decoded by ft8_lib's C decoder), UNSUP (CRC-valid FT8 frames of a message type
@@ -45,6 +50,8 @@ raises the floor; commit the new baseline with the change.
 | ACARS | TLeconte/acarsdec `test.wav` (LGPL-2.0) | acarsdec output (sdr-acars fixture) |
 | HFDL | signals.taunus.de HFDL 300/600/1200 bps | at least one FCS-verified frame (no reference decoder run) |
 | APRS | committed WA8LMF TNC test CD excerpt | multimon-ng AFSK1200 |
+| SSTV | committed ARISS Series 34 Robot36 excerpt (user-contributed off-air recording, tests/data/NOTICE) | verified VIS detect + full frame decode |
+| SSTV (negative) | committed generated RTTY clip | must produce zero detections |
 
 Reference decoders are never vendored; only their output lists are, as
 `internal/regress/golden/*.txt`. `scripts/regress_golden.sh` regenerates them

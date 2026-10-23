@@ -145,6 +145,8 @@ func Manifest() []Case {
 			SHA256: "752acabede3f96e8f137567e8218fe3cd9aab61130b9198d0cbce6cf2cf53b80",
 			Ref:    "acarsdec output (jasonherald/sdr-acars fixture)", Golden: "acars_acarsdec_test.txt"},
 		// Committed recordings (no download needed).
+		{Name: "local/sstv-ariss-series34-robot36", Decoder: "sstv", Source: "Off-air ARISS SSTV Series 34 (ISS 437.550 MHz Robot36, 2026-10-22), 42 s excerpt; user-contributed personal archive recording, see tests/data/NOTICE", Ref: "verified 2026-10-23: Robot36 VIS 8 detect + full frame decode (byte-identical to independent reference, visually inspected)", Golden: "sstv_ariss_series34_robot36.txt", Local: "../tests/data/real_sstv_ariss_series34_robot36.wav"},
+		{Name: "local/sstv-negative-rtty", Decoder: "sstv", Source: "Generated RTTY reference clip (tests/data, repository licence) - no SSTV content", Ref: "negative ground truth: must not detect SSTV", Local: "../tests/data/ref_rtty.wav", Negative: true},
 		{Name: "local/aprs-wa8lmf-30s", Decoder: "aprs", Source: "WA8LMF TNC Test CD track 1, 30 s (tests/data)", Ref: "multimon-ng 1.x AFSK1200", Golden: "aprs_wa8lmf_30s.txt", Local: "../tests/data/real_aprs_wa8lmf_30s.wav"},
 		{Name: "local/wspr-utwente-0532", Decoder: "wspr", Source: "Twente WebSDR 7038.6 kHz live capture 2026-10-22", Ref: "wsprd 1.x", Golden: "wspr_utwente_0532.txt", Local: "internal/decode/testdata/wspr/live_websdr_utwente_7038p6kHz_20261022T0532Z.wav"},
 		{Name: "local/wspr-utwente-0542", Decoder: "wspr", Source: "Twente WebSDR 7038.6 kHz live capture 2026-10-22", Ref: "wsprd 1.x", Golden: "wspr_utwente_0542.txt", Local: "internal/decode/testdata/wspr/live_websdr_utwente_7038p6kHz_20261022T0542Z.wav"},

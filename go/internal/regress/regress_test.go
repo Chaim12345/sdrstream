@@ -71,6 +71,10 @@ func TestManifestConsistent(t *testing.T) {
 			if _, err := loadGolden(c.Golden); err != nil {
 				t.Errorf("%s: golden %s: %v", c.Name, c.Golden, err)
 			}
+		} else if c.Negative {
+			if c.MinFrames != 0 {
+				t.Errorf("%s: negative case with MinFrames", c.Name)
+			}
 		} else if c.MinFrames == 0 && c.Decoder != "wspr" {
 			t.Errorf("%s: no golden and no MinFrames", c.Name)
 		}

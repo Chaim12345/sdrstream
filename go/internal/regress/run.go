@@ -10,6 +10,15 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/hfdl"
 )
 
+func keys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Run executes one case. dir is the recording cache; root is the go/ module
 // directory (for Local files). The recording must already exist.
 func Run(c Case, dir, root string) (res Result) {
@@ -92,11 +101,41 @@ func Run(c Case, dir, root string) (res Result) {
 				got[fmt.Sprintf("fcs-ok frame %d (%d bytes)", i, len(f.Frame.Data))] = true
 			}
 		}
+	case "sstv":
+		var s []float64
+		var rate int
+		if s, rate, err = decode.ReadWAV(path); err == nil {
+			for _, d := range decode.SSTVDetect(s, rate) {
+				got[Normalize(d.Mode)] = true
+			}
+			if !c.Negative && len(got) > 0 {
+				// Known-good means a full frame, not only a header: the
+				// VIS detect alone passes on header-only clips.
+				if _, ierr := decode.SSTVImage(s, rate); ierr != nil {
+					err = fmt.Errorf("detected %v but full image decode failed: %v", keys(got), ierr)
+				}
+			}
+		}
 	default:
 		err = fmt.Errorf("unknown decoder %q", c.Decoder)
 	}
 	if err != nil {
 		res.Status, res.Note = Fail, err.Error()
+		return res
+	}
+	if c.Negative {
+		res.Got = len(got)
+		res.Status = Pass
+		res.Note = "clean: no decodes on negative ground truth"
+		if res.Got > 0 {
+			res.Status = Fail
+			var dec []string
+			for k := range got {
+				dec = append(dec, k)
+			}
+			sort.Strings(dec)
+			res.Note = "FALSE DECODE on negative ground truth: " + strings.Join(dec, "; ")
+		}
 		return res
 	}
 	if c.Golden == "" {

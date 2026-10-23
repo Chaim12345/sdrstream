@@ -48,6 +48,10 @@ type Case struct {
 	// MinFrames applies to cases without a message-level reference (hfdl, or
 	// a decoder count only): the minimum number of decoded items.
 	MinFrames int
+	// Negative marks ground truth that must NOT decode: any decoded item
+	// fails the case. Pair each decoder's known-good samples with negatives
+	// so a detector that fires on everything cannot pass.
+	Negative bool
 	// Local, when set, is a path relative to the go/ module root used instead
 	// of the cache (recordings that are committed to the repository).
 	Local string
