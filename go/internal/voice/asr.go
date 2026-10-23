@@ -423,14 +423,21 @@ func TranscribeASR(ctx context.Context, samples []float64, rate int, o ASROption
 		}
 		if (err != nil || conf < o.MinConfidence || hallucination(text, conf)) && o.FallbackModel != "" && o.FallbackModel != model {
 			t2, l2, c2, e2 := runWhisper(ctx, binary, o.FallbackModel, wav, o.Options)
-			// A hallucinated primary loses to a clean fallback that clears
-			// MinConfidence - the same bar under which the primary itself is
-			// retried - even when the primary scored higher: keeping it here
-			// would drop the whole chunk below and silence real speech. A
-			// fallback below the bar is itself retried-grade output, so the
-			// chunk is dropped instead of publishing worse text.
-			cleanBeatsHallucination := hallucination(text, conf) && !hallucination(t2, c2) && c2 >= o.MinConfidence
-			if e2 == nil && (err != nil || c2 > conf || cleanBeatsHallucination) {
+			// Selection contract: MinConfidence is the retry trigger, not a
+			// publishing floor. Validity ranks before confidence - a known
+			// hallucination's confidence is the invention's confidence and
+			// says nothing - so a valid candidate always beats an invented
+			// one, and confidence only chooses between two valid candidates.
+			// A survivor below MinConfidence is published with its honest
+			// low confidence for the UI chip and the publish-time Guard to
+			// judge; dropping it would silence real speech.
+			cleanBeatsHallucination := hallucination(text, conf) && !hallucination(t2, c2)
+			// Symmetrically, a valid primary never yields to an invented
+			// fallback. When the primary run failed outright the fallback is
+			// taken regardless, so one bad chunk cannot error the whole
+			// transcription; an invented fallback is then skipped below.
+			fallbackInvented := err == nil && hallucination(t2, c2)
+			if e2 == nil && (err != nil || !fallbackInvented && (c2 > conf || cleanBeatsHallucination)) {
 				text, lang, conf, err, usedModel, fell = t2, l2, c2, nil, o.FallbackModel, true
 			}
 		}

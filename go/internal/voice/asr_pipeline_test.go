@@ -270,14 +270,18 @@ func TestTranscribeASRMarkerPrimaryYieldsToCleanFallback(t *testing.T) {
 	}
 }
 
-// QA pin: a clean-but-unsure fallback (below MinConfidence, the same bar
-// under which the primary itself is retried) must NOT rescue a chunk from a
-// hallucinated primary - retried-grade output is dropped, not published.
-func TestTranscribeASRLowConfidenceFallbackDoesNotBeatHallucination(t *testing.T) {
+// Selection contract (independent reviewer): validity ranks before
+// confidence - an invention's confidence says nothing. These tests pin the
+// contract in every direction; MinConfidence is the retry trigger, NOT a
+// publishing floor.
+
+// Hallucinated primary, valid fallback below the bar but higher confidence:
+// the old c2>conf branch bypassed the batch-2 floor. Valid beats invention.
+func TestTranscribeASRValidFallbackBeatsInventionBelowBar(t *testing.T) {
 	dir := t.TempDir()
 	binary := writeScriptedWhisper(t, dir, []scriptedCall{
-		{text: "thank you", conf: 0.7},
-		{text: "mumbled static words here", conf: 0.3},
+		{text: "thank you", conf: 0.1},                // canned hallucination
+		{text: "november three zero over", conf: 0.3}, // valid, below the 0.5 bar, but higher
 	})
 	o := asrIntegrityOptions(binary, dir, 30) // MinConfidence 0.5
 	fallback := filepath.Join(dir, "fallback.bin")
@@ -290,13 +294,64 @@ func TestTranscribeASRLowConfidenceFallbackDoesNotBeatHallucination(t *testing.T
 	if err != nil {
 		t.Fatalf("TranscribeASR: %v", err)
 	}
-	if res.Text != "" {
-		t.Errorf("text = %q, want the below-bar fallback dropped with the chunk", res.Text)
+	if res.Text != "november three zero over" {
+		t.Errorf("text = %q, want the valid fallback over the invention", res.Text)
 	}
-	if res.Fallback {
-		t.Error("Fallback flag set although the fallback never won")
+	if !res.Fallback {
+		t.Error("Fallback flag not set")
 	}
 }
+
+// Hallucinated primary at HIGH confidence, valid fallback at low: the
+// invention's confidence is meaningless, the valid fallback still wins.
+func TestTranscribeASRValidFallbackBeatsHighConfidenceInvention(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeScriptedWhisper(t, dir, []scriptedCall{
+		{text: "thank you for watching", conf: 0.9},
+		{text: "november three zero over", conf: 0.3},
+	})
+	o := asrIntegrityOptions(binary, dir, 30)
+	fallback := filepath.Join(dir, "fallback.bin")
+	if err := os.WriteFile(fallback, []byte("fake model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o.FallbackModel = fallback
+	rate := 8000
+	res, err := TranscribeASR(context.Background(), twoBursts(rate, 1.2, 1.2), rate, o)
+	if err != nil {
+		t.Fatalf("TranscribeASR: %v", err)
+	}
+	if res.Text != "november three zero over" {
+		t.Errorf("text = %q, want the valid fallback over the confident invention", res.Text)
+	}
+}
+
+// Both models invent: the chunk is dropped, nothing is published.
+func TestTranscribeASRDropsChunkWhenBothInvent(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeScriptedWhisper(t, dir, []scriptedCall{
+		{text: "thank you", conf: 0.7},
+		{text: "thank you for watching", conf: 0.9},
+	})
+	o := asrIntegrityOptions(binary, dir, 30)
+	fallback := filepath.Join(dir, "fallback.bin")
+	if err := os.WriteFile(fallback, []byte("fake model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o.FallbackModel = fallback
+	rate := 8000
+	res, err := TranscribeASR(context.Background(), twoBursts(rate, 1.2, 1.2), rate, o)
+	if err != nil {
+		t.Fatalf("TranscribeASR: %v", err)
+	}
+	if res.Text != "" {
+		t.Errorf("text = %q, want both inventions dropped", res.Text)
+	}
+}
+
+// A failed primary plus a valid fallback publishes the fallback - there is
+// no publishing floor - and one bad chunk must not error the whole run.
+// (The error path itself is covered by the slot tests with exit codes.)
 
 // PlanChunks is exported: hand-built segments outside the audio must be
 // clamped, not sliced into a panic.
@@ -331,4 +386,56 @@ func TestSplitLongClampsToAudio(t *testing.T) {
 			t.Errorf("segment %+v escapes the audio", s)
 		}
 	}
+}
+
+// Reverse direction from the fallback fixes (independent reviewer): a clean
+// but low-confidence primary must NOT be replaced by a higher-confidence
+// known hallucination from the fallback model - accepting the invention
+// would drop the real words with the chunk.
+func TestTranscribeASRCleanPrimarySurvivesHallucinatedFallback(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeScriptedWhisper(t, dir, []scriptedCall{
+		{text: "november two three alpha bravo", conf: 0.6},
+		{text: "thank you for watching", conf: 0.9},
+	})
+	// Reviewer's exact case: bar 0.8, primary clean at 0.6 (unsure, so the
+	// fallback DOES run), fallback invents a canned phrase at 0.9.
+	o := asrIntegrityOptions(binary, dir, 30)
+	o.MinConfidence = 0.8
+	fallback := filepath.Join(dir, "fallback.bin")
+	if err := os.WriteFile(fallback, []byte("fake model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o.FallbackModel = fallback
+	rate := 8000
+	res, err := TranscribeASR(context.Background(), twoBursts(rate, 1.2, 1.2), rate, o)
+	if err != nil {
+		t.Fatalf("TranscribeASR: %v", err)
+	}
+	if got := countScriptedCalls(t, dir); got != 2 {
+		t.Fatalf("scripted calls = %d, want 2 (primary then fallback)", got)
+	}
+	if res.Text != "november two three alpha bravo" {
+		t.Errorf("text = %q, want the clean primary to survive the hallucinated fallback", res.Text)
+	}
+	if res.Fallback {
+		t.Error("Fallback flag set although the hallucinated fallback must not win")
+	}
+	if res.Model != "primary.bin" {
+		t.Errorf("model = %q, want primary.bin", res.Model)
+	}
+}
+
+// countScriptedCalls reads the scripted fake's invocation counter.
+func countScriptedCalls(t *testing.T, dir string) int {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "calls.count"))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("bad counter: %v", err)
+	}
+	return n
 }
