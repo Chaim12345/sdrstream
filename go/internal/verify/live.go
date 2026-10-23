@@ -204,7 +204,11 @@ func validAX25(text string) bool {
 			return false
 		}
 		for _, r := range packet[:gt] {
-			if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-') {
+			// AX.25 addresses are six shifted-ASCII characters plus SSID:
+			// only ASCII alphanumerics and the SSID hyphen are real. A
+			// unicode.IsLetter check would admit accented letters that no
+			// on-air frame can carry.
+			if !(r < 0x80 && (unicode.IsLetter(r) || unicode.IsDigit(r)) || r == '-') {
 				return false
 			}
 		}
