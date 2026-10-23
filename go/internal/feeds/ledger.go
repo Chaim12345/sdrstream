@@ -20,6 +20,18 @@ const (
 	// because the provider vouches for the decode, not us.
 	EvidenceVerified   = "verified"   // our decode passed the live quality gate
 	EvidenceUnverified = "unverified" // archived, but the live gate rejected it (see Gate)
+
+	// The live quality gate and an independent reference cross-check are
+	// separate facets of proof and are recorded separately: a clip can pass
+	// sdrstream's own gate without any independent reference ever
+	// confirming it, and the ledger must not collapse the two into one
+	// generic "verified" flag.
+	GatePassed = "passed"
+	GateFailed = "failed"
+
+	CrosscheckVerified = "verified" // an independent reference confirmed the decode
+	CrosscheckMismatch = "mismatch" // an independent reference contradicted it
+	CrosscheckNone     = "none"     // a cross-check ran but found no usable reference
 )
 
 // LedgerEntry is one proof record: where an item came from, when the
@@ -38,8 +50,17 @@ type LedgerEntry struct {
 	Receiver  string    `json:"receiver,omitempty"` // receiver ID for source="receiver" captures
 	Evidence  string    `json:"evidence,omitempty"` // EvidenceVerified / EvidenceUnverified for own decodes
 	Gate      string    `json:"gate,omitempty"`     // quality-gate reason when Evidence is unverified
-	Lat       float64   `json:"lat,omitempty"`
-	Lon       float64   `json:"lon,omitempty"`
+	// GateVerdict is the Go live quality gate's own outcome at capture
+	// (GatePassed / GateFailed); empty means the gate's verdict was not
+	// preserved. Crosscheck records an independent reference check
+	// (CrosscheckVerified / CrosscheckMismatch / CrosscheckNone); empty
+	// means no independent check was ever performed - the common case
+	// today, and shown honestly as "not recorded" in the UI.
+	GateVerdict   string  `json:"gate_verdict,omitempty"`
+	Crosscheck    string  `json:"crosscheck,omitempty"`
+	CrosscheckRef string  `json:"crosscheck_ref,omitempty"`
+	Lat           float64 `json:"lat,omitempty"`
+	Lon           float64 `json:"lon,omitempty"`
 }
 
 // Ledger is an append-only JSONL file of first sightings. It rotates to

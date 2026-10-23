@@ -53,7 +53,16 @@ func receiverLedgerEntry(c Capture, fetchedAt time.Time) feeds.LedgerEntry {
 	if c.Verified {
 		evidence = feeds.EvidenceVerified
 	}
-	return feeds.LedgerEntry{
+	// The gate and the independent cross-check stay separate facets.
+	// Legacy sidecars recorded only the summary bool: a true Verified
+	// means the live gate passed (that was its documented meaning), so
+	// the gate facet can be inferred; a cross-check can never be
+	// inferred and stays unrecorded.
+	gateVerdict := c.GateVerdict
+	if gateVerdict == "" && c.Verified {
+		gateVerdict = feeds.GatePassed
+	}
+	entry := feeds.LedgerEntry{
 		Source:    ReceiverLedgerSource,
 		Kind:      kind,
 		ID:        c.Path,
@@ -67,6 +76,10 @@ func receiverLedgerEntry(c Capture, fetchedAt time.Time) feeds.LedgerEntry {
 		Evidence:  evidence,
 		Gate:      c.Gate,
 	}
+	entry.GateVerdict = gateVerdict
+	entry.Crosscheck = c.Crosscheck
+	entry.CrosscheckRef = c.CrosscheckRef
+	return entry
 }
 
 // syncReceiverLedger appends one proof-ledger entry per archived capture

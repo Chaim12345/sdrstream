@@ -41,20 +41,27 @@ import (
 
 // Capture is one recording the UI can show.
 type Capture struct {
-	Satellite   string    `json:"satellite"`
-	Receiver    string    `json:"receiver"`
-	FrequencyHz float64   `json:"frequency_hz,omitempty"`
-	Mode        string    `json:"mode,omitempty"`
-	Decode      string    `json:"decode,omitempty"`
-	Kind        string    `json:"kind,omitempty"`   // voice, data, cw, carrier, noise
-	Target      string    `json:"target,omitempty"` // named service the clip was aimed at
-	Verified    bool      `json:"verified"`         // live quality gate verdict
-	Gate        string    `json:"gate,omitempty"`   // gate reason when unverified
-	Start       time.Time `json:"start"`
-	Samples     int       `json:"samples"`
-	Rate        int       `json:"rate"`
-	Path        string    `json:"path"`
-	URL         string    `json:"url,omitempty"`
+	Satellite   string  `json:"satellite"`
+	Receiver    string  `json:"receiver"`
+	FrequencyHz float64 `json:"frequency_hz,omitempty"`
+	Mode        string  `json:"mode,omitempty"`
+	Decode      string  `json:"decode,omitempty"`
+	Kind        string  `json:"kind,omitempty"`   // voice, data, cw, carrier, noise
+	Target      string  `json:"target,omitempty"` // named service the clip was aimed at
+	Verified    bool    `json:"verified"`         // live quality gate verdict (legacy summary flag)
+	Gate        string  `json:"gate,omitempty"`   // gate reason when unverified
+	// GateVerdict and Crosscheck keep the two proof facets separate:
+	// the Go live quality gate's own verdict (feeds.GatePassed /
+	// feeds.GateFailed, empty = not preserved) versus an independent
+	// reference cross-check (feeds.Crosscheck*, empty = never performed).
+	GateVerdict   string    `json:"gate_verdict,omitempty"`
+	Crosscheck    string    `json:"crosscheck,omitempty"`
+	CrosscheckRef string    `json:"crosscheck_ref,omitempty"`
+	Start         time.Time `json:"start"`
+	Samples       int       `json:"samples"`
+	Rate          int       `json:"rate"`
+	Path          string    `json:"path"`
+	URL           string    `json:"url,omitempty"`
 }
 
 // CaptureMetadata is the provenance written beside a capture. The scanner
@@ -68,9 +75,14 @@ type CaptureMetadata struct {
 	Kind        string
 	Target      string
 	Gate        string
-	Started     time.Time
-	DurationSec float64
-	Verified    bool
+	// GateVerdict / Crosscheck / CrosscheckRef: the separate proof facets
+	// described on Capture. Empty values keep the legacy sidecar format.
+	GateVerdict   string
+	Crosscheck    string
+	CrosscheckRef string
+	Started       time.Time
+	DurationSec   float64
+	Verified      bool
 }
 
 // Status is the live snapshot the UI polls.
@@ -400,7 +412,25 @@ func WriteCaptureMetadata(dir, name string, meta CaptureMetadata) error {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "frequency_hz=%.0f\nmode=%s\nreceiver=%s\ndecode=%s\nkind=%s\ntarget=%s\ngate=%s\nstarted=%s\nduration_sec=%.3f\nverified=%t\n", meta.FrequencyHz, clean(meta.Mode), clean(meta.Receiver), clean(meta.Detail), clean(meta.Kind), clean(meta.Target), clean(meta.Gate), meta.Started.UTC().Format(time.RFC3339), meta.DurationSec, meta.Verified)
+	if meta.GateVerdict != "" {
+		fmt.Fprintf(&b, "gate_verdict=%s\n", clean(meta.GateVerdict))
+	}
+	if meta.Crosscheck != "" {
+		fmt.Fprintf(&b, "crosscheck=%s\n", clean(meta.Crosscheck))
+	}
+	if meta.CrosscheckRef != "" {
+		fmt.Fprintf(&b, "crosscheck_ref=%s\n", clean(meta.CrosscheckRef))
+	}
 	return common.WriteFileAtomic(filepath.Join(dir, strings.TrimSuffix(name, ".wav")+".txt"), []byte(b.String()), 0o644)
+}
+
+// GateVerdictFor renders the Go live quality gate's boolean outcome as the
+// explicit facet value written to new sidecars.
+func GateVerdictFor(live bool) string {
+	if live {
+		return feeds.GatePassed
+	}
+	return feeds.GateFailed
 }
 
 // AddCapture records a completed capture for the UI.
@@ -481,6 +511,7 @@ func (s *Server) listCaptures() []Capture {
 		var freq float64
 		mode, receiver, detail, kind, target, gate := "", "sdrstream", "", "", "", ""
 		verified := false
+		gateVerdict, crosscheck, crosscheckRef := "", "", ""
 		started := info.ModTime().UTC()
 		for _, part := range parts {
 			if strings.HasSuffix(part, "kHz") {
@@ -511,6 +542,12 @@ func (s *Server) listCaptures() []Capture {
 					target = strings.TrimPrefix(line, "target=")
 				case strings.HasPrefix(line, "gate="):
 					gate = strings.TrimPrefix(line, "gate=")
+				case strings.HasPrefix(line, "gate_verdict="):
+					gateVerdict = strings.TrimPrefix(line, "gate_verdict=")
+				case strings.HasPrefix(line, "crosscheck="):
+					crosscheck = strings.TrimPrefix(line, "crosscheck=")
+				case strings.HasPrefix(line, "crosscheck_ref="):
+					crosscheckRef = strings.TrimPrefix(line, "crosscheck_ref=")
 				case line == "verified=true":
 					verified = true
 				case line == "verified=false":
@@ -527,6 +564,7 @@ func (s *Server) listCaptures() []Capture {
 			Receiver:    receiver,
 			FrequencyHz: freq, Mode: mode, Decode: detail,
 			Kind: kind, Target: target, Verified: verified, Gate: gate,
+			GateVerdict: gateVerdict, Crosscheck: crosscheck, CrosscheckRef: crosscheckRef,
 			Start:   started,
 			Samples: int(dataBytes / 2),
 			Rate:    rate,
@@ -558,6 +596,7 @@ func (s *Server) listCaptures() []Capture {
 		var freq float64
 		mode, receiver, detail, kind, target, gate := "", "sdrstream", "", "", "", ""
 		verified := false
+		gateVerdict, crosscheck, crosscheckRef := "", "", ""
 		started := info.ModTime().UTC()
 		if sidecar, err := os.ReadFile(filepath.Join(s.capturesDir, name)); err == nil {
 			for _, line := range strings.Split(string(sidecar), "\n") {
@@ -576,6 +615,12 @@ func (s *Server) listCaptures() []Capture {
 					target = strings.TrimPrefix(line, "target=")
 				case strings.HasPrefix(line, "gate="):
 					gate = strings.TrimPrefix(line, "gate=")
+				case strings.HasPrefix(line, "gate_verdict="):
+					gateVerdict = strings.TrimPrefix(line, "gate_verdict=")
+				case strings.HasPrefix(line, "crosscheck="):
+					crosscheck = strings.TrimPrefix(line, "crosscheck=")
+				case strings.HasPrefix(line, "crosscheck_ref="):
+					crosscheckRef = strings.TrimPrefix(line, "crosscheck_ref=")
 				case line == "verified=true":
 					verified = true
 				case strings.HasPrefix(line, "started="):
@@ -593,6 +638,7 @@ func (s *Server) listCaptures() []Capture {
 			Satellite: satellite, Receiver: receiver,
 			FrequencyHz: freq, Mode: mode, Decode: detail,
 			Kind: kind, Target: target, Verified: verified, Gate: gate,
+			GateVerdict: gateVerdict, Crosscheck: crosscheck, CrosscheckRef: crosscheckRef,
 			Start: started,
 			Path:  name, // the surviving sidecar, as the ledger identity
 		})

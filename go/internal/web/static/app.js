@@ -185,6 +185,25 @@ function renderPasses(status) {
 /* Per-item proof for one archived receiver capture (PR #5 record-all
    archive): the saved audio, decode text, receiver ID and UTC time, read
    from the capture sidecar the scanner writes next to every clip. */
+/* The Go live quality gate and an independent reference cross-check are
+   separate proof facets. Both are shown explicitly; a legacy capture whose
+   summary bool is true passed the gate (that was its documented meaning),
+   while a cross-check is never inferred - "none recorded" when absent. */
+function gateFacetOf(c) { return c.gate_verdict || (c.verified ? 'passed' : ''); }
+function facetChips(c) {
+  const gv = gateFacetOf(c);
+  const g = document.createElement('span');
+  g.className = 'badge ' + (gv === 'passed' ? 'verified' : (gv === 'failed' ? 'unverified' : 'blind'));
+  g.textContent = 'gate: ' + (gv || 'not recorded');
+  if (c.gate) g.title = 'quality gate: ' + c.gate;
+  const cv = c.crosscheck || '';
+  const x = document.createElement('span');
+  x.className = 'badge ' + (cv === 'verified' ? 'verified' : (cv === 'mismatch' ? 'unverified' : 'blind'));
+  x.textContent = 'cross-check: ' + (cv || 'none recorded');
+  if (c.crosscheck_ref) x.title = 'reference: ' + c.crosscheck_ref;
+  return [g, x];
+}
+
 /* Clip length from the parsed WAV header values (samples / rate), shown so a
    card carries the real duration even before a browser loads media metadata. */
 const fmtDuration = sec => {
@@ -231,7 +250,11 @@ function captureProof(c) {
   raw.className = 'proof-decode';
   raw.textContent = c.decode || 'no decode text saved for this clip';
   row('raw decode', raw);
-  row('verified', c.verified ? 'yes - live quality gate passed' : 'no' + (c.gate ? ' - ' + c.gate : ''));
+  row('live gate (Go)', (gateFacetOf(c) || 'not recorded') + (c.gate ? ' - ' + c.gate : ''));
+  row('cross-check', (c.crosscheck || 'none recorded') + (c.crosscheck_ref ? ' via ' + c.crosscheck_ref : ''));
+  row('verdict', c.crosscheck === 'verified' && gateFacetOf(c) === 'passed'
+    ? 'verified live - gate passed and independently confirmed'
+    : (c.verified ? 'gate passed - no independent cross-check recorded' : 'unverified'));
   row('origin', c.target ? 'scheduled target "' + c.target + '"' : 'blind scan (no named target)');
   row('archive', c.samples + ' samples at ' + c.rate + ' Hz' + (c.samples && c.rate ? ' (' + fmtDuration(c.samples / c.rate) + ')' : ''));
   pb.onclick = () => { pf.hidden = !pf.hidden; };
@@ -380,6 +403,7 @@ function renderCaptures(status) {
       ob.className = 'badge ' + (c.target ? 'scheduled' : 'blind');
       ob.textContent = c.target ? 'scheduled: ' + c.target : 'blind scan';
       badges.appendChild(ob);
+      facetChips(c).forEach(ch => badges.appendChild(ch));
       card.appendChild(badges);
       if (c.decode) { const d=document.createElement('div'); d.className='detail'; d.textContent=c.decode; card.appendChild(d); }
       if (c.url) {
@@ -1813,6 +1837,7 @@ function renderReceiverProof(entries) {
     const ev = document.createElement('span');
     if (e.evidence === 'verified') {
       ev.className = 'badge verified'; ev.textContent = 'verified live';
+      ev.title = 'Go live quality gate passed' + (e.crosscheck === 'verified' ? ' and independently cross-checked' : ' - no independent cross-check recorded');
     } else {
       ev.className = 'badge unverified';
       ev.textContent = e.evidence === 'unverified' ? 'unverified' : 'not gated';
@@ -1826,6 +1851,9 @@ function renderReceiverProof(entries) {
       const rx = document.createElement('span'); rx.className = 'badge blind'; rx.textContent = shortURL(e.receiver);
       badges.appendChild(rx);
     }
+    facetChips({ gate_verdict: e.gate_verdict || (e.evidence === 'verified' ? 'passed' : ''),
+      crosscheck: e.crosscheck, crosscheck_ref: e.crosscheck_ref, gate: e.gate,
+      verified: e.evidence === 'verified' }).forEach(ch => badges.appendChild(ch));
     card.appendChild(badges);
     if (e.gate) {
       const g = document.createElement('div'); g.className = 'card-meta';
