@@ -51,11 +51,12 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_6
-          script: bash qa-src/qa/android-ui-qa.sh fat.apk ui
+          script: timeout 900 bash -x qa-src/qa/android-ui-qa.sh fat.apk ui 2>&1 | tee -a qa-results-trace.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: android-ui-qa-${{ github.run_id }}
           path: |
             qa-results/**
+            qa-results-trace.txt
             app-sha.txt

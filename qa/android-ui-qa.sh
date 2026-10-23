@@ -4,7 +4,7 @@
 # (read via run-as in CI only), and app lifecycle. Usage: android-ui-qa.sh <apk> <label>
 set -u
 APK="$1"; LABEL="$2"; PKG=com.chaim12345.sdrstream
-OUT=qa-results; mkdir -p "$OUT"; R="$OUT/$LABEL"
+OUT=qa-results; mkdir -p "$OUT"; export PATH=$PATH; R="$OUT/$LABEL"
 log() { echo "[qa] $*" | tee -a "$R-steps.txt"; }
 shot() { adb exec-out screencap -p > "$R-$1.png"; log "screenshot $1"; }
 dump() { adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; adb exec-out cat /sdcard/ui.xml > "$R-$1.xml" 2>/dev/null; }
