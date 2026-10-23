@@ -1249,3 +1249,38 @@ func TestGalleryManifestLoadAndSourceFields(t *testing.T) {
 		t.Errorf("legacy manifest item source = %q, want backfilled satnogs", legacy.Source)
 	}
 }
+
+// Archived audio artefacts must be playable in the browser: the manifest
+// name serves the recording with an audio MIME type and byte-range
+// support, so the gallery's <audio> element can stream and seek it.
+func TestGalleryFileServesPlayableAudio(t *testing.T) {
+	server := newTestServer(t)
+	wav := append([]byte("RIFF\x24\x00\x00\x00WAVEfmt "), []byte("fake-wav-body")...)
+	name := "7-pass.wav"
+	if err := os.WriteFile(filepath.Join(server.galleryDir, name), wav, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server.gallery = append(server.gallery, gallery.Item{
+		ObservationID: 7, Satellite: "ISS", Station: "test", Kind: "audio",
+		Name: name, Start: time.Unix(1_700_000_000, 0),
+		Path: filepath.Join(server.galleryDir, name),
+	})
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest("GET", "/gallery/"+name, nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	if ct := recorder.Header().Get("Content-Type"); ct != "audio/wav" {
+		t.Errorf("Content-Type = %q, want audio/wav", ct)
+	}
+	if ar := recorder.Header().Get("Accept-Ranges"); ar != "bytes" {
+		t.Errorf("Accept-Ranges = %q, want bytes", ar)
+	}
+	recorder = httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/gallery/"+name, nil)
+	req.Header.Set("Range", "bytes=0-3")
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusPartialContent || recorder.Body.String() != "RIFF" {
+		t.Errorf("range request: status = %d, body = %q; want 206 RIFF", recorder.Code, recorder.Body.String())
+	}
+}

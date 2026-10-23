@@ -229,7 +229,7 @@ body.compact .card .card-meta, body.compact .card-activity .meta { margin-top: 2
 .countdown.warn { color: var(--warn); }
 
 /* gallery */
-.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
 .gcard { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; cursor: pointer; }
 .gcard img { display: block; width: 100%; aspect-ratio: 4/3; object-fit: contain; background: #000; }
 .gcard .body { padding: 8px 10px; font-size: 11px; color: var(--muted); }

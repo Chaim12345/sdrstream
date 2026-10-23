@@ -544,6 +544,13 @@ function galleryCard(it) {
     const img = document.createElement('img'); img.loading = 'lazy'; img.src = it.url; img.alt = it.satellite || 'decoded image';
     card.appendChild(img);
     card.addEventListener('click', () => openLightbox(it.url, caption));
+  } else if (it.kind === 'audio') {
+    if (it.url) {
+      const audio = document.createElement('audio');
+      audio.controls = true; audio.preload = 'none'; audio.src = it.url;
+      audio.setAttribute('aria-label', 'listen to ' + (it.satellite || it.name));
+      card.appendChild(audio);
+    }
   } else if (it.kind === 'text') {
     const pre = document.createElement('pre'); pre.textContent = it.text || ''; card.appendChild(pre);
     if (it.url) {
