@@ -66,11 +66,14 @@ jobs:
           want = os.environ["WANT"] + ("." + suffix if suffix else "")
           a = APK(sys.argv[1])
           pkg = a.get_package()
-          providers = list(a.get_providers())
+          # get_providers() returns provider CLASS names; the authority lives in
+          # the manifest android:authorities attribute.
+          ns = '{http://schemas.android.com/apk/res/android}'
+          auths = [pr.get(ns + 'authorities') for pr in a.get_android_manifest_xml().iter('provider')]
           print("package:", pkg, "versionCode:", a.get_androidversion_code())
-          print("providers:", providers)
+          print("provider authorities:", auths)
           assert pkg == want, f"package mismatch: got {pkg}, want {want}"
-          assert want + ".logs" in providers, f"log provider authority {want}.logs missing"
+          assert want + ".logs" in auths, f"log provider authority {want}.logs missing (got {auths})"
           assert a.get_androidversion_code() >= 1000, "CI build must carry the monotonic versionCode"
           print("identity assertions PASS")
           ENDASSERT
