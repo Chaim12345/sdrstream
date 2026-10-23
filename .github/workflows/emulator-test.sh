@@ -52,7 +52,7 @@ if [ "$INSTALL_OK" = 1 ]; then
       echo "node $ATTR=$VAL NOT FOUND" | tee "$OUT/$LABEL-$SHOT-missing.txt"
       return 1
     fi
-    XY=$(echo "$BOUNDS" | tr -d '[]' | tr ',' ' ')
+    XY=$(echo "$BOUNDS" | tr -cs '0-9' ' ')
     set -- $XY
     adb shell input tap $(( ($1 + $3) / 2 )) $(( ($2 + $4) / 2 )) || true
     sleep 2
