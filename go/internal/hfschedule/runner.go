@@ -311,7 +311,10 @@ func (r *Runner) RunOnce(ctx context.Context, entries []Entry) (*Audit, error) {
 		if o.Start.Before(now) {
 			conflict := false
 			for _, up := range Plan(entries, now, duration) {
-				if up.Key() == o.Key() || up.Start.Before(now) {
+				// duration never runs past o.End, so an occurrence
+				// starting at or after o.End cannot be overlapped; only an
+				// earlier start inside this window is a real conflict.
+				if up.Key() == o.Key() || up.Start.Before(now) || !up.Start.Before(o.End) {
 					continue
 				}
 				if prev, ok := state.Attempts[up.Key()]; ok {

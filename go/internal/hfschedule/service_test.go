@@ -261,3 +261,31 @@ func TestSelectReceiverPrefersRecentCleanRecord(t *testing.T) {
 		t.Fatalf("both recently failed: rate should decide, got %v ok=%v", got, ok)
 	}
 }
+
+func TestLateCaptureNotBlockedByAdjacentSlot(t *testing.T) {
+	// Regression: a late capture whose remaining window ends exactly when
+	// the next slot starts must still run - the capture duration is capped
+	// by its own window end, so the adjacent slot is never overlapped.
+	now := utc("2026-10-22T01:56:30Z")
+	dir := t.TempDir()
+	first := Entry{ID: "first", StartMinute: 110, EndMinute: 120, Target: decode.HFTarget{Name: "first", CarrierKHz: 518, DialKHz: 516.3, Mode: "usb"}}
+	second := Entry{ID: "second", StartMinute: 120, EndMinute: 130, Target: decode.HFTarget{Name: "second", CarrierKHz: 518, DialKHz: 516.3, Mode: "usb"}}
+	var captured []string
+	r := Runner{
+		Dir:       dir,
+		Receivers: []Receiver{{URL: "a", Type: "kiwi", MaxKHz: 30000}},
+		Listen:    240 * time.Second,
+		Now:       func() time.Time { return now },
+		Record: func(_ context.Context, _ Receiver, tg decode.HFTarget, d time.Duration) (decode.HFResult, error) {
+			captured = append(captured, tg.Name)
+			return okRecord(2880000)(context.Background(), Receiver{}, tg, d)
+		},
+	}
+	a, err := r.RunOnce(context.Background(), []Entry{first, second})
+	if err != nil || a == nil || a.Occurrence.Entry.ID != "first" {
+		t.Fatalf("late capture must not defer to a slot starting at its own end: %+v err %v", a, err)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("expected one capture, got %v", captured)
+	}
+}
