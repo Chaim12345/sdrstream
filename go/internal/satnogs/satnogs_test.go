@@ -89,3 +89,21 @@ func TestObservationLegacySchema(t *testing.T) {
 		t.Errorf("MaxElevation = %f", observation.MaxElevation)
 	}
 }
+
+func TestOnlyNoradFiltersMixedFeed(t *testing.T) {
+	// The network API's satellite= parameter returned a mixed-satellite
+	// feed (observed live 2026-10-23), so Observations filters client-side.
+	observations := []Observation{
+		{ID: 1, NoradID: 25544},
+		{ID: 2, NoradID: 33591},
+		{ID: 3, NoradID: 25544},
+		{ID: 4, NoradID: 0}, // unlabelled rows are kept
+	}
+	got := onlyNorad(observations, 25544)
+	if len(got) != 3 || got[0].ID != 1 || got[1].ID != 3 || got[2].ID != 4 {
+		t.Fatalf("onlyNorad: got %+v", got)
+	}
+	if all := onlyNorad(observations, 0); len(all) != 4 {
+		t.Fatalf("onlyNorad(0) must pass everything through: %+v", all)
+	}
+}
