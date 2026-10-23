@@ -144,8 +144,20 @@ func PlanChunks(samples []float64, rate int, segs []SpeechSegment, maxSeconds fl
 		var buf []float64
 		for i, s := range cur {
 			a, b := int(s.Start*float64(rate)), int(s.End*float64(rate))
+			// Segments from DetectSpeech always lie inside the audio, but
+			// PlanChunks is exported: clamp hand-built input instead of
+			// slicing out of range.
+			if a < 0 {
+				a = 0
+			}
+			if a > len(samples) {
+				a = len(samples)
+			}
 			if b > len(samples) {
 				b = len(samples)
+			}
+			if b < a {
+				b = a
 			}
 			if i > 0 { // 150 ms of silence between joined segments
 				buf = append(buf, make([]float64, rate*3/20)...)
@@ -177,7 +189,17 @@ func PlanChunks(samples []float64, rate int, segs []SpeechSegment, maxSeconds fl
 func splitLong(samples []float64, rate int, segs []SpeechSegment, max float64) []SpeechSegment {
 	var out []SpeechSegment
 	frame := rate / 50
+	total := float64(len(samples)) / float64(rate)
 	for _, s := range segs {
+		if s.Start < 0 {
+			s.Start = 0
+		}
+		if s.End > total {
+			s.End = total
+		}
+		if s.End <= s.Start {
+			continue
+		}
 		for s.End-s.Start > max {
 			lo := int((s.Start + max/2) * float64(rate))
 			hi := int((s.Start + max) * float64(rate))
@@ -331,11 +353,19 @@ func runWhisper(ctx context.Context, binary, model, wav string, o Options) (text
 }
 
 // hallucination reports text that whisper is known to invent on noise.
+// Single-word fillers are real speech often enough that they only fail at
+// low confidence; marker-only output ([music], (applause), ...) and the
+// guard's longer canned YouTube phrases are never broadcast content, so
+// they fail at any confidence, exactly as the publish-time Guard rejects
+// them (guard.go). The two filters share one definition on purpose.
 func hallucination(text string, conf float64) bool {
 	t := strings.ToLower(strings.Trim(strings.TrimSpace(text), ".!? "))
 	switch t {
-	case "", "you", "thank you", "thanks for watching", "bye", "thanks", "the", "uh", "um":
+	case "", "you", "thank you", "bye", "thanks", "the", "uh", "um":
 		return conf < 0.8
+	}
+	if stripMarkers(t) == "" || isCanned(t) {
+		return true
 	}
 	// The same word repeated over and over is a decoder loop.
 	words := strings.Fields(t)
@@ -393,10 +423,13 @@ func TranscribeASR(ctx context.Context, samples []float64, rate int, o ASROption
 		}
 		if (err != nil || conf < o.MinConfidence || hallucination(text, conf)) && o.FallbackModel != "" && o.FallbackModel != model {
 			t2, l2, c2, e2 := runWhisper(ctx, binary, o.FallbackModel, wav, o.Options)
-			// A hallucinated primary loses to any clean fallback, even at
-			// lower confidence: keeping the primary here would drop the
-			// whole chunk below and silence real speech.
-			cleanBeatsHallucination := hallucination(text, conf) && !hallucination(t2, c2)
+			// A hallucinated primary loses to a clean fallback that clears
+			// MinConfidence - the same bar under which the primary itself is
+			// retried - even when the primary scored higher: keeping it here
+			// would drop the whole chunk below and silence real speech. A
+			// fallback below the bar is itself retried-grade output, so the
+			// chunk is dropped instead of publishing worse text.
+			cleanBeatsHallucination := hallucination(text, conf) && !hallucination(t2, c2) && c2 >= o.MinConfidence
 			if e2 == nil && (err != nil || c2 > conf || cleanBeatsHallucination) {
 				text, lang, conf, err, usedModel, fell = t2, l2, c2, nil, o.FallbackModel, true
 			}

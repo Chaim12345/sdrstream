@@ -228,3 +228,107 @@ func TestTranscribeASRCleanFallbackBeatsHallucinatedPrimary(t *testing.T) {
 		t.Errorf("model = %q, want fallback.bin", res.Model)
 	}
 }
+
+// Marker-only output is whisper labelling non-speech, not a transcript: it
+// must be dropped at any confidence, and a clean fallback that clears
+// MinConfidence must get its chance against it.
+func TestTranscribeASRDropsMarkerOnlyChunk(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeScriptedWhisper(t, dir, []scriptedCall{{text: "[music]", conf: 0.95}})
+	rate := 8000
+	res, err := TranscribeASR(context.Background(), twoBursts(rate, 1.2, 1.2), rate, asrIntegrityOptions(binary, dir, 30))
+	if err != nil {
+		t.Fatalf("TranscribeASR: %v", err)
+	}
+	if res.Text != "" {
+		t.Errorf("text = %q, want marker-only output dropped", res.Text)
+	}
+}
+
+func TestTranscribeASRMarkerPrimaryYieldsToCleanFallback(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeScriptedWhisper(t, dir, []scriptedCall{
+		{text: "[music]", conf: 0.95},
+		{text: "clear forecast", conf: 0.85},
+	})
+	o := asrIntegrityOptions(binary, dir, 30)
+	fallback := filepath.Join(dir, "fallback.bin")
+	if err := os.WriteFile(fallback, []byte("fake model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o.FallbackModel = fallback
+	rate := 8000
+	res, err := TranscribeASR(context.Background(), twoBursts(rate, 1.2, 1.2), rate, o)
+	if err != nil {
+		t.Fatalf("TranscribeASR: %v", err)
+	}
+	if res.Text != "clear forecast" {
+		t.Errorf("text = %q, want the clean fallback over the marker primary", res.Text)
+	}
+	if !res.Fallback {
+		t.Error("Fallback flag not set")
+	}
+}
+
+// QA pin: a clean-but-unsure fallback (below MinConfidence, the same bar
+// under which the primary itself is retried) must NOT rescue a chunk from a
+// hallucinated primary - retried-grade output is dropped, not published.
+func TestTranscribeASRLowConfidenceFallbackDoesNotBeatHallucination(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeScriptedWhisper(t, dir, []scriptedCall{
+		{text: "thank you", conf: 0.7},
+		{text: "mumbled static words here", conf: 0.3},
+	})
+	o := asrIntegrityOptions(binary, dir, 30) // MinConfidence 0.5
+	fallback := filepath.Join(dir, "fallback.bin")
+	if err := os.WriteFile(fallback, []byte("fake model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o.FallbackModel = fallback
+	rate := 8000
+	res, err := TranscribeASR(context.Background(), twoBursts(rate, 1.2, 1.2), rate, o)
+	if err != nil {
+		t.Fatalf("TranscribeASR: %v", err)
+	}
+	if res.Text != "" {
+		t.Errorf("text = %q, want the below-bar fallback dropped with the chunk", res.Text)
+	}
+	if res.Fallback {
+		t.Error("Fallback flag set although the fallback never won")
+	}
+}
+
+// PlanChunks is exported: hand-built segments outside the audio must be
+// clamped, not sliced into a panic.
+func TestPlanChunksClampsOutOfRangeSegments(t *testing.T) {
+	rate := 8000
+	x := make([]float64, rate) // 1 s
+	chunks := PlanChunks(x, rate, []SpeechSegment{{0, 0.5}, {2.0, 3.0}, {-1, 0.2}}, 25)
+	if len(chunks) != 1 {
+		t.Fatalf("chunks = %d, want 1", len(chunks))
+	}
+	// splitLong drops the fully out-of-range segment {2,3} and clamps the
+	// negative start: 0.5 s of audio + 150 ms join silence + 0.2 s.
+	want := rate/2 + rate*3/20 + rate/5
+	if len(chunks[0].Samples) != want {
+		t.Errorf("chunk samples = %d, want %d after clamping", len(chunks[0].Samples), want)
+	}
+}
+
+// splitLong must clamp segments to the audio: no cut and no returned segment
+// may reach past the last sample.
+func TestSplitLongClampsToAudio(t *testing.T) {
+	rate := 8000
+	x := make([]float64, rate) // 1 s
+	segs := splitLong(x, rate, []SpeechSegment{{0.5, 3.0}, {2.0, 2.5}, {0.1, 0.4}}, 0.3)
+	// {0.5,3} clamps to {0.5,1} and splits into three; {2,2.5} is wholly
+	// outside and dropped; {0.1,0.4} splits into two.
+	if len(segs) != 5 {
+		t.Fatalf("segments = %d, want 5 (out-of-range one skipped): %+v", len(segs), segs)
+	}
+	for _, s := range segs {
+		if s.End > 1.0 || s.Start < 0 || s.End <= s.Start {
+			t.Errorf("segment %+v escapes the audio", s)
+		}
+	}
+}
