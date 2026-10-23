@@ -124,3 +124,22 @@ func TestGalleryLiveClass(t *testing.T) {
 		}
 	}
 }
+
+// A decode the monitor reported and the gallery also saved must merge
+// into ONE feed entry: the gallery write truncates the frequency to
+// whole Hz and uses a different kind vocabulary ("sstv" vs "image"),
+// so the dedupe key is start + whole-Hz frequency + detail only.
+func TestActivityDedupeKeyMatchesGalleryTwin(t *testing.T) {
+	start := time.Now().UTC()
+	a := monitor.Activity{Started: start, FrequencyHz: 14491234.7, Kind: "sstv"}
+	it := LiveGalleryItem{Source: "live", Start: start, FrequencyHz: int64(a.FrequencyHz), Kind: "image", Text: a.Detail}
+	mk := activityDedupeKey(a.Started.UnixNano(), int64(a.FrequencyHz), a.Detail)
+	gk := activityDedupeKey(it.Start.UnixNano(), it.FrequencyHz, it.Text)
+	if mk != gk {
+		t.Errorf("twin keys differ: monitor %q gallery %q", mk, gk)
+	}
+	other := activityDedupeKey(it.Start.UnixNano(), it.FrequencyHz, "different detail")
+	if mk == other {
+		t.Error("distinct decodes collided on the dedupe key")
+	}
+}

@@ -2084,7 +2084,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	// non-receiver sources are not activity and never enter the feed.
 	seen := make(map[string]bool, len(items))
 	for _, a := range items {
-		seen[activityDedupeKey(a)] = true
+		seen[activityDedupeKey(a.Started.UnixNano(), int64(a.FrequencyHz), a.Detail)] = true
 	}
 	for i, it := range live {
 		class := it.galleryLiveClass()
@@ -2115,7 +2115,11 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 			// as current gate-passed traffic.
 			a.Historical = true
 		}
-		if seen[activityDedupeKey(a)] {
+		// The monitor twin of this decode keys on the same start,
+		// whole-Hz frequency and detail; the gallery write truncates
+		// the frequency to int64, so the key must too, and the kind
+		// vocabulary differs ("sstv" vs "image") and cannot key.
+		if seen[activityDedupeKey(it.Start.UnixNano(), it.FrequencyHz, it.Text)] {
 			continue
 		}
 		items = append(items, a)
@@ -2124,8 +2128,8 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, items)
 }
 
-func activityDedupeKey(a monitor.Activity) string {
-	return fmt.Sprintf("%d|%.0f|%s|%s", a.Started.UnixNano(), a.FrequencyHz, a.Kind, a.Detail)
+func activityDedupeKey(startUnixNano, freqHz int64, detail string) string {
+	return fmt.Sprintf("%d|%d|%s", startUnixNano, freqHz, detail)
 }
 
 // handleLive returns the monitor's point-in-time view: receiver identity,
