@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"math"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -595,4 +597,139 @@ func TestProbeWAVEstimatedSamples(t *testing.T) {
 	if int64(len(samples)) != n || rate != 44100 {
 		t.Fatalf("decoder read %d samples, probe estimated %d", len(samples), n)
 	}
+}
+
+// --- APT gallery-path coverage -------------------------------------------
+//
+// synthAPT duplicates the synthetic signal from decode/apt_test.go (the
+// decode package's test internals are not importable). It passes the
+// decoder's sync-lock Verified gate and is a STRUCTURAL check of the
+// gallery pipeline only: it proves the APT branch of DecodeFrames decodes,
+// gates, and records lineage - it is NOT evidence that real NOAA
+// recordings decode. Real-recording coverage is TestDecodeFramesAPTReal,
+// gated on SDRSTREAM_APT_WAV, same convention as decode.TestAPTRealRecording.
+func synthAPT(lines, rate int, noise float64) []float64 {
+	const wordRate, lineLen = 4160, 2080
+	tmpl := func(period, cycles, lead int) []float64 {
+		t := make([]float64, 0, lead+period*cycles)
+		for i := 0; i < lead; i++ {
+			t = append(t, 0)
+		}
+		for c := 0; c < cycles; c++ {
+			for j := 0; j < period; j++ {
+				if j >= period/2 {
+					t = append(t, 1)
+				} else {
+					t = append(t, 0)
+				}
+			}
+		}
+		return t
+	}
+	rng := rand.New(rand.NewSource(1))
+	tA, tB := tmpl(4, 7, 4), tmpl(5, 7, 4)
+	words := make([]float64, 0, lines*lineLen)
+	for l := 0; l < lines; l++ {
+		line := make([]float64, lineLen)
+		for x := range line {
+			line[x] = 0.5 + 0.3*math.Sin(float64(x+l)/40)
+		}
+		copy(line, tA)
+		copy(line[1040:], tB)
+		words = append(words, line...)
+	}
+	n := len(words) * rate / wordRate
+	out := make([]float64, n)
+	for i := range out {
+		w := words[int(float64(i)*wordRate/float64(rate))]
+		out[i] = (0.2+0.8*w)*math.Sin(2*math.Pi*2400*float64(i)/float64(rate))*0.5 + noise*rng.NormFloat64()
+	}
+	return out
+}
+
+func writeWAV16(t *testing.T, path string, samples []float64, rate int) {
+	t.Helper()
+	var b bytes.Buffer
+	b.WriteString("RIFF")
+	_ = binary.Write(&b, binary.LittleEndian, uint32(36+len(samples)*2))
+	b.WriteString("WAVEfmt ")
+	_ = binary.Write(&b, binary.LittleEndian, uint32(16))
+	_ = binary.Write(&b, binary.LittleEndian, uint16(1)) // PCM
+	_ = binary.Write(&b, binary.LittleEndian, uint16(1)) // mono
+	_ = binary.Write(&b, binary.LittleEndian, uint32(rate))
+	_ = binary.Write(&b, binary.LittleEndian, uint32(rate*2))
+	_ = binary.Write(&b, binary.LittleEndian, uint16(2))
+	_ = binary.Write(&b, binary.LittleEndian, uint16(16))
+	b.WriteString("data")
+	_ = binary.Write(&b, binary.LittleEndian, uint32(len(samples)*2))
+	for _, s := range samples {
+		if s > 1 {
+			s = 1
+		}
+		if s < -1 {
+			s = -1
+		}
+		_ = binary.Write(&b, binary.LittleEndian, int16(s*32767))
+	}
+	if err := os.WriteFile(path, b.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertAPTFrame runs the shared pipeline expectations for one APT decode.
+func assertAPTFrame(t *testing.T, frames []Item, sourceName, dir string) {
+	t.Helper()
+	if len(frames) != 1 {
+		t.Fatalf("got %d frames, want 1 verified APT frame", len(frames))
+	}
+	frame := frames[0]
+	if frame.Kind != "image" || frame.DecodedFrom != sourceName {
+		t.Fatalf("frame lineage wrong: %+v", frame)
+	}
+	png, err := os.ReadFile(frame.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(png) < 8 || !bytes.Equal(png[:8], []byte("\x89PNG\r\n\x1a\n")) {
+		t.Fatalf("decoded artefact is not a PNG (%d bytes)", len(png))
+	}
+}
+
+func TestDecodeFramesAPTSynthetic(t *testing.T) {
+	dir := t.TempDir()
+	name := "synthetic-apt.wav"
+	writeWAV16(t, filepath.Join(dir, name), synthAPT(150, 11025, 0.05), 11025)
+	audio := Item{Kind: "audio", Mode: "APT", Name: name, Path: filepath.Join(dir, name), Source: "satnogs"}
+	items := []Item{audio}
+	frames := DecodeFrames(items, dir)
+	assertAPTFrame(t, frames, name, dir)
+	if items[0].DecodeStatus != "" {
+		t.Fatalf("verified synthetic APT should carry no skip status, got %q", items[0].DecodeStatus)
+	}
+}
+
+// TestDecodeFramesAPTReal runs the gallery APT path over a real NOAA APT
+// recording when SDRSTREAM_APT_WAV points at one. Not committed audio: the
+// fixture stays outside the repo, same convention as the decode package.
+func TestDecodeFramesAPTReal(t *testing.T) {
+	p := os.Getenv("SDRSTREAM_APT_WAV")
+	if p == "" {
+		t.Skip("SDRSTREAM_APT_WAV not set")
+	}
+	samples, rate, err := decode.ReadWAV(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Real APT passes run long (this one is 822 s): trim to a 400 s window
+	// so the recording fits the gallery input caps under test. The window
+	// still holds hundreds of sync-locked lines.
+	if max := 400 * rate; len(samples) > max {
+		samples = samples[:max]
+	}
+	dir := t.TempDir()
+	name := "real-apt.wav"
+	writeWAV16(t, filepath.Join(dir, name), samples, rate)
+	audio := Item{Kind: "audio", Mode: "APT", Name: name, Path: filepath.Join(dir, name), Source: "satnogs"}
+	frames := DecodeFrames([]Item{audio}, dir)
+	assertAPTFrame(t, frames, name, dir)
 }
