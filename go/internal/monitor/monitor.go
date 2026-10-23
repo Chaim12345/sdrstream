@@ -45,11 +45,13 @@ type Activity struct {
 	FrequencyHz        float64            `json:"frequency_hz"`
 	BandwidthHz        float64            `json:"bandwidth_hz"`
 	LevelDB            float64            `json:"level_db"`
-	Kind               string             `json:"kind"`             // voice, data, cw, carrier, noise, unknown
-	Mode               string             `json:"mode,omitempty"`   // decoder or modulation that produced the detail
-	Detail             string             `json:"detail,omitempty"` // decoded payload or transcript
-	VerificationAnchor string             `json:"-"`                // expected callsign/phrase for the live quality gate
-	SSTVReport         *verify.SSTVReport `json:"-"`                // decode evidence for an SSTV image; nil = no report = unknown. Dropped on any JSON round-trip: re-verification must treat a missing report as unknown (conservative), never as clean.
+	Kind               string             `json:"kind"`                   // voice, data, cw, carrier, noise, unknown
+	Mode               string             `json:"mode,omitempty"`         // decoder or modulation that produced the detail
+	Detail             string             `json:"detail,omitempty"`       // decoded payload or transcript
+	VerificationAnchor string             `json:"-"`                      // expected callsign/phrase for the live quality gate
+	SSTVReport         *verify.SSTVReport `json:"-"`                      // decode evidence for an SSTV image; nil = no report = unknown. Dropped on any JSON round-trip: re-verification must treat a missing report as unknown (conservative), never as clean.
+	Verification       string             `json:"verification,omitempty"` // gate reason recorded at verification; empty = no recorded proof
+	Historical         bool               `json:"historical,omitempty"`   // gallery-sourced entry with no recorded gate proof: list, never count as current gate-passed
 	Label              string             `json:"label,omitempty"`
 	Target             string             `json:"target,omitempty"` // named service a scheduled target was aimed at
 	Source             string             `json:"source"`

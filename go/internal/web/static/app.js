@@ -594,12 +594,18 @@ function galleryCard(it) {
     const lin = document.createElement('div'); lin.className = 'muted';
     lin.textContent = it.decode_status; body.appendChild(lin);
   }
-  // Gate provenance recorded at verification time (live items). Only
-  // real recorded reasons render; items saved before the field existed
-  // show nothing - unknown provenance is never re-labeled.
+  // Gate provenance recorded at verification time (live items). A
+  // recorded reason renders verbatim; a live item WITHOUT one is
+  // historical - verification unknown - and says so, instead of
+  // borrowing the header's gate-passed claim. SatNOGS and test
+  // fixture items carry their own provenance and get neither label.
   if (it.verification) {
     const lin = document.createElement('div'); lin.className = 'muted verification';
     lin.textContent = it.verification; body.appendChild(lin);
+  } else if (it.source ? it.source === 'live' : ((it.kind === 'image' && it.observation_id === 0) || it.satellite === 'Live reception')) {
+    const lin = document.createElement('div'); lin.className = 'muted verification';
+    lin.textContent = 'historical - verification unknown (no gate proof recorded)';
+    body.appendChild(lin);
   }
   card.appendChild(body);
   return card;
@@ -646,7 +652,15 @@ function renderGallery() {
   const active = document.querySelector('[data-gallery-kind][aria-selected="true"]')?.dataset.galleryKind || 'live';
   if (active === 'test') return; // the test tab owns its own rendering and meta
   const shown = active === 'live' ? live : satnogs;
-  el('gallery-count').textContent = active === 'live' ? live.length + ' gate-passed live decode' + (live.length === 1 ? '' : 's') : satnogs.length + ' SatNOGS artefact' + (satnogs.length === 1 ? '' : 's');
+  // Only items with a RECORDED gate reason count as gate-passed. Items
+  // saved before reasons were recorded (or reloaded without one) are
+  // historical with unknown verification - shown, but never re-labeled
+  // as current gate-passed.
+  const proven = live.filter(it => it.verification).length;
+  const unknown = live.length - proven;
+  el('gallery-count').textContent = active === 'live'
+    ? proven + ' gate-passed live decode' + (proven === 1 ? '' : 's') + (unknown ? ' · ' + unknown + ' historical (verification unknown)' : '')
+    : satnogs.length + ' SatNOGS artefact' + (satnogs.length === 1 ? '' : 's');
   const src = el('gallery-source');
   if (src) {
     if (active === 'live') { src.textContent = 'decoded by this receiver, gate-passed'; }
@@ -892,7 +906,9 @@ async function refreshActivity() {
   try {
     const items = await fetchJSON('/api/activity.json');
     activityItems = items || [];
-    el('activity-count').textContent = activityItems.length;
+    // Historical entries (gallery items with no recorded gate proof)
+    // are listed but never counted as current gate-passed traffic.
+    el('activity-count').textContent = activityItems.filter(a => !a.historical).length;
     if (activitySeenKey === null && activityItems.length) {
       activitySeenKey = activityKey(activityItems[0]); // no toast storm on first load
     } else {
@@ -928,6 +944,11 @@ function activityCard(a, fresh) {
   if (a.detail) {
     const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = a.detail;
     card.appendChild(detail);
+  }
+  if (a.historical) {
+    const lin = document.createElement('div'); lin.className = 'muted';
+    lin.textContent = 'historical - verification unknown (no gate proof recorded)';
+    card.appendChild(lin);
   }
   return card;
 }

@@ -2025,10 +2025,12 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	if instance != nil {
 		items = instance.Activities()
 	}
-	// The activity pill is the UI's "verified traffic" total. Scanner and
-	// feed decodes only live in the gallery, so merge them in (skipping
-	// anything the monitor already reported; monitor decodes are also saved
-	// to the gallery and would otherwise be counted twice).
+	// Scanner and feed decodes only live in the gallery, so merge them in
+	// (skipping anything the monitor already reported; monitor decodes are
+	// also saved to the gallery and would otherwise be counted twice).
+	// Gallery entries carry their recorded gate proof; entries without one
+	// are marked historical so the pill counts only current gate-passed
+	// traffic.
 	seen := make(map[string]bool, len(items))
 	for _, a := range items {
 		seen[activityDedupeKey(a)] = true
@@ -2042,13 +2044,18 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 			kind = "voice"
 		}
 		a := monitor.Activity{
-			ID:          i + 1,
-			Started:     it.Start,
-			FrequencyHz: float64(it.FrequencyHz),
-			Kind:        kind,
-			Mode:        it.Mode,
-			Detail:      it.Text,
-			Source:      it.Station,
+			ID:           i + 1,
+			Started:      it.Start,
+			FrequencyHz:  float64(it.FrequencyHz),
+			Kind:         kind,
+			Mode:         it.Mode,
+			Detail:       it.Text,
+			Source:       it.Station,
+			Verification: it.Verification,
+			// A gallery item without a recorded gate reason is
+			// historical: listed for completeness, never counted as
+			// current gate-passed traffic.
+			Historical: it.Verification == "",
 		}
 		if seen[activityDedupeKey(a)] {
 			continue
