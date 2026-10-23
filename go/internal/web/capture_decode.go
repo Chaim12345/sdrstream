@@ -32,7 +32,7 @@ type captureDecodeResponse struct {
 // capture, the same key=value format WriteCaptureMetadata writes.
 func readCaptureSidecar(dir, wavName string) (CaptureMetadata, error) {
 	var meta CaptureMetadata
-	data, err := os.ReadFile(filepath.Join(dir, strings.TrimSuffix(wavName, ".wav")+".txt"))
+	data, err := os.ReadFile(filepath.Join(dir, CaptureBase(wavName)+".txt"))
 	if err != nil {
 		return meta, err
 	}

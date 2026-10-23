@@ -284,7 +284,7 @@ func pruneCapturesWith(dir string, maxBytes int64, maxAge time.Duration, now tim
 			if err := removeFile(path); err != nil {
 				return err
 			}
-			_ = os.Remove(filepath.Join(dir, strings.TrimSuffix(file.name, ".wav")+".txt"))
+			_ = os.Remove(filepath.Join(dir, web.CaptureBase(file.name)+".txt"))
 			return nil
 		})
 		if err != nil {

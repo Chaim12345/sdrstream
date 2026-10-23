@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 )
 
@@ -111,7 +110,7 @@ func removeCaptureIfNotPublishing(dir, wavName string) error {
 			return err
 		}
 		// The sidecar goes with its recording; a missing sidecar is fine.
-		_ = os.Remove(filepath.Join(dir, strings.TrimSuffix(wavName, ".wav")+".txt"))
+		_ = os.Remove(filepath.Join(dir, CaptureBase(wavName)+".txt"))
 		return nil
 	})
 }

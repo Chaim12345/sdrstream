@@ -33,7 +33,7 @@ func capturesMaxBytes() int64 {
 // or predates the verified line - such captures are "unknown", and
 // retention treats them exactly like unverified ones.
 func captureVerified(dir, wavName string) (verified, known bool) {
-	data, err := os.ReadFile(filepath.Join(dir, strings.TrimSuffix(wavName, ".wav")+".txt"))
+	data, err := os.ReadFile(filepath.Join(dir, CaptureBase(wavName)+".txt"))
 	if err != nil {
 		return false, false
 	}

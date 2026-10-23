@@ -349,6 +349,17 @@ type Server struct {
 	cancel context.CancelFunc
 }
 
+// CaptureBase strips the .wav suffix (any letter case) from a capture
+// filename. Capture and sidecar pairing is case-insensitive: a recording
+// named .WAV still pairs with its .txt sidecar, and the sidecar must
+// never list as a second, audio-less capture of the same recording.
+func CaptureBase(name string) string {
+	if strings.HasSuffix(strings.ToLower(name), ".wav") {
+		return name[:len(name)-4]
+	}
+	return name
+}
+
 // New builds a server with the bundled page. When capturesDir is non-empty
 // the capture table is refreshed from WAV files found there on every poll,
 // so recordings made by satrecord (a separate process) show up live. The
@@ -602,7 +613,7 @@ func WriteCaptureMetadata(dir, name string, meta CaptureMetadata) error {
 	if meta.CrosscheckDetail != "" {
 		fmt.Fprintf(&b, "crosscheck_detail=%s\n", clean(meta.CrosscheckDetail))
 	}
-	return common.WriteFileAtomic(filepath.Join(dir, strings.TrimSuffix(name, ".wav")+".txt"), []byte(b.String()), 0o644)
+	return common.WriteFileAtomic(filepath.Join(dir, CaptureBase(name)+".txt"), []byte(b.String()), 0o644)
 }
 
 // GateVerdictFor renders the Go live quality gate's boolean outcome as the
@@ -707,7 +718,13 @@ func (s *Server) listCaptures() []Capture {
 				receiver = "jukebox.spdns.eu:6166"
 			}
 		}
-		if sidecar, err := os.ReadFile(strings.TrimSuffix(path, ".wav") + ".txt"); err == nil {
+		sidecar, err := os.ReadFile(filepath.Join(s.capturesDir, CaptureBase(name)+".txt"))
+		if err != nil {
+			// Sidecars written before the case-insensitive pairing kept
+			// the original extension in the name ("CAP_x.WAV.txt").
+			sidecar, err = os.ReadFile(path + ".txt")
+		}
+		if err == nil {
 			for _, line := range strings.Split(string(sidecar), "\n") {
 				switch {
 				case strings.HasPrefix(line, "frequency_hz="):
@@ -765,7 +782,7 @@ func (s *Server) listCaptures() []Capture {
 	// either hiding the proof or offering a player that cannot play.
 	seen := map[string]bool{}
 	for _, c := range out {
-		seen[c.Path] = true
+		seen[strings.ToLower(CaptureBase(c.Path))] = true
 	}
 	for _, entry := range entries {
 		name := entry.Name()
@@ -773,7 +790,7 @@ func (s *Server) listCaptures() []Capture {
 			continue
 		}
 		base := strings.TrimSuffix(name, ".txt")
-		if seen[base+".wav"] {
+		if seen[strings.ToLower(CaptureBase(base))] {
 			continue
 		}
 		info, err := entry.Info()
