@@ -686,10 +686,12 @@ function openLightbox(url, caption) {
   img.alt = caption;
   el('lightbox-caption').textContent = caption;
   el('lightbox').hidden = false;
+  document.body.classList.add('lb-lock');
   el('lightbox-close').focus();
 }
 function closeLightbox() {
   el('lightbox').hidden = true;
+  document.body.classList.remove('lb-lock');
   el('lightbox').classList.remove('zoomed');
   el('lightbox-img').classList.remove('zoomable');
   el('lightbox-img').src = '';
