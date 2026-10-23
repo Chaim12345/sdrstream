@@ -47,7 +47,6 @@ jobs:
         # Without the secrets the artifact keeps gradle's per-runner debug
         # signature (ephemeral). With them every build shares one cert, so
         # builds update in place. The private key never enters the repo.
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
         working-directory: android
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -55,6 +54,10 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           set -e
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "no signing secrets configured - keeping gradle's ephemeral debug signature"
+            exit 0
+          fi
           echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/release.keystore
           APKSIGNER=$(ls "$ANDROID_HOME/build-tools/"*/apksigner | sort -V | tail -1)
           APK=$(find app/build/outputs/apk -name '*.apk' | head -1)
