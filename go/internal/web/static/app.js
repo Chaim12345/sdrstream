@@ -482,7 +482,20 @@ function renderCaptures(status) {
             const data = await resp.json().catch(() => null);
             if (resp.ok && data && data.ok) {
               result.textContent = 'decoded artefact gate verdict: ' + data.reason;
-              refreshGallery(); refreshActivity();
+              await refreshGallery(); refreshActivity();
+              const it = (galleryItems || []).find(x => x.decoded_from === (c.path || '').split('/').pop());
+              if (it && it.kind === 'image' && it.url) {
+                const view = document.createElement('button');
+                view.type = 'button'; view.className = 'chip decode-view-gallery';
+                view.textContent = 'view decoded image';
+                view.addEventListener('click', () => {
+                  showView('gallery');
+                  selectGalleryTab(it.source === 'test-fixture' ? 'test' : (it.source || 'satnogs') === 'satnogs' ? 'satnogs' : 'live', false);
+                  openLightbox(it.url, (it.satellite || 'decoded image') + ' - decoded from ' + it.decoded_from);
+                });
+                result.appendChild(document.createTextNode(' '));
+                result.appendChild(view);
+              }
             } else {
               result.textContent = 'decoded artefact not verified: ' + ((data && data.reason) || ('HTTP ' + resp.status));
             }
@@ -505,6 +518,12 @@ function renderCaptures(status) {
       badges.appendChild(ob);
       facetChips(c).forEach(ch => badges.appendChild(ch));
       card.appendChild(badges);
+      const prov = document.createElement('div'); prov.className = 'muted capture-provenance';
+      prov.textContent = c.source === 'live' ? 'provenance: recorded by this receiver'
+        : c.source === 'test-fixture' ? 'provenance: test fixture (synthetic - not a reception)'
+        : c.source ? 'provenance: ' + c.source
+        : 'provenance: not recorded (pre-field sidecar)';
+      card.appendChild(prov);
       if (c.decode) { const d=document.createElement('div'); d.className='detail'; d.textContent=c.decode; card.appendChild(d); }
       if (c.url) {
         const audio = document.createElement('audio');

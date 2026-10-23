@@ -55,6 +55,10 @@ type Capture struct {
 	// the Go live quality gate's own verdict (feeds.GatePassed /
 	// feeds.GateFailed, empty = not preserved) versus an independent
 	// reference cross-check (feeds.Crosscheck*, empty = never performed).
+	// Source is the capture's explicit provenance class from its
+	// sidecar ("live" this receiver, "test-fixture" synthetic, or a
+	// foreign value); empty means the sidecar predates the field.
+	Source           string    `json:"source,omitempty"`
 	GateVerdict      string    `json:"gate_verdict,omitempty"`
 	Crosscheck       string    `json:"crosscheck,omitempty"`
 	CrosscheckRef    string    `json:"crosscheck_ref,omitempty"`
@@ -689,6 +693,7 @@ func (s *Server) listCaptures() []Capture {
 		mode, receiver, detail, kind, target, gate := "", "sdrstream", "", "", "", ""
 		verified := false
 		gateVerdict, crosscheck, crosscheckRef, crosscheckDetail := "", "", "", ""
+		source := ""
 		started := info.ModTime().UTC()
 		for _, part := range parts {
 			if strings.HasSuffix(part, "kHz") {
@@ -717,6 +722,8 @@ func (s *Server) listCaptures() []Capture {
 					kind = strings.TrimPrefix(line, "kind=")
 				case strings.HasPrefix(line, "target="):
 					target = strings.TrimPrefix(line, "target=")
+				case strings.HasPrefix(line, "source="):
+					source = strings.TrimPrefix(line, "source=")
 				case strings.HasPrefix(line, "gate="):
 					gate = strings.TrimPrefix(line, "gate=")
 				case strings.HasPrefix(line, "gate_verdict="):
@@ -741,6 +748,7 @@ func (s *Server) listCaptures() []Capture {
 		out = append(out, Capture{
 			Satellite:   satellite,
 			Receiver:    receiver,
+			Source:      source,
 			FrequencyHz: freq, Mode: mode, Decode: detail,
 			Kind: kind, Target: target, Verified: verified, Gate: gate,
 			GateVerdict: gateVerdict, Crosscheck: crosscheck, CrosscheckRef: crosscheckRef, CrosscheckDetail: crosscheckDetail,
@@ -776,6 +784,7 @@ func (s *Server) listCaptures() []Capture {
 		mode, receiver, detail, kind, target, gate := "", "sdrstream", "", "", "", ""
 		verified := false
 		gateVerdict, crosscheck, crosscheckRef, crosscheckDetail := "", "", "", ""
+		source := ""
 		started := info.ModTime().UTC()
 		// A surviving sidecar is proof only if it is one of our metadata
 		// files: hfschedule-style archives keep the raw decode text in
@@ -797,6 +806,8 @@ func (s *Server) listCaptures() []Capture {
 				case strings.HasPrefix(line, "kind="):
 					known = true
 				case strings.HasPrefix(line, "target="):
+					known = true
+				case strings.HasPrefix(line, "source="):
 					known = true
 				case strings.HasPrefix(line, "gate="):
 					known = true
@@ -822,6 +833,8 @@ func (s *Server) listCaptures() []Capture {
 					kind = strings.TrimPrefix(line, "kind=")
 				case strings.HasPrefix(line, "target="):
 					target = strings.TrimPrefix(line, "target=")
+				case strings.HasPrefix(line, "source="):
+					source = strings.TrimPrefix(line, "source=")
 				case strings.HasPrefix(line, "gate="):
 					gate = strings.TrimPrefix(line, "gate=")
 				case strings.HasPrefix(line, "gate_verdict="):
@@ -850,6 +863,7 @@ func (s *Server) listCaptures() []Capture {
 		}
 		out = append(out, Capture{
 			Satellite: satellite, Receiver: receiver,
+			Source:      source,
 			FrequencyHz: freq, Mode: mode, Decode: detail,
 			Kind: kind, Target: target, Verified: verified, Gate: gate,
 			GateVerdict: gateVerdict, Crosscheck: crosscheck, CrosscheckRef: crosscheckRef, CrosscheckDetail: crosscheckDetail,

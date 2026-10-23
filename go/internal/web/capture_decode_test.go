@@ -403,3 +403,26 @@ func TestCaptureDecodeQueuedCancelIsPrompt(t *testing.T) {
 		t.Errorf("cancelled queued decode left a PNG: %v", err)
 	}
 }
+
+// The captures listing carries the sidecar's explicit source class so
+// the UI can label provenance: live stays live, synthetic stays a test
+// fixture, and a pre-field sidecar reports no source (never guessed).
+func TestCapturesListCarriesSourceClass(t *testing.T) {
+	s := &Server{capturesDir: t.TempDir(), galleryDir: t.TempDir()}
+	publishWEFAXCapture(t, s, "CAP_src_a.wav", "live")
+	publishWEFAXCapture(t, s, "CAP_src_b.wav", "test-fixture")
+	publishWEFAXCapture(t, s, "CAP_src_c.wav", "")
+	got := map[string]string{}
+	for _, c := range s.listCaptures() {
+		got[c.Path] = c.Source
+	}
+	if got["CAP_src_a.wav"] != "live" {
+		t.Errorf("live capture source %q, want live", got["CAP_src_a.wav"])
+	}
+	if got["CAP_src_b.wav"] != "test-fixture" {
+		t.Errorf("fixture capture source %q, want test-fixture", got["CAP_src_b.wav"])
+	}
+	if v, ok := got["CAP_src_c.wav"]; !ok || v != "" {
+		t.Errorf("pre-field capture source %q (present %t), want empty - provenance is never guessed", v, ok)
+	}
+}
