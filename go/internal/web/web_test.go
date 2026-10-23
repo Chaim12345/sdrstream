@@ -1302,3 +1302,35 @@ func TestShellAssetsRevalidate(t *testing.T) {
 		}
 	}
 }
+
+// TestShellWiresMsglog pins the integration wiring of the decoder-history
+// enhancement: the page must load msglog.js AFTER app.js (it extends the
+// globals app.js defines), and the service worker shell must carry the new
+// asset under a bumped cache name so old shells are dropped.
+func TestShellWiresMsglog(t *testing.T) {
+	page, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appIdx := strings.Index(string(page), `<script src="/static/app.js"></script>`)
+	msgIdx := strings.Index(string(page), `<script src="/static/msglog.js"></script>`)
+	if appIdx < 0 || msgIdx < 0 {
+		t.Fatalf("index.html must load app.js and msglog.js (app at %d, msglog at %d)", appIdx, msgIdx)
+	}
+	if msgIdx < appIdx {
+		t.Fatal("msglog.js must load after app.js")
+	}
+	sw, err := staticFS.ReadFile("static/sw.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sw), "'/static/msglog.js'") {
+		t.Fatal("service worker shell missing /static/msglog.js")
+	}
+	if !strings.Contains(string(sw), "sdrstream-shell-v3") {
+		t.Fatal("service worker CACHE not bumped for the msglog shell change")
+	}
+	if _, err := staticFS.ReadFile("static/msglog.js"); err != nil {
+		t.Fatal("static/msglog.js not embedded")
+	}
+}

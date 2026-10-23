@@ -5,11 +5,12 @@
  * under /api/, /audio/, /gallery/ and /login goes straight to the network.
  * Bump CACHE when the shell assets change so old caches are dropped.
  */
-const CACHE = 'sdrstream-shell-v2';
+const CACHE = 'sdrstream-shell-v3';
 const SHELL = [
   '/',
   '/static/app.css',
   '/static/app.js',
+  '/static/msglog.js',
   '/static/icons/icon-192.png',
   '/static/icons/icon-512.png',
   '/static/icons/apple-touch-icon.png',
