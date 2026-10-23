@@ -78,6 +78,19 @@ type Options struct {
 	// Cooldown is how long a frequency is not reported again after it
 	// has been seen.
 	Cooldown time.Duration
+	// AverageFrames smooths the detector input over the last N spectrum
+	// frames, so a single noisy frame cannot start a candidate. 0 or 1
+	// detects on every frame as it arrives. Concept ported from the
+	// sliding-window averager in shajen's rtl-sdr-scanner-cpp (GPL-3.0,
+	// see NOTICE-third-party.md).
+	AverageFrames int
+	// HysteresisDB keeps a candidate alive while its signal stays within
+	// HysteresisDB below the start level: start high, stop low, so a
+	// transmission hovering at the threshold does not flicker in and out
+	// of the log. 0 disables it (start and stop levels are the same).
+	// Two-threshold lifecycle ported from shajen's rtl-sdr-scanner-cpp
+	// (GPL-3.0, see NOTICE-third-party.md).
+	HysteresisDB float64
 	// Listen is how much audio to record per transmission; 0 skips it.
 	Listen time.Duration
 	// Mode is the modulation used when listening ("auto" picks per signal).
@@ -147,6 +160,9 @@ type Monitor struct {
 	spanHz     float64
 	spectrumOK bool
 	lastBinHz float64 // bin width of the newest spectrum frame, for mode choice
+	// frameHistory is the short sliding window of spectrum frames the
+	// detector averages over when Options.AverageFrames > 1.
+	frameHistory [][]float64
 	tunedHz    float64
 	bc         broadcastState
 }
@@ -161,6 +177,10 @@ type candidate struct {
 	lastSeen   time.Time
 	reported   bool
 	activityID int
+	// refined is set when a coarse panorama detection was zoomed in on:
+	// frequency and bandwidth then come from the fine window and the
+	// mode picker may trust them.
+	refined bool
 }
 
 // New builds a monitor.
@@ -316,6 +336,12 @@ func (m *Monitor) Run(ctx context.Context) error {
 	}()
 	defer func() { <-workerDone }()
 	if m.opts.Strategy == "spectrum" {
+		// Surface a missing waterfall as a visible misconfiguration
+		// instead of a silent audio-only scan.
+		type waterfallStatus interface{ WaterfallStatus() string }
+		if s, ok := m.opts.Source.(waterfallStatus); ok {
+			m.opts.Logf("%s", s.WaterfallStatus())
+		}
 		return m.runSpectrum(ctx)
 	}
 	if m.opts.Strategy == "broadcast" {
@@ -578,20 +604,127 @@ func (m *Monitor) runSpectrum(ctx context.Context) error {
 }
 
 // step looks at the current spectrum and updates the activity log.
+// averageFrames smooths the detector input over the last N frames
+// (Options.AverageFrames). A sliding per-bin mean kills one-frame noise
+// spikes that would otherwise start candidates; the concept is ported
+// from the Averager in shajen's rtl-sdr-scanner-cpp (GPL-3.0, see
+// NOTICE-third-party.md). Frames of a different length (a source that
+// changed zoom mid-stream) are skipped.
+func (m *Monitor) averageFrames(bins []float64) ([]float64, bool) {
+	n := m.opts.AverageFrames
+	if n <= 1 {
+		return bins, true
+	}
+	m.mu.Lock()
+	m.frameHistory = append(m.frameHistory, bins)
+	if len(m.frameHistory) > n {
+		m.frameHistory = m.frameHistory[len(m.frameHistory)-n:]
+	}
+	history := make([][]float64, len(m.frameHistory))
+	copy(history, m.frameHistory)
+	m.mu.Unlock()
+	avg := make([]float64, len(bins))
+	count := 0
+	for i := len(history) - 1; i >= 0; i-- {
+		if len(history[i]) != len(bins) {
+			continue
+		}
+		for j, v := range history[i] {
+			avg[j] += v
+		}
+		count++
+	}
+	// Like the source averager's is-ready gate: until the window is
+	// full the mean is just a shorter, noisier frame, so detection
+	// waits. Frames of a different length (zoom change) keep the gate
+	// closed until N matching frames collect.
+	if count < n {
+		return nil, false
+	}
+	for j := range avg {
+		avg[j] /= float64(count)
+	}
+	return avg, true
+}
+
+// refine zooms a coarse panorama detection in for the real frequency
+// and bandwidth before it is reported, when the source supports it
+// (KiwiSDR waterfall). The refined values are what the listener tunes
+// to: a 29 kHz panorama bin is a neighbourhood, not a frequency.
+func (m *Monitor) refine(ctx context.Context, candidate *candidate) {
+	if candidate.refined {
+		return
+	}
+	m.mu.Lock()
+	coarse := m.lastBinHz > coarseBinHz
+	binHz := m.lastBinHz
+	m.mu.Unlock()
+	if !coarse {
+		return
+	}
+	type spectrumRefiner interface {
+		RefineSpectrum(ctx context.Context, freqHz float64) ([]float64, float64, float64, bool)
+	}
+	r, ok := m.opts.Source.(spectrumRefiner)
+	if !ok {
+		return
+	}
+	bins, centre, span, ok := r.RefineSpectrum(ctx, candidate.frequency)
+	if !ok || len(bins) < 8 || span <= 0 {
+		return
+	}
+	// The zoomed window is centred on the candidate itself, so the
+	// centre-demod guard would delete exactly what we came for.
+	for _, p := range m.detectGuarded(bins, centre, span, false) {
+		if math.Abs(p.frequency-candidate.frequency) <= binHz {
+			candidate.frequency = p.frequency
+			candidate.bandwidth = p.bandwidth
+			if p.levelDB > candidate.levelDB {
+				candidate.levelDB = p.levelDB
+			}
+			candidate.refined = true
+			return
+		}
+	}
+}
+
 func (m *Monitor) step(ctx context.Context) {
 	bins, centre, span, ok := m.updateSpectrum()
 	if !ok || len(bins) < 8 || span <= 0 {
 		return
 	}
-	peaks := m.detect(bins, centre, span)
+	detectBins, ready := m.averageFrames(bins)
+	if !ready {
+		return
+	}
 	m.mu.Lock()
-	m.lastBinHz = span / float64(len(bins))
+	m.lastBinHz = span / float64(len(detectBins))
 	m.mu.Unlock()
+	// Hysteresis: candidates are born above the start level but stay
+	// alive while they hold the lower stop level, so a transmission
+	// hovering at the threshold does not flicker in and out of the log.
+	var refresh, start []peak
+	if m.opts.HysteresisDB > 0 {
+		refresh = m.detectThreshold(detectBins, centre, span, true, m.thresholdDB()-m.opts.HysteresisDB)
+		start = m.detectThreshold(detectBins, centre, span, true, m.thresholdDB())
+	} else {
+		refresh = m.detectThreshold(detectBins, centre, span, true, m.thresholdDB())
+		start = refresh
+	}
+	startKeys := make(map[string]bool, len(start))
+	for _, p := range start {
+		startKeys[peakKey(p.frequency)] = true
+	}
 	now := time.Now()
-	for _, peak := range peaks {
+	for _, peak := range refresh {
 		key := peakKey(peak.frequency)
 		existing, found := m.active[key]
 		if !found {
+			// A stop-level peak refreshes an existing candidate but
+			// never starts one: only start-level energy creates.
+			if !startKeys[key] {
+				continue
+			}
 			existing = &candidate{key: key, firstSeen: now}
 			m.mu.Lock()
 			m.active[key] = existing
@@ -606,6 +739,12 @@ func (m *Monitor) step(ctx context.Context) {
 		if existing.reported || now.Sub(existing.firstSeen) < m.opts.DwellTime {
 			continue
 		}
+		// Below the start level at report time: the transmission
+		// faded during the dwell, so wait for a real return instead
+		// of reporting threshold noise.
+		if !startKeys[key] {
+			continue
+		}
 		// One transmission, one entry: a transmitter that stays on the
 		// air is reported again only after the cooldown.
 		m.mu.Lock()
@@ -614,6 +753,9 @@ func (m *Monitor) step(ctx context.Context) {
 		if !last.IsZero() && now.Sub(last) < m.opts.Cooldown {
 			continue
 		}
+		// A coarse panorama only spots energy; zoom in for the real
+		// frequency and bandwidth before anyone tunes to it.
+		m.refine(ctx, existing)
 		existing.reported = true
 		m.mu.Lock()
 		m.reported[key] = now
@@ -654,6 +796,20 @@ type peak struct {
 // real energy. A per-bin noise tracker would be wrong here: a carrier that
 // never goes away would be absorbed into its own floor.
 func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
+	return m.detectGuarded(bins, centre, span, true)
+}
+
+// detectGuarded is detect with the centre-demod guard switchable: a
+// zoomed refinement window is centred on the very signal being refined,
+// so the guard must not run there.
+func (m *Monitor) detectGuarded(bins []float64, centre, span float64, allowCentreGuard bool) []peak {
+	return m.detectThreshold(bins, centre, span, allowCentreGuard, m.thresholdDB())
+}
+
+// detectThreshold is detectGuarded with an explicit level above the
+// noise floor, so the candidate tracker can refresh on a lower stop
+// level than the start level that creates candidates (hysteresis).
+func (m *Monitor) detectThreshold(bins []float64, centre, span float64, allowCentreGuard bool, thresholdDB float64) []peak {
 	if len(bins) < 8 || span <= 0 {
 		return nil
 	}
@@ -721,7 +877,7 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 	for i := 0; i <= len(bins); i++ {
 		above := false
 		if i < len(bins) {
-			above = bins[i] > floors[i]+m.thresholdDB()
+			above = bins[i] > floors[i]+thresholdDB
 		}
 		if above && start < 0 {
 			start = i
@@ -766,8 +922,8 @@ func (m *Monitor) detect(bins []float64, centre, span float64) []peak {
 	// Only narrow profiles get this treatment: a KiwiSDR waterfall spans
 	// the whole 0-30 MHz band and has no demodulator spike at its centre,
 	// so guarding 15 MHz there would delete real signals (WWV lives
-	// exactly there).
-	if span <= wideProfileMaxHz {
+	// exactly there). A refinement window sets allowCentreGuard=false.
+	if allowCentreGuard && span <= wideProfileMaxHz {
 		guard := math.Max(4*binHz, 3000)
 		kept := peaks[:0]
 		for _, p := range peaks {
@@ -914,7 +1070,7 @@ func (m *Monitor) modeBandwidth(candidate *candidate) float64 {
 	m.mu.Lock()
 	coarse := m.lastBinHz > coarseBinHz
 	m.mu.Unlock()
-	if coarse {
+	if coarse && !candidate.refined {
 		return 0
 	}
 	return candidate.bandwidth

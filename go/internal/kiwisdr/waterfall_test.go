@@ -1,6 +1,7 @@
 package kiwisdr
 
 import (
+	"math"
 	"encoding/binary"
 	"testing"
 	"time"
@@ -84,9 +85,10 @@ func TestWaterfallSpectrumZoomedMapping(t *testing.T) {
 	c.fftSize = 1024
 	c.centerHz = 15e6
 	c.bandwidthHz = 30e6
-	// zoom 1: one bin is 30e6/2048 Hz; xbin 512 starts the window at
-	// 512*binHz = 7.5 MHz.
-	c.latest = WaterfallFrame{XBin: 512, Zoom: 1, Bins: make([]float64, 1024), ReceivedAt: time.Now()}
+	// zoom 1: one bin is 30e6/2048 Hz. x_bin counts max-zoom bins
+	// (hzPerMaxBin = 30e6/(1024<<14)), so an x_bin of 512<<13 starts
+	// the window at 7.5 MHz.
+	c.latest = WaterfallFrame{XBin: 512 << 13, Zoom: 1, Bins: make([]float64, 1024), ReceivedAt: time.Now()}
 	c.haveLatest = true
 	c.stateMu.Unlock()
 	_, centre, span, ok := c.Spectrum()
@@ -97,7 +99,8 @@ func TestWaterfallSpectrumZoomedMapping(t *testing.T) {
 	if span != 1024*binHz {
 		t.Errorf("span %v, want %v", span, 1024*binHz)
 	}
-	wantCentre := 512*binHz + 1024*binHz/2
+	hzPerMaxBin := 30e6 / float64(1024<<14)
+	wantCentre := float64(512<<13)*hzPerMaxBin + 1024*binHz/2
 	if centre != wantCentre {
 		t.Errorf("centre %v, want %v", centre, wantCentre)
 	}
@@ -136,5 +139,38 @@ func TestWaterfallHandleText(t *testing.T) {
 	defer c.stateMu.RUnlock()
 	if c.fftSize != 1024 || c.centerHz != 15e6 || c.bandwidthHz != 30e6 {
 		t.Errorf("geometry: fft=%d centre=%v bw=%v", c.fftSize, c.centerHz, c.bandwidthHz)
+	}
+}
+
+func TestZoomWindowMath(t *testing.T) {
+	// 30 MHz band, 1024-bin frames: zoom 5 gives ~915 Hz bins, zoom 4
+	// still ~1.83 kHz, so a 1.5 kHz target lands on zoom 5 centred on
+	// the signal.
+	zoom, start := zoomWindow(7.2e6, 1500, 1024, 30e6, 15e6, 14)
+	if zoom != 5 {
+		t.Fatalf("zoom %d, want 5", zoom)
+	}
+	// start counts max-zoom bins: hzPerMaxBin = 30e6 / (1024 << 14).
+	hzPerMaxBin := 30e6 / float64(1024<<14)
+	spanHz := 1024 * 30e6 / (1024 * 32)
+	wantStart := int(math.Round((7.2e6 - spanHz/2) / hzPerMaxBin))
+	if start != wantStart {
+		t.Errorf("start %d, want %d", start, wantStart)
+	}
+	// The window covers the target when converted through max-zoom units.
+	lo := float64(start) * hzPerMaxBin
+	hi := lo + spanHz
+	if !(lo <= 7.2e6 && 7.2e6 <= hi) {
+		t.Errorf("window %.0f-%.0f Hz misses 7.2 MHz", lo, hi)
+	}
+	// A target at the band edge clamps instead of running off the map.
+	zoom, start = zoomWindow(10e3, 1500, 1024, 30e6, 15e6, 14)
+	if start != 0 {
+		t.Errorf("low edge start %d, want 0", start)
+	}
+	zoom, start = zoomWindow(29.99e6, 1500, 1024, 30e6, 15e6, 14)
+	maxStart := 1024<<14 - 1024<<uint(14-zoom)
+	if start != maxStart {
+		t.Errorf("high edge start %d, want %d", start, maxStart)
 	}
 }

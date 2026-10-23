@@ -85,6 +85,8 @@ type WaterfallClient struct {
 	haveLatest  bool
 	dead        bool
 	refused     error
+	zoomMax     int
+	wantZoom    int // last zoom asked for via SetZoom/RefineZoom
 }
 
 // NewWaterfall parses "host:port" or any http(s)/ws(s) URL, like New.
@@ -166,6 +168,9 @@ func (c *WaterfallClient) Connect(ctx context.Context) error {
 			return err
 		}
 	}
+	c.stateMu.Lock()
+	c.wantZoom = 0
+	c.stateMu.Unlock()
 	go c.readLoop()
 	return nil
 }
@@ -206,9 +211,13 @@ func (c *WaterfallClient) Spectrum() (bins []float64, centreHz, spanHz float64, 
 	if fft <= 0 {
 		fft = defaultWFWidth
 	}
-	binsWide := float64(fft) * math.Pow(2, float64(c.latest.Zoom))
-	binHz := c.bandwidthHz / binsWide
-	startHz := c.centerHz - c.bandwidthHz/2 + float64(c.latest.XBin)*binHz
+	// x_bin counts max-zoom bins (server: HZperStart = srate /
+	// (WF_WIDTH << MAX_ZOOM)), so the window's start frequency converts
+	// through the max-zoom bin width while the bins themselves are
+	// current-zoom wide.
+	binHz := c.bandwidthHz / (float64(fft) * math.Pow(2, float64(c.latest.Zoom)))
+	hzPerMaxBin := c.bandwidthHz / (float64(fft) * math.Pow(2, float64(c.zoomMaxValue())))
+	startHz := c.centerHz - c.bandwidthHz/2 + float64(c.latest.XBin)*hzPerMaxBin
 	spanHz = float64(len(c.latest.Bins)) * binHz
 	centreHz = startHz + spanHz/2
 	out := make([]float64, len(c.latest.Bins))
@@ -306,12 +315,119 @@ func (c *WaterfallClient) handleText(text string) {
 				c.bandwidthHz = f
 				c.stateMu.Unlock()
 			}
+		case "zoom_max":
+			if n, err := strconv.Atoi(value); err == nil && n > 0 {
+				c.stateMu.Lock()
+				c.zoomMax = n
+				c.stateMu.Unlock()
+			}
 		case "badp":
 			if value == "1" {
 				c.stateMu.Lock()
 				c.refused = fmt.Errorf("%w: %s", ErrBadPassword, c.base)
 				c.stateMu.Unlock()
 			}
+		}
+	}
+}
+
+// SetZoom asks the server for a different waterfall window. startBin is
+// in zoom-level bins; the frames themselves carry the server's x_bin and
+// zoom, so Spectrum() keeps mapping correctly after any change.
+func (c *WaterfallClient) SetZoom(zoom, startBin int) error {
+	if c.ws == nil {
+		return fmt.Errorf("kiwisdr waterfall: %s: not connected", c.base)
+	}
+	writeTimeout := c.opts.WriteTimeout
+	if writeTimeout == 0 {
+		writeTimeout = 10 * time.Second
+	}
+	c.ws.SetWriteDeadline(time.Now().Add(writeTimeout))
+	if err := c.ws.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("SET zoom=%d start=%d", zoom, startBin))); err != nil {
+		return err
+	}
+	c.stateMu.Lock()
+	c.wantZoom = zoom
+	c.stateMu.Unlock()
+	return nil
+}
+
+// zoomMaxValue is the negotiated zoom ceiling, defaulting to the
+// protocol's MAX_ZOOM of 14 when the server has not told us yet.
+func (c *WaterfallClient) zoomMaxValue() int {
+	if c.zoomMax > 0 {
+		return c.zoomMax
+	}
+	return 14
+}
+
+// RefineZoom narrows the waterfall around freqHz until one bin is at
+// most targetBinHz wide (or the server's zoom_max is reached), centred
+// on the target frequency. Call SetZoom(0, 0) to restore the panorama.
+func (c *WaterfallClient) RefineZoom(freqHz, targetBinHz float64) (zoom, startBin int, err error) {
+	c.stateMu.RLock()
+	fft, bw, centre, zoomMax := c.fftSize, c.bandwidthHz, c.centerHz, c.zoomMax
+	c.stateMu.RUnlock()
+	if fft <= 0 {
+		fft = defaultWFWidth
+	}
+	if bw <= 0 {
+		return 0, 0, fmt.Errorf("kiwisdr waterfall: %s: server geometry not known yet", c.base)
+	}
+	zoom, startBin = zoomWindow(freqHz, targetBinHz, fft, bw, centre, zoomMax)
+	if err := c.SetZoom(zoom, startBin); err != nil {
+		return 0, 0, err
+	}
+	return zoom, startBin, nil
+}
+
+// zoomWindow picks the narrowest zoom whose bins are still at most
+// targetBinHz wide and the start bin that centres the window on freqHz,
+// clamped so the window stays inside the band.
+func zoomWindow(freqHz, targetBinHz float64, fft int, bw, centre float64, zoomMax int) (zoom, startBin int) {
+	if zoomMax <= 0 {
+		zoomMax = 14
+	}
+	for zoom < zoomMax && bw/(float64(fft)*math.Pow(2, float64(zoom))) > targetBinHz {
+		zoom++
+	}
+	binHz := bw / (float64(fft) * math.Pow(2, float64(zoom)))
+	spanHz := float64(fft) * binHz
+	// The server's start parameter counts max-zoom bins
+	// (rx_waterfall.cpp: off_freq = start * srate/(WF_WIDTH << MAX_ZOOM)).
+	hzPerMaxBin := bw / (float64(fft) * math.Pow(2, float64(zoomMax)))
+	start := int(math.Round((freqHz - (centre - bw/2) - spanHz/2) / hzPerMaxBin))
+	maxStart := fft<<uint(zoomMax) - fft<<uint(zoomMax-zoom)
+	if start < 0 {
+		start = 0
+	}
+	if start > maxStart {
+		start = maxStart
+	}
+	return zoom, start
+}
+
+// AwaitSpectrum waits until a frame at the most recently requested zoom
+// has arrived (or ctx/timeout ends) and returns it mapped, or ok=false.
+func (c *WaterfallClient) AwaitSpectrum(ctx context.Context, timeout time.Duration) ([]float64, float64, float64, bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		c.stateMu.RLock()
+		want := c.wantZoom
+		have := c.haveLatest && int(c.latest.Zoom) == want
+		c.stateMu.RUnlock()
+		if have {
+			if bins, centre, span, ok := c.Spectrum(); ok {
+				return bins, centre, span, true
+			}
+		}
+		if time.Now().After(deadline) {
+			return nil, 0, 0, false
+		}
+		select {
+		case <-ctx.Done():
+			return nil, 0, 0, false
+		case <-time.After(200 * time.Millisecond):
 		}
 	}
 }

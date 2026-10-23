@@ -268,8 +268,11 @@ type kiwiSource struct {
 	// wf is the companion /W/F waterfall connection when the server
 	// accepted one; it gives the monitor the full-band panorama. Nil
 	// when the waterfall dial failed - the source can still listen.
-	wf   *kiwisdr.WaterfallClient
-	name string
+	wf *kiwisdr.WaterfallClient
+	// wfErr is why wf is nil; surfaced through WaterfallStatus so a
+	// spectrum scan never silently degrades to audio-only.
+	wfErr error
+	name  string
 }
 
 // KiwiSource connects to a KiwiSDR server.
@@ -291,14 +294,44 @@ func dialKiwi(ctx context.Context, server string, allowPrivate bool) (Source, er
 	// The waterfall is a second connection on the same receiver. It is
 	// best-effort: a server with no free waterfall channel still makes
 	// a perfectly good audio source.
-	if wf, err := kiwisdr.NewWaterfall(server, options); err == nil {
-		if err := wf.Connect(ctx); err == nil {
-			source.wf = wf
-		} else {
-			wf.Close()
-		}
+	if wf, err := kiwisdr.NewWaterfall(server, options); err != nil {
+		source.wfErr = err
+	} else if err := wf.Connect(ctx); err != nil {
+		wf.Close()
+		source.wfErr = err
+	} else {
+		source.wf = wf
 	}
 	return source, nil
+}
+
+// WaterfallStatus says whether the panorama is live, and why not when it
+// is not. Monitor startup logs it so a spectrum scan against a Kiwi
+// without a waterfall channel is a visible misconfiguration, not a
+// silent audio-only receiver.
+func (s *kiwiSource) WaterfallStatus() string {
+	if s.wf != nil {
+		return "waterfall: live panorama"
+	}
+	if s.wfErr != nil {
+		return "waterfall unavailable: " + s.wfErr.Error()
+	}
+	return "waterfall unavailable"
+}
+
+// RefineSpectrum zooms the waterfall in around freqHz until one bin is
+// fine enough to tune narrowband from, waits for the zoomed frame, and
+// restores the full panorama before returning. The panorama's 29 kHz
+// bins spot energy; this gives the frequency to listen to.
+func (s *kiwiSource) RefineSpectrum(ctx context.Context, freqHz float64) ([]float64, float64, float64, bool) {
+	if s.wf == nil {
+		return nil, 0, 0, false
+	}
+	defer s.wf.SetZoom(0, 0)
+	if _, _, err := s.wf.RefineZoom(freqHz, 1500); err != nil {
+		return nil, 0, 0, false
+	}
+	return s.wf.AwaitSpectrum(ctx, 4*time.Second)
 }
 
 // Spectrum returns the waterfall panorama when the companion /W/F
