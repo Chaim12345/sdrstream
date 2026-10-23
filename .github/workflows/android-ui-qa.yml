@@ -1,5 +1,8 @@
 name: android-ui-qa
 on:
+  push:
+    branches: [feature/qa-tests]
+    paths: ['qa/android-ui-qa.sh', '.github/workflows/android-ui-qa.yml', 'qa/android-target-ref.txt']
   workflow_dispatch:
     inputs:
       ref:
@@ -12,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || 'fix/android-startup-crash' }}
           path: app
       - uses: actions/checkout@v4
         with:
