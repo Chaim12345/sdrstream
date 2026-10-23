@@ -1526,6 +1526,8 @@ async function postMonitorControl(fields) {
   } catch (err) {
     toast('receiver control failed: ' + err, undefined, true);
     refreshReceiverPanel();
+  }
+}
 
 /* ---------- monitor start / stop ---------- */
 // Starts and stops the live monitor the panels above read from. The
@@ -1610,8 +1612,6 @@ function syncMonitorButtons(live) {
   stopBtn.hidden = !running;
 }
 
-  }
-}
 function applyRxState(info) {
   if (!info) return;
   if (info.mode) rxState.mode = info.mode;

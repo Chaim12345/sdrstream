@@ -1,6 +1,8 @@
 package com.chaim12345.sdrstream;
 
 import android.app.Notification;
+import android.util.Log;
+import android.content.Context;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.NetworkCapabilities;
@@ -37,6 +39,7 @@ import java.util.Map;
  * a dead engine is never silent.
  */
 public class EngineService extends Service {
+    private static final String TAG = "EngineService";
     public static final String ACTION_START = "com.chaim12345.sdrstream.START";
     public static final String ACTION_STOP = "com.chaim12345.sdrstream.STOP";
     static final int PORT = 8080;
@@ -124,7 +127,7 @@ public class EngineService extends Service {
         // log diagnostics) when Tailscale is up: bind additionally to the
         // device's CGNAT address - never 0.0.0.0, and the engine refuses
         // it without a UI password. Loopback stays the primary bind.
-        String tailnetIp = tailnetAddress();
+        String tailnetIp = validatedTailnetBind();
         if (tailnetIp != null) {
             args.add("--host-extra");
             args.add(tailnetIp + ":" + PORT);
@@ -259,9 +262,70 @@ public class EngineService extends Service {
      * never do. Ambiguity fails closed: no extra bind, loopback only,
      * never 0.0.0.0.
      */
-    String tailnetAddress() {
+    /**
+     * Decides the --host-extra bind. FAIL CLOSED: only the address the user
+     * explicitly set in the app menu is considered, and only while it is
+     * currently assigned to a network Android reports as TRANSPORT_VPN and
+     * sits inside the Tailscale CGNAT range 100.64.0.0/10. Auto-detection
+     * never binds on its own - a carrier CGNAT address or another VPN's
+     * address must never expose the UI. Anything ambiguous: loopback only.
+     */
+    private String validatedTailnetBind() {
+        String configured = Prefs.getTailnetAddress(this);
+        if (configured.isEmpty()) return null; // off by default
+        InetAddress addr;
+        try {
+            addr = InetAddress.getByName(configured);
+        } catch (Exception e) {
+            Log.w(TAG, "tailnet address not parseable; loopback only");
+            return null;
+        }
+        if (!(addr instanceof Inet4Address) || addr.isLoopbackAddress()) {
+            Log.w(TAG, "tailnet address is not an IPv4 host address; loopback only");
+            return null;
+        }
+        byte[] b = addr.getAddress();
+        if (!((b[0] & 0xff) == 100 && (b[1] & 0xc0) == 0x40)) {
+            Log.w(TAG, "tailnet address outside 100.64.0.0/10; loopback only");
+            return null;
+        }
+        if (!addressOnVpn(addr)) {
+            Log.w(TAG, "tailnet address not currently on a VPN network; loopback only");
+            return null;
+        }
+        return configured;
+    }
+
+    /** True when addr is currently assigned to a TRANSPORT_VPN network. */
+    private boolean addressOnVpn(InetAddress addr) {
         try {
             ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+            if (cm == null) return false;
+            for (Network network : cm.getAllNetworks()) {
+                NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+                if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                    continue;
+                }
+                LinkProperties lp = cm.getLinkProperties(network);
+                if (lp == null) continue;
+                for (LinkAddress la : lp.getLinkAddresses()) {
+                    if (addr.equals(la.getAddress())) return true;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    /**
+     * Best-effort suggestion of this device's Tailscale IPv4 (a CGNAT
+     * 100.64.0.0/10 address on a TRANSPORT_VPN network) for the settings
+     * dialog to pre-fill. A suggestion only - the engine never binds from
+     * this value without the user saving it explicitly.
+     */
+    static String detectVpnCgnatAddress(Context ctx) {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
             if (cm == null) return null;
             for (Network network : cm.getAllNetworks()) {
                 NetworkCapabilities caps = cm.getNetworkCapabilities(network);
@@ -281,7 +345,6 @@ public class EngineService extends Service {
                 }
             }
         } catch (Exception ignored) {
-            // No network access or interfaces unavailable: loopback only.
         }
         return null;
     }

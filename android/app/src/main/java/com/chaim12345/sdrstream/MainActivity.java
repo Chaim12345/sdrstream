@@ -56,6 +56,7 @@ public class MainActivity extends Activity {
     private static final int REQ_NOTIFICATIONS = 42;
 
     private static final int MENU_SHOW_PASSWORD = 1;
+    private static final int MENU_TAILNET = 8;
     private static final int MENU_SET_PASSWORD = 2;
     private static final int MENU_SOURCE = 3;
     private static final int MENU_STOP_ENGINE = 4;
@@ -136,6 +137,7 @@ public class MainActivity extends Activity {
         popup.getMenu().add(0, MENU_STOP_ENGINE, 3, "Stop engine");
         popup.getMenu().add(0, MENU_DIAGNOSTICS, 4, "Diagnostics");
         popup.getMenu().add(0, MENU_SHARE_LOGS, 5, "Share logs");
+        popup.getMenu().add(0, MENU_TAILNET, 6, "Tailscale remote access");
         popup.getMenu().add(0, MENU_BACKGROUND, 6, "Allow background running");
         popup.setOnMenuItemClickListener(item -> {
             handleMenuAction(item.getItemId());
@@ -354,6 +356,7 @@ public class MainActivity extends Activity {
         menu.add(0, MENU_STOP_ENGINE, 3, "Stop engine");
         menu.add(0, MENU_DIAGNOSTICS, 4, "Diagnostics");
         menu.add(0, MENU_SHARE_LOGS, 5, "Share logs");
+        menu.add(0, MENU_TAILNET, 6, "Tailscale remote access");
         menu.add(0, MENU_BACKGROUND, 6, "Allow background running");
         return true;
     }
@@ -386,6 +389,32 @@ public class MainActivity extends Activity {
                                 Prefs.setUiPassword(this, pw);
                                 restartEngine();
                             }
+                        })
+                        .setNegativeButton("Cancel", null)
+                        .show();
+                return true;
+            }
+            case MENU_TAILNET: {
+                final EditText input = new EditText(this);
+                input.setHint("100.x.y.z - empty disables remote access");
+                String current = Prefs.getTailnetAddress(this);
+                if (!current.isEmpty()) {
+                    input.setText(current);
+                } else {
+                    String suggested = EngineService.detectVpnCgnatAddress(this);
+                    if (suggested != null) input.setText(suggested);
+                }
+                new AlertDialog.Builder(this)
+                        .setTitle("Tailscale remote access")
+                        .setMessage("Enter this device's own Tailscale IPv4 (Tailscale app shows it, "
+                                + "e.g. 100.x.y.z). The UI then also answers on that address with the "
+                                + "UI password. The bind is verified at engine start: it must currently "
+                                + "be assigned to a VPN network, otherwise the engine stays on this "
+                                + "device only. Empty disables remote access.")
+                        .setView(input)
+                        .setPositiveButton("Save", (d, w) -> {
+                            Prefs.setTailnetAddress(this, input.getText().toString());
+                            restartEngine();
                         })
                         .setNegativeButton("Cancel", null)
                         .show();
