@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -387,5 +389,64 @@ func TestTryJukeboxAPRSRemovesTempWAVOnMiss(t *testing.T) {
 	}
 	if _, err := os.Stat(blocked); !os.IsNotExist(err) {
 		t.Errorf("temp WAV still present after a write failure: %v", err)
+	}
+}
+
+// Two processes sharing one state dir must not lose each other's
+// blocklist entries: the load-mutate-save cycle is flock-serialised,
+// so 40 concurrent single-entry writers land all 40 entries. Without
+// the file lock this is a classic lost-update race (each child loads,
+// adds its own entry, and the last rename wins).
+func TestBlocklistCrossProcessNoLostUpdates(t *testing.T) {
+	if os.Getenv("BLOCKLIST_HELPER") == "1" {
+		mutateBlocklist(func(m map[string]stationBlock) {
+			m[os.Getenv("BLOCKLIST_HOST")] = stationBlock{Reason: "helper", Until: time.Now().Add(time.Minute)}
+		})
+		os.Exit(0)
+	}
+	if testing.Short() {
+		t.Skip("spawns subprocesses")
+	}
+	dir := t.TempDir()
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				host := fmt.Sprintf("h-%d-%d", i, j)
+				cmd := exec.Command(os.Args[0], "-test.run=TestBlocklistCrossProcessNoLostUpdates")
+				cmd.Env = append(os.Environ(), "BLOCKLIST_HELPER=1", "BLOCKLIST_HOST="+host, "SDRSTREAM_STATE_DIR="+dir)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Errorf("helper %s: %v (%s)", host, err, out)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	t.Setenv("SDRSTREAM_STATE_DIR", dir)
+	m := loadBlocklist()
+	if len(m) != 40 {
+		t.Errorf("blocklist has %d entries, want 40 - concurrent writers lost updates", len(m))
+	}
+}
+
+// The atomic save must not leave the old shared fixed ".tmp" behind
+// and must round-trip through the gob loader.
+func TestSaveBlocklistAtomicNoFixedTemp(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SDRSTREAM_STATE_DIR", dir)
+	want := map[string]stationBlock{"a:8073": {Reason: "r", Until: time.Now().Add(time.Hour).Truncate(time.Second)}}
+	saveBlocklist(want)
+	if _, err := os.Stat(filepath.Join(dir, "station-blocklist.gob.tmp")); !os.IsNotExist(err) {
+		t.Errorf("fixed .tmp still used or left behind: %v", err)
+	}
+	got := loadBlocklist()
+	if !got["a:8073"].Until.Equal(want["a:8073"].Until) || got["a:8073"].Reason != "r" {
+		t.Errorf("round trip = %+v, want %+v", got["a:8073"], want["a:8073"])
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, ".tmp-*"))
+	if len(matches) != 0 {
+		t.Errorf("stray temp files left behind: %v", matches)
 	}
 }

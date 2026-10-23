@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/gob"
 	"encoding/json"
@@ -2413,32 +2414,71 @@ func isShutdownBlockReason(reason string) bool {
 }
 
 func purgeShutdownBlocklistEntries() int {
-	blockMu.Lock()
-	defer blockMu.Unlock()
-	current := loadBlocklist()
-	cleaned, removed := cleanShutdownBlocklistEntries(current)
-	if removed > 0 {
-		saveBlocklist(cleaned)
-	}
+	removed := 0
+	mutateBlocklist(func(current map[string]stationBlock) {
+		cleaned, n := cleanShutdownBlocklistEntries(current)
+		if n > 0 {
+			removed = n
+			for host := range current {
+				delete(current, host)
+			}
+			for host, entry := range cleaned {
+				current[host] = entry
+			}
+		}
+	})
 	return removed
 }
 
 func saveBlocklist(m map[string]stationBlock) {
 	path := blocklistPath()
 	_ = os.MkdirAll(filepath.Dir(path), 0700)
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(m); err != nil {
+		return
+	}
+	// Unique temp + rename, umask-masked 0600: no shared fixed .tmp to
+	// tear, and perms are never widened past the umask.
+	_ = common.WriteFileAtomic(path, buf.Bytes(), 0600)
+}
+
+// lockBlocklist serialises the whole load-mutate-save cycle across
+// processes sharing one state dir: blockMu covers only this process,
+// and an atomic rename alone still loses logical updates (two writers
+// each load, add their own entry, and the last rename wins). The lock
+// file itself is never written; 0600 creation honours the umask like
+// os.WriteFile.
+func lockBlocklist() (*os.File, error) {
+	path := blocklistPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
+	lf, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
+		lf.Close()
+		return nil, err
+	}
+	return lf, nil
+}
+
+// mutateBlocklist runs fn with the blocklist held under both locks and
+// persists the result. fn receives the freshly loaded map and mutates
+// it in place; the cycle is atomic across processes, so no concurrent
+// writer's entry is lost.
+func mutateBlocklist(fn func(m map[string]stationBlock)) {
+	blockMu.Lock()
+	defer blockMu.Unlock()
+	lf, err := lockBlocklist()
 	if err != nil {
 		return
 	}
-	if gob.NewEncoder(f).Encode(m) != nil {
-		f.Close()
-		_ = os.Remove(tmp)
-		return
-	}
-	_ = f.Sync()
-	_ = f.Close()
-	_ = os.Rename(tmp, path)
+	defer lf.Close()
+	m := loadBlocklist()
+	fn(m)
+	saveBlocklist(m)
 }
 func shouldBlockScanFailure(ctx context.Context, reason string) bool {
 	if ctx != nil && ctx.Err() != nil {
@@ -2456,11 +2496,9 @@ func blockStationIfEligible(ctx context.Context, server *web.Server, host, reaso
 
 func blockStation(server *web.Server, host, reason string, duration time.Duration) time.Time {
 	until := time.Now().Add(duration)
-	blockMu.Lock()
-	m := loadBlocklist()
-	m[strings.ToLower(host)] = stationBlock{reason, until}
-	saveBlocklist(m)
-	blockMu.Unlock()
+	mutateBlocklist(func(m map[string]stationBlock) {
+		m[strings.ToLower(host)] = stationBlock{reason, until}
+	})
 	t := until
 	server.UpsertScanStatus(web.ScanStatus{Station: host, State: "blocked", Result: reason, BlockedUntil: &t, UpdatedAt: time.Now()})
 	return until
