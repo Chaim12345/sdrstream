@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -448,5 +449,61 @@ func TestSaveBlocklistAtomicNoFixedTemp(t *testing.T) {
 	matches, _ := filepath.Glob(filepath.Join(dir, ".tmp-*"))
 	if len(matches) != 0 {
 		t.Errorf("stray temp files left behind: %v", matches)
+	}
+}
+
+// A wedged lock holder (hung process, stalled IO under the lock) must
+// not hang a scan mutation: acquisition is bounded by
+// blocklistLockAcquire, after which the mutation is skipped and
+// logged, and a later mutation succeeds once the holder exits.
+func TestBlocklistWedgedHolderDoesNotHangMutation(t *testing.T) {
+	if hold := os.Getenv("BLOCKLIST_HOLD_MS"); hold != "" {
+		lf, err := lockBlocklist()
+		if err != nil {
+			os.Exit(2)
+		}
+		ms, _ := strconv.Atoi(hold)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		lf.Close()
+		os.Exit(0)
+	}
+	if testing.Short() {
+		t.Skip("spawns subprocess")
+	}
+	dir := t.TempDir()
+	t.Setenv("SDRSTREAM_STATE_DIR", dir)
+
+	holder := exec.Command(os.Args[0], "-test.run=TestBlocklistWedgedHolderDoesNotHangMutation")
+	holder.Env = append(os.Environ(), "BLOCKLIST_HOLD_MS=2500", "SDRSTREAM_STATE_DIR="+dir)
+	if err := holder.Start(); err != nil {
+		t.Fatalf("start holder: %v", err)
+	}
+	// Give the holder time to acquire the lock.
+	time.Sleep(400 * time.Millisecond)
+
+	old := blocklistLockAcquire
+	blocklistLockAcquire = 500 * time.Millisecond
+	defer func() { blocklistLockAcquire = old }()
+
+	start := time.Now()
+	mutateBlocklist(func(m map[string]stationBlock) {
+		m["wedged:8073"] = stationBlock{Reason: "r", Until: time.Now().Add(time.Minute)}
+	})
+	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+		t.Errorf("mutation blocked %v with wedged holder, want bounded ~%v", elapsed, blocklistLockAcquire)
+	}
+	if m := loadBlocklist(); len(m) != 0 {
+		t.Errorf("mutation landed despite wedged holder: %+v", m)
+	}
+
+	if err := holder.Wait(); err != nil {
+		t.Fatalf("holder: %v", err)
+	}
+	// Holder gone: the next mutation acquires and lands.
+	mutateBlocklist(func(m map[string]stationBlock) {
+		m["free:8073"] = stationBlock{Reason: "r", Until: time.Now().Add(time.Minute)}
+	})
+	if m := loadBlocklist(); len(m) != 1 {
+		t.Errorf("post-release mutation lost: %+v", m)
 	}
 }

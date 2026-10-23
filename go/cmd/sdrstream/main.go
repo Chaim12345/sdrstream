@@ -2448,6 +2448,14 @@ func saveBlocklist(m map[string]stationBlock) {
 // each load, add their own entry, and the last rename wins). The lock
 // file itself is never written; 0600 creation honours the umask like
 // os.WriteFile.
+// blocklistLockAcquire bounds how long lockBlocklist waits for the
+// cross-process flock. Blocking LOCK_EX is unsafe here: a wedged
+// holder (hung process, stalled IO under the lock) would block a
+// scan mutation forever. After the deadline the caller skips the
+// mutation and logs; the state file is untouched. Var, not const,
+// so tests can shrink the wait.
+var blocklistLockAcquire = 3 * time.Second
+
 func lockBlocklist() (*os.File, error) {
 	path := blocklistPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -2457,11 +2465,18 @@ func lockBlocklist() (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
-		lf.Close()
-		return nil, err
+	deadline := time.Now().Add(blocklistLockAcquire)
+	for {
+		err = syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return lf, nil
+		}
+		if err != syscall.EWOULDBLOCK || !time.Now().Before(deadline) {
+			lf.Close()
+			return nil, fmt.Errorf("blocklist lock %s: %w", path+".lock", err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	return lf, nil
 }
 
 // mutateBlocklist runs fn with the blocklist held under both locks and
