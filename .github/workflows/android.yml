@@ -74,7 +74,7 @@ jobs:
           print("provider authorities:", auths)
           assert pkg == want, f"package mismatch: got {pkg}, want {want}"
           assert want + ".logs" in auths, f"log provider authority {want}.logs missing (got {auths})"
-          assert a.get_androidversion_code() >= 1000, "CI build must carry the monotonic versionCode"
+          assert int(a.get_androidversion_code()) >= 1000, "CI build must carry the monotonic versionCode"
           print("identity assertions PASS")
           ENDASSERT
       - name: Sign APK with the stable release key (when secrets are configured)
