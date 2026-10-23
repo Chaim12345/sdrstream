@@ -140,11 +140,11 @@ func TestSimulatedFeedUIServer(t *testing.T) {
 	mux.HandleFunc("/api/ledger.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		now := time.Now().UTC()
-		json.NewEncoder(w).Encode([]map[string]interface{}{
+		json.NewEncoder(w).Encode(map[string]interface{}{"entries": []map[string]interface{}{
 			{"source": "receiver", "kind": "audio", "id": "CAP_simfax_live.wav", "label": "wefax 13.900 MHz", "provider_time": now.Add(-30 * time.Minute), "decoded_by": "sdrstream", "receiver": "simulated", "evidence": "verified", "capture_source": "live"},
 			{"source": "receiver", "kind": "audio", "id": "CAP_simfax_fix.wav", "label": "wefax 13.900 MHz", "provider_time": now.Add(-40 * time.Minute), "decoded_by": "sdrstream", "receiver": "simulated", "evidence": "unverified", "capture_source": "test-fixture"},
 			{"source": "receiver", "kind": "audio", "id": "CAP_simfax.wav", "label": "wefax 13.900 MHz", "provider_time": now.Add(-50 * time.Minute), "decoded_by": "sdrstream", "receiver": "simulated", "evidence": "unverified"},
-		})
+		}})
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
