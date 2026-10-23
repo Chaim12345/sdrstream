@@ -16,7 +16,14 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      - name: Accept SDK licenses and install platform 34
+        # android-actions/setup-android@v3 broke (sdkmanager "tools" package
+        # removed in cmdline-tools 16.0); use the runner's preinstalled SDK
+        # like android-emulator-test.yml does.
+        run: |
+          yes | sudo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          sudo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" >/dev/null
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/.config"
       - name: Cross-compile Go engine (GOOS=android/arm64)
         run: ./android/fetch-engine.sh
       - name: Build APK
