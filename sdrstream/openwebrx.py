@@ -245,6 +245,15 @@ class OpenWebRXClient:
         if self._ws is not None:
             await self._send_tuning()
 
+    async def select_profile(self, key: str) -> None:
+        """Switch the SDR profile (``sdr_id|profile_id`` key).
+
+        This is a dedicated ``selectprofile`` message, not a dspcontrol
+        parameter: a tune on the wrong profile silently reaches nothing.
+        """
+        await self._send_json({"type": "selectprofile",
+                               "params": {"profile": key}})
+
     async def _send_tuning(self) -> None:
         if not self._tuning or self._ws is None:
             return

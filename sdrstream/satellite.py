@@ -125,23 +125,33 @@ def plan_pass(
 
     text = tle_text
     record = None
-    if orbit_records is not None:
+    if text is not None and orbit_records is None:
+        # Caller-supplied elements win: no network fetch, no chance of a
+        # stale or unreachable feed overriding fresh data.
+        tracker = Tracker.from_tle_text(text, satellite.name)
+    elif orbit_records is not None:
         tracker = Tracker.from_records(orbit_records, satellite.name)
         for candidate in orbit_records:
             if satellite.name.strip().upper() in candidate.name.upper():
                 record = candidate
                 break
     else:
+        group = satellite.group or "amateur"
         try:
-            records = tle_module.load_records("amateur", offline=offline_tle)
+            records = tle_module.load_records(group, offline=offline_tle)
             tracker = Tracker.from_records(records, satellite.name)
             for candidate in records:
                 if satellite.name.strip().upper() in candidate.name.upper():
                     record = candidate
                     break
         except Exception:
+            # Decommissioned birds (NOAA 15/18/19 since 2025) drop out of
+            # the group feeds; CelesTrak still tracks them by catalog number.
             if text is None:
-                text = tle_module.load("amateur", offline=offline_tle)
+                text = tle_module.load_catnr(satellite.norad_id,
+                                             offline=offline_tle)
+            if text is None:
+                text = tle_module.load(group, offline=offline_tle)
             tracker = Tracker.from_tle_text(text, satellite.name)
     passes = tracker.find_passes(
         latitude, longitude, start=start, hours=hours,
@@ -225,6 +235,18 @@ class _ChaseSession:
             self._client = OpenWebRXClient(self._plan.receiver.url,
                                            reconnect=False)
             await self._client.__aenter__()
+            # Tuning only reaches a profile whose span covers the target
+            # frequency; servers often default to an HF profile. Match the
+            # receiver band's recorded profile display name and select it.
+            band = self._plan.receiver.band_for(self._plan.satellite.downlink_hz)
+            if band is not None and band.name:
+                want = band.name.lower()
+                for profile in self._client.profiles:
+                    name = str(profile.get("name", "")).lower()
+                    key = profile.get("id", "")
+                    if key and want in name:
+                        await self._client.select_profile(key)
+                        break
         else:
             self._client = WebSDRClient(self._plan.receiver.url,
                                         reconnect=False)

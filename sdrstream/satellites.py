@@ -282,12 +282,19 @@ def by_band(band: str) -> List[Satellite]:
 
 
 def by_name(name: str) -> Satellite:
-    """Look up a satellite, accepting the common short names."""
+    """Look up a satellite, accepting the common short names.
+
+    Searches the weather table too: NOAA 15/18/19 live there, and a pass
+    recording must not fail just because the bird is not an amateur sat.
+    """
     key = name.strip().upper()
-    if key in SATELLITES:
-        return SATELLITES[key]
-    for sat in SATELLITES.values():
-        if key == sat.name.upper() or key in sat.name.upper():
-            return sat
-    raise KeyError("unknown satellite %r; known: %s"
-                   % (name, ", ".join(sorted(SATELLITES))))
+    tables = (SATELLITES, WEATHER_SATELLITES)
+    for table in tables:
+        if key in table:
+            return table[key]
+    for table in tables:
+        for sat in table.values():
+            if key == sat.name.upper() or key in sat.name.upper():
+                return sat
+    known = sorted(list(SATELLITES) + list(WEATHER_SATELLITES))
+    raise KeyError("unknown satellite %r; known: %s" % (name, ", ".join(known)))
