@@ -10,6 +10,8 @@ final class Prefs {
     private static final String NAME = "sdrstream";
     private static final String KEY_PASSWORD = "ui_password";
     private static final String KEY_TAILNET_ADDR = "tailnet_address";
+    private static final String KEY_UPDATE_FEED = "update_feed_url";
+    private static final String KEY_UPDATE_LAST_CHECK = "update_last_check";
 
     private Prefs() {}
 
@@ -44,6 +46,29 @@ final class Prefs {
 
     static void setTailnetAddress(Context ctx, String addr) {
         prefs(ctx).edit().putString(KEY_TAILNET_ADDR, addr == null ? "" : addr.trim()).apply();
+    }
+
+    /**
+     * Update feed URL. Empty (the default) means the updater is OFF: no
+     * background checks and the menu item says so. Set to the published
+     * manifest URL once an update source is chosen, or to a tailnet/LAN
+     * test feed for QA.
+     */
+    static String getUpdateFeedUrl(Context ctx) {
+        String v = prefs(ctx).getString(KEY_UPDATE_FEED, "");
+        return v == null ? "" : v.trim();
+    }
+
+    static void setUpdateFeedUrl(Context ctx, String url) {
+        prefs(ctx).edit().putString(KEY_UPDATE_FEED, url == null ? "" : url.trim()).apply();
+    }
+
+    static long getUpdateLastCheck(Context ctx) {
+        return prefs(ctx).getLong(KEY_UPDATE_LAST_CHECK, 0L);
+    }
+
+    static void setUpdateLastCheck(Context ctx, long whenMs) {
+        prefs(ctx).edit().putLong(KEY_UPDATE_LAST_CHECK, whenMs).apply();
     }
 
     private static String generate() {

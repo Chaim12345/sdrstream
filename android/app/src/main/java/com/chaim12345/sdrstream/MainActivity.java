@@ -63,6 +63,8 @@ public class MainActivity extends Activity {
     private static final int MENU_DIAGNOSTICS = 5;
     private static final int MENU_SHARE_LOGS = 6;
     private static final int MENU_BACKGROUND = 7;
+    private static final int MENU_UPDATE = 9;
+    private static final int MENU_UPDATE_SOURCE = 10;
 
     private WebView webView;
     private AlertDialog batteryDialog;
@@ -96,6 +98,7 @@ public class MainActivity extends Activity {
 
         showCrashReportIfAny();
         loadWhenUp();
+        Updater.autoCheckIfDue(this);
     }
 
     /** Title bar with an always-visible overflow button that opens the menu. */
@@ -139,6 +142,8 @@ public class MainActivity extends Activity {
         popup.getMenu().add(0, MENU_SHARE_LOGS, 5, "Share logs");
         popup.getMenu().add(0, MENU_TAILNET, 6, "Tailscale remote access");
         popup.getMenu().add(0, MENU_BACKGROUND, 6, "Allow background running");
+        popup.getMenu().add(0, MENU_UPDATE, 7, "Check for updates");
+        popup.getMenu().add(0, MENU_UPDATE_SOURCE, 8, "Update source");
         popup.setOnMenuItemClickListener(item -> {
             handleMenuAction(item.getItemId());
             return true;
@@ -358,6 +363,8 @@ public class MainActivity extends Activity {
         menu.add(0, MENU_SHARE_LOGS, 5, "Share logs");
         menu.add(0, MENU_TAILNET, 6, "Tailscale remote access");
         menu.add(0, MENU_BACKGROUND, 6, "Allow background running");
+        menu.add(0, MENU_UPDATE, 7, "Check for updates");
+        menu.add(0, MENU_UPDATE_SOURCE, 8, "Update source");
         return true;
     }
 
@@ -438,6 +445,27 @@ public class MainActivity extends Activity {
             case MENU_BACKGROUND:
                 requestBatteryExemption();
                 return true;
+            case MENU_UPDATE:
+                Updater.manualCheck(this);
+                return true;
+            case MENU_UPDATE_SOURCE: {
+                final EditText input = new EditText(this);
+                input.setHint("https://... update manifest - empty disables");
+                String current = Prefs.getUpdateFeedUrl(this);
+                if (!current.isEmpty()) input.setText(current);
+                new AlertDialog.Builder(this)
+                        .setTitle("Update source")
+                        .setMessage("Manifest URL for app updates. Empty disables update checks. "
+                                + "HTTPS is required, except to this device's own tailnet or LAN "
+                                + "for testing. Every download is still verified against this app's "
+                                + "signing key before installing.")
+                        .setView(input)
+                        .setPositiveButton("Save", (d, w) ->
+                                Prefs.setUpdateFeedUrl(this, input.getText().toString()))
+                        .setNegativeButton("Cancel", null)
+                        .show();
+                return true;
+            }
             default:
                 return false;
         }
