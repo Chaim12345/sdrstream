@@ -81,12 +81,29 @@ func (s *Server) handleCaptureDecode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name must be a bare capture .wav filename", http.StatusBadRequest)
 		return
 	}
+	// Hold the capture against the retention pruner for the whole
+	// read+decode+publish, same primitive the producers use: a
+	// decoded_from pointer must never name a capture the pruner took
+	// mid-decode.
+	finish := BeginCapturePublish(s.capturesDir, name)
+	defer finish()
 	wavPath := filepath.Join(s.capturesDir, name)
 	info, err := os.Stat(wavPath)
 	if err != nil {
 		http.Error(w, "capture not found", http.StatusNotFound)
 		return
 	}
+	// Duplicate clicks are idempotent: an already-published re-decode
+	// returns its recorded verdict instead of a second gallery item.
+	s.mu.Lock()
+	for _, it := range s.liveGallery {
+		if it.DecodedFrom == name {
+			s.mu.Unlock()
+			writeJSON(w, captureDecodeResponse{OK: true, Reason: it.Verification + " (already published as " + it.Name + ")"})
+			return
+		}
+	}
+	s.mu.Unlock()
 	meta, err := readCaptureSidecar(s.capturesDir, name)
 	if err != nil {
 		http.Error(w, "capture sidecar missing or unreadable: the recorded mode chooses the decoder, and guessing it would not be honest", http.StatusConflict)
@@ -105,6 +122,9 @@ func (s *Server) handleCaptureDecode(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "capture audio unreadable: "+err.Error(), http.StatusUnprocessableEntity)
 		return
+	}
+	if r.Context().Err() != nil {
+		return // caller went away; do not spend the decode
 	}
 	started := meta.Started
 	if started.IsZero() {
@@ -144,6 +164,9 @@ func (s *Server) handleCaptureDecode(w http.ResponseWriter, r *http.Request) {
 		}
 		pngData, reason = data, v.Reason
 		activity.WEFAXReport = &rep
+	}
+	if r.Context().Err() != nil {
+		return // caller went away; do not publish a decode nobody sees
 	}
 	// The gallery shows what was verified: the gate's own diagnostics,
 	// not the capture's recorded detail string.

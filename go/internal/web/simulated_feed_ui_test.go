@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/monitor"
+	"github.com/chaim12345/sdrstream/go/internal/testutil/wefaxfixture"
+	"github.com/chaim12345/sdrstream/go/internal/voice"
 )
 
 func f64(v float64) *float64 { return &v }
@@ -41,6 +43,16 @@ func TestSimulatedFeedUIServer(t *testing.T) {
 	m.RecordGate(rejectedID, false, "text failed plausibility (simulated)")
 	s := &Server{}
 	s.monitor = m
+	// A decodable capture exercises POST /api/captures/decode from the
+	// UI: synthetic gate-passing WEFAX audio with an honest sidecar.
+	s.capturesDir = t.TempDir()
+	faxSamples := wefaxfixture.Encode(wefaxfixture.Fixture{Rate: 12000, ImageLines: 280, Bars: true, LineSec: 0.5004, NoiseAmp: 0.3})
+	if err := voice.WriteWAV(filepath.Join(s.capturesDir, "CAP_simfax.wav"), faxSamples, 12000); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCaptureMetadata(s.capturesDir, "CAP_simfax.wav", CaptureMetadata{Mode: "wefax", Receiver: "simulated", FrequencyHz: 13900000, Started: now.Add(-30 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
 	// A tall WEFAX-style chart (576x1400) exercises the lightbox zoom:
 	// fit-to-screen shrinks it, full-size mode must scroll. Synthetic
 	// stripes and blocks make the readability difference visible.

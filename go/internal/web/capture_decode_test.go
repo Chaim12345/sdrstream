@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chaim12345/sdrstream/go/internal/decode"
+	"github.com/chaim12345/sdrstream/go/internal/monitor"
 	"github.com/chaim12345/sdrstream/go/internal/testutil/wefaxfixture"
 	"github.com/chaim12345/sdrstream/go/internal/voice"
 )
@@ -111,14 +113,8 @@ func TestCaptureDecodeWEFAXPublishes(t *testing.T) {
 	// Gate-passing chart config from the hfrun gate tests: 280 lines
 	// clears the structural image gate; bars content avoids the
 	// phasing-sync slow-diagonal tracker limitation.
-	samples := wefaxfixture.Encode(wefaxfixture.Fixture{Rate: 12000, ImageLines: 280, Bars: true, LineSec: 0.5004, NoiseAmp: 0.3})
-	if err := voice.WriteWAV(s.capturesDir+"/CAP_fax.wav", samples, 12000); err != nil {
-		t.Fatal(err)
-	}
-	started := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
-	if err := WriteCaptureMetadata(s.capturesDir, "CAP_fax.wav", CaptureMetadata{Mode: "wefax", Receiver: "test-receiver", FrequencyHz: 13900000, Started: started}); err != nil {
-		t.Fatal(err)
-	}
+	publishWEFAXCapture(t, s, "CAP_fax.wav")
+	started := time.Now().UTC().Add(-3 * time.Hour)
 	rec, resp := decodeCapture(t, s, `{"name":"CAP_fax.wav"}`)
 	if rec.Code != http.StatusOK || !resp.OK {
 		t.Fatalf("synthetic gate-passing WEFAX: got %d %+v, want 200 ok:true", rec.Code, resp)
@@ -139,8 +135,8 @@ func TestCaptureDecodeWEFAXPublishes(t *testing.T) {
 	if item.DecodedFrom != "CAP_fax.wav" {
 		t.Errorf("decoded_from %q, want the capture name", item.DecodedFrom)
 	}
-	if !item.Start.Equal(started) {
-		t.Errorf("item start %v, want the capture's transmission time %v", item.Start, started)
+	if d := item.Start.Sub(started); d > time.Second || d < -time.Second {
+		t.Errorf("item start %v vs capture write %v: %v apart", item.Start, started, d)
 	}
 	if item.Station != "test-receiver" || item.FrequencyHz != 13900000 {
 		t.Errorf("provenance station/freq %q/%d, want the sidecar's", item.Station, item.FrequencyHz)
@@ -152,4 +148,118 @@ func TestCaptureDecodeWEFAXPublishes(t *testing.T) {
 	if rec.Code != http.StatusOK || !bytes.HasPrefix(rec.Body.Bytes(), []byte{0x89, 'P', 'N', 'G'}) {
 		t.Errorf("gallery image: got %d with %d bytes", rec.Code, rec.Body.Len())
 	}
+}
+
+// The endpoint sits behind the same session auth as every /api route:
+// with a UI password set, an unauthenticated POST is refused before
+// any decode work happens.
+func TestCaptureDecodeRequiresAuth(t *testing.T) {
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "test-decode-password")
+	s := &Server{capturesDir: t.TempDir(), galleryDir: t.TempDir()}
+	req := httptest.NewRequest(http.MethodPost, "/api/captures/decode", strings.NewReader(`{"name":"CAP_fax.wav"}`))
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("unauthenticated POST: got %d, want 401", rec.Code)
+	}
+}
+
+// A second decode of the same capture is idempotent: no duplicate
+// gallery item, the recorded verdict comes back.
+func TestCaptureDecodeDuplicateIsIdempotent(t *testing.T) {
+	s := &Server{capturesDir: t.TempDir(), galleryDir: t.TempDir()}
+	publishWEFAXCapture(t, s, "CAP_dup.wav")
+	_, resp := decodeCapture(t, s, `{"name":"CAP_dup.wav"}`)
+	if !resp.OK {
+		t.Fatalf("first decode: %+v", resp)
+	}
+	rec, resp := decodeCapture(t, s, `{"name":"CAP_dup.wav"}`)
+	if rec.Code != http.StatusOK || !resp.OK || !strings.Contains(resp.Reason, "already published") {
+		t.Errorf("duplicate decode: got %d %+v, want idempotent ok", rec.Code, resp)
+	}
+	if len(s.liveGallery) != 1 {
+		t.Errorf("duplicate decode left %d gallery items, want 1", len(s.liveGallery))
+	}
+}
+
+// A re-decode of a stored capture is not fresh reception: the feed
+// lists it as historical with the gate diagnostics in its detail, but
+// it never enters the verified activity count the pill renders.
+func TestCaptureDecodeNotCountedAsFreshActivity(t *testing.T) {
+	s := &Server{capturesDir: t.TempDir(), galleryDir: t.TempDir()}
+	publishWEFAXCapture(t, s, "CAP_feed.wav")
+	if _, resp := decodeCapture(t, s, `{"name":"CAP_feed.wav"}`); !resp.OK {
+		t.Fatalf("decode: %+v", resp)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/activity.json", nil)
+	rec := httptest.NewRecorder()
+	s.handleActivity(rec, req)
+	var items []monitor.Activity
+	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	counted := 0
+	found := false
+	for _, a := range items {
+		if a.Verification != "" && a.Rejected == "" {
+			counted++
+		}
+		if strings.Contains(a.Detail, "wefax verified") {
+			found = true
+			if !a.Historical {
+				t.Errorf("re-decode feed entry is not marked historical")
+			}
+			if a.Verification != "" {
+				t.Errorf("re-decode feed entry carries verification %q: it would count as fresh activity", a.Verification)
+			}
+		}
+	}
+	if !found {
+		t.Error("re-decode missing from the feed listing")
+	}
+	if counted != 0 {
+		t.Errorf("pill-countable entries %d, want 0 (re-decode is not fresh activity)", counted)
+	}
+}
+
+// The scanner's WEFAX publication has no decode report on the
+// activity, so its items keep the legacy generic path: published, but
+// with NO recorded verdict (historical, conservative). This pins the
+// known limitation; a global fix must re-derive it, not stumble into
+// it.
+func TestScannerWEFAXWithoutReportStaysUnverdicted(t *testing.T) {
+	s := &Server{capturesDir: t.TempDir(), galleryDir: t.TempDir()}
+	pngData := wefaxPNG(t)
+	activity := monitor.Activity{ID: 1, Started: time.Now().UTC(), Kind: "wefax", Mode: "wefax", Detail: "wefax verified: legacy scanner reason string", Source: "scanner"}
+	if err := s.AddLiveArtifact(activity, pngData); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.liveGallery) != 1 {
+		t.Fatalf("got %d items, want 1", len(s.liveGallery))
+	}
+	if s.liveGallery[0].Verification != "" {
+		t.Errorf("legacy scanner WEFAX gained a verdict %q without a decode report: reason strings are not verdicts", s.liveGallery[0].Verification)
+	}
+}
+
+func publishWEFAXCapture(t *testing.T, s *Server, name string) {
+	t.Helper()
+	samples := wefaxfixture.Encode(wefaxfixture.Fixture{Rate: 12000, ImageLines: 280, Bars: true, LineSec: 0.5004, NoiseAmp: 0.3})
+	if err := voice.WriteWAV(s.capturesDir+"/"+name, samples, 12000); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCaptureMetadata(s.capturesDir, name, CaptureMetadata{Mode: "wefax", Receiver: "test-receiver", FrequencyHz: 13900000, Started: time.Now().UTC().Add(-3 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func wefaxPNG(t *testing.T) []byte {
+	t.Helper()
+	samples := wefaxfixture.Encode(wefaxfixture.Fixture{Rate: 12000, ImageLines: 280, Bars: true, LineSec: 0.5004, NoiseAmp: 0.3})
+	pngData, _, err := decode.WEFAXImageDetailed(samples, 12000, 120, 576)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pngData
 }

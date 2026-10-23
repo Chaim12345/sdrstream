@@ -2132,12 +2132,16 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 			Detail:      it.Text,
 			Source:      it.Station,
 		}
-		if class == galleryLiveVerified {
+		if class == galleryLiveVerified && it.DecodedFrom == "" {
 			a.Verification = it.Verification
 		} else {
 			// A gallery item without a gate-owned verdict is
 			// historical: listed for completeness, never counted
-			// as current gate-passed traffic.
+			// as current gate-passed traffic. A re-decode of a
+			// stored capture (decoded_from set) is historical the
+			// same way: the verdict stays on the gallery item, but
+			// it is not fresh reception and never enters the
+			// activity count.
 			a.Historical = true
 		}
 		// The monitor twin of this decode keys on the same start,

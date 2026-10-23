@@ -456,6 +456,41 @@ function renderCaptures(status) {
       if (c.verified) vb.title = 'Go live quality gate passed' + (c.crosscheck === 'verified' ? ' and independently cross-checked' : ' - no independent cross-check recorded');
       else if (c.gate) vb.title = 'quality gate: ' + c.gate;
       badges.appendChild(vb);
+      // Re-decode a recorded image capture through the publication
+      // gate. The button is only offered for modes with an image
+      // decoder; the verdict (pass or honest failure) lands inline,
+      // and a pass refreshes the gallery and activity views. The
+      // endpoint is idempotent, but the button still disables while
+      // a decode is in flight.
+      if ((c.mode === 'sstv' || c.mode === 'wefax') && c.path) {
+        const btn = document.createElement('button');
+        btn.type = 'button'; btn.className = 'chip decode-capture';
+        btn.textContent = 'decode image';
+        const result = document.createElement('div');
+        result.className = 'muted decode-result';
+        btn.addEventListener('click', async () => {
+          btn.disabled = true; btn.textContent = 'decoding...';
+          result.textContent = '';
+          try {
+            const resp = await fetch('/api/captures/decode', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: (c.path || '').split('/').pop() })
+            });
+            const data = await resp.json().catch(() => null);
+            if (resp.ok && data && data.ok) {
+              result.textContent = data.reason;
+              refreshGallery(); refreshActivity();
+            } else {
+              result.textContent = 'not verified: ' + ((data && data.reason) || ('HTTP ' + resp.status));
+            }
+          } catch (err) {
+            result.textContent = 'decode failed: ' + err;
+          }
+          btn.disabled = false; btn.textContent = 'decode image';
+        });
+        card.appendChild(btn);
+        card.appendChild(result);
+      }
       const ob = document.createElement('span');
       if (c.kind === 'archive') {
         ob.className = 'badge archive';
