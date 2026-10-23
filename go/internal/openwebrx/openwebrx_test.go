@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,10 +58,13 @@ func startMockServer(t *testing.T) (*httptest.Server, <-chan map[string]interfac
 }
 
 // testOptions allows loopback mock servers, which the SSRF guard refuses
-// by default.
+// by default. Reconnect backoff is fast so terminal-state tests stay
+// quick even with retries on.
 func testOptions() Options {
 	o := DefaultOptions()
 	o.AllowPrivate = true
+	o.ReconnectInitial = 20 * time.Millisecond
+	o.ReconnectMax = 50 * time.Millisecond
 	return o
 }
 
@@ -332,5 +336,168 @@ func TestDialRefusesPrivateHost(t *testing.T) {
 	}
 	if _, err := client.Connect(context.Background()); err == nil {
 		t.Fatal("loopback target must be refused")
+	}
+}
+
+// dropServer counts connections and drops each one right after the
+// handshake's DSP start. The second connection optionally gets one raw
+// audio frame. Received messages are recorded per connection.
+type dropServer struct {
+	server   *httptest.Server
+	mu       sync.Mutex
+	conns    int
+	messages []map[string]interface{} // dspcontrol/selectprofile payloads in arrival order
+	audioOn  int                      // connection number that receives audio (0 = none)
+	dropped  chan int                 // connection numbers that were dropped
+}
+
+func startDropServer(t *testing.T, audioOn int) *dropServer {
+	t.Helper()
+	d := &dropServer{audioOn: audioOn, dropped: make(chan int, 8)}
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	d.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		d.mu.Lock()
+		d.conns++
+		num := d.conns
+		d.mu.Unlock()
+		conn.WriteMessage(websocket.TextMessage, []byte("CLIENT DE SERVER client=test type=receiver"))
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var message map[string]interface{}
+			if json.Unmarshal(data, &message) != nil {
+				continue
+			}
+			if message["type"] == "connectionproperties" {
+				conn.WriteMessage(websocket.TextMessage,
+					[]byte(`{"type":"config","value":{"center_freq":145000000}}`))
+				conn.WriteMessage(websocket.TextMessage,
+					[]byte(`{"type":"profiles","value":[{"id":"sdr|p","name":"test"}]}`))
+				continue
+			}
+			d.mu.Lock()
+			d.messages = append(d.messages, message)
+			d.mu.Unlock()
+			if message["type"] != "dspcontrol" {
+				continue
+			}
+			if num == d.audioOn {
+				// One uncompressed audio frame: opcode + int16 LE samples.
+				frame := []byte{OpcodeAudio, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00}
+				conn.WriteMessage(websocket.BinaryMessage, frame)
+				// Keep the connection open; the test closes it.
+				for {
+					if _, _, err := conn.ReadMessage(); err != nil {
+						return
+					}
+				}
+			}
+			// Drop without a close frame, the way a network failure does.
+			conn.UnderlyingConn().Close()
+			d.dropped <- num
+			return
+		}
+	}))
+	t.Cleanup(d.server.Close)
+	return d
+}
+
+func (d *dropServer) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.conns
+}
+
+func (d *dropServer) sawSelectProfile(key string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, m := range d.messages {
+		if m["type"] != "selectprofile" {
+			continue
+		}
+		if params, ok := m["params"].(map[string]interface{}); ok && params["profile"] == key {
+			return true
+		}
+	}
+	return false
+}
+
+// A dropped connection must be re-dialed, re-handshaken, and resumed with
+// the caller's profile replayed, and audio must flow again.
+func TestReconnectResumesStream(t *testing.T) {
+	d := startDropServer(t, 2)
+	client, err := New(d.server.URL, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := client.Connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := client.SelectProfile(ctx, "sdr|p"); err != nil {
+		t.Fatalf("select profile: %v", err)
+	}
+	// The first connection drops after the DSP start that follows the
+	// profile selection's demod restart.
+	<-d.dropped
+	// Audio arrives on the re-dialed connection.
+	if err := client.WaitAudio(ctx, 8*time.Second); err != nil {
+		t.Fatalf("no audio after reconnect: %v (connections: %d)", err, d.count())
+	}
+	if got := d.count(); got < 2 {
+		t.Fatalf("expected a re-dialed connection, server saw %d", got)
+	}
+	if !d.sawSelectProfile("sdr|p") {
+		t.Error("the selected profile was not replayed after reconnect")
+	}
+	// The events channel must still be open: reconnecting is not terminal.
+	select {
+	case _, ok := <-client.Events():
+		if !ok {
+			t.Fatal("events channel closed although the client reconnected")
+		}
+	default:
+	}
+}
+
+// A receiver that drops every connection must still reach its terminal
+// state after the bounded retries: error on the audio channel and a
+// closed events channel.
+func TestReconnectExhaustedIsTerminal(t *testing.T) {
+	d := startDropServer(t, 0)
+	client, err := New(d.server.URL, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := client.Connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if _, _, err := client.RecordSamples(ctx, 10*time.Second); err == nil {
+		t.Fatal("a repeatedly dying stream must end in the reader error")
+	}
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case _, ok := <-client.Events():
+			if !ok {
+				if got := d.count(); got < 2 {
+					t.Fatalf("events closed after %d connection(s), want retries first", got)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("events channel never closed after retries were exhausted")
+		}
 	}
 }

@@ -114,6 +114,7 @@ type Client struct {
 	fft         *adpcm.Decoder
 	sequence    int
 	tuning      map[string]interface{}
+	profile     string
 	closeOnce   sync.Once
 	outputRate  int
 	hdRate      int
@@ -127,6 +128,11 @@ type Options struct {
 	Reconnect    bool
 	OpenTimeout  time.Duration
 	IdleTimeout  time.Duration
+	// ReconnectInitial is the first backoff delay after a dropped
+	// connection; it doubles per failed attempt up to ReconnectMax and
+	// resets as soon as a message arrives. Zero uses sane defaults.
+	ReconnectInitial time.Duration
+	ReconnectMax     time.Duration
 	// AllowPrivate permits dialing loopback/private hosts (local receivers,
 	// tests). Leave false for directory-sourced stations.
 	AllowPrivate bool
@@ -135,8 +141,16 @@ type Options struct {
 // DefaultOptions returns polite defaults.
 func DefaultOptions() Options {
 	return Options{OutputRate: DefaultOutputRate, HDOutputRate: DefaultHDOutputRate,
-		Reconnect: true, OpenTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second}
+		Reconnect: true, OpenTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second,
+		ReconnectInitial: time.Second, ReconnectMax: 30 * time.Second}
 }
+
+// reconnectAttempts bounds the retries after one connection drops: a
+// receiver that stays dead must still reach its terminal state (error
+// events, closed events channel) instead of retrying forever, which is
+// the same "looks alive but is dead" failure the terminal contract
+// exists to prevent.
+const reconnectAttempts = 5
 
 // New builds a client for an OpenWebRX server URL.
 func New(rawURL string, options Options) (*Client, error) {
@@ -153,6 +167,12 @@ func New(rawURL string, options Options) (*Client, error) {
 	}
 	if options.HDOutputRate == 0 {
 		options.HDOutputRate = DefaultHDOutputRate
+	}
+	if options.ReconnectInitial == 0 {
+		options.ReconnectInitial = time.Second
+	}
+	if options.ReconnectMax == 0 {
+		options.ReconnectMax = 30 * time.Second
 	}
 	return &Client{
 		URL: streamURL, ClientName: "sdrstream",
@@ -195,7 +215,10 @@ func (c *Client) Connect(ctx context.Context) (Config, error) {
 		return Config{}, err
 	}
 	go c.readLoop(ctx, conn)
-	return c.Config, nil
+	c.mu.Lock()
+	config := c.Config
+	c.mu.Unlock()
+	return config, nil
 }
 
 // writeText sends one text frame with a bounded write deadline. Without it
@@ -248,18 +271,40 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
 			graceDeadline = time.Now().Add(2 * time.Second)
 		}
 		if configured {
-			if len(c.Profiles) > 0 || time.Now().After(graceDeadline) {
+			c.mu.Lock()
+			profiles := len(c.Profiles)
+			c.mu.Unlock()
+			if profiles > 0 || time.Now().After(graceDeadline) {
 				return c.startDSP(ctx, conn)
 			}
 		}
 	}
 }
 
-// startDSP sends the pending tuning request, then the DSP start request.
+// startDSP re-selects the profile the caller chose (a reconnect lands on
+// the server's default profile), sends the pending tuning request, then
+// the DSP start request.
 func (c *Client) startDSP(ctx context.Context, conn *websocket.Conn) error {
-	if len(c.tuning) > 0 {
+	c.mu.Lock()
+	profile := c.profile
+	tuning := make(map[string]interface{}, len(c.tuning))
+	for key, value := range c.tuning {
+		tuning[key] = value
+	}
+	c.mu.Unlock()
+	if profile != "" {
+		message := map[string]interface{}{
+			"type":   "selectprofile",
+			"params": map[string]interface{}{"profile": profile},
+		}
+		payload, _ := json.Marshal(message)
+		if err := writeText(conn, payload); err != nil {
+			return err
+		}
+	}
+	if len(tuning) > 0 {
 		message := map[string]interface{}{"type": "dspcontrol"}
-		for key, value := range c.tuning {
+		for key, value := range tuning {
 			message[key] = value
 		}
 		payload, _ := json.Marshal(message)
@@ -279,8 +324,12 @@ func (c *Client) handleText(message string) bool {
 	}
 	kind, _ := payload["type"].(string)
 	value := payload["value"]
+	// The struct fields are read from other goroutines (Connect's return,
+	// ProfileList, the handshake), so mutate them under mu; publish after
+	// unlocking so a slow consumer cannot hold the lock.
 	switch kind {
 	case "config":
+		c.mu.Lock()
 		if fields, ok := value.(map[string]interface{}); ok {
 			raw, _ := json.Marshal(fields)
 			// Servers send several incremental config messages, so new fields
@@ -288,24 +337,36 @@ func (c *Client) handleText(message string) bool {
 			// audio_compression is lost and ADPCM audio is decoded as raw PCM.
 			_ = json.Unmarshal(raw, &c.Config)
 		}
-		c.publish(Event{Type: "config", Value: c.Config})
-		return c.Config.CenterFreq != nil
+		config := c.Config
+		c.mu.Unlock()
+		c.publish(Event{Type: "config", Value: config})
+		return config.CenterFreq != nil
 	case "profiles":
-		c.Profiles = toMapSlice(value)
-		c.publish(Event{Type: "profiles", Value: c.Profiles})
+		profiles := toMapSlice(value)
+		c.mu.Lock()
+		c.Profiles = profiles
+		c.mu.Unlock()
+		c.publish(Event{Type: "profiles", Value: profiles})
 	case "modes":
-		c.Modes = toMapSlice(value)
-		c.publish(Event{Type: "modes", Value: c.Modes})
+		modes := toMapSlice(value)
+		c.mu.Lock()
+		c.Modes = modes
+		c.mu.Unlock()
+		c.publish(Event{Type: "modes", Value: modes})
 	case "smeter":
 		if number, ok := value.(float64); ok {
+			c.mu.Lock()
 			c.Smeter = &number
+			c.mu.Unlock()
 		}
 		c.publish(Event{Type: "smeter", Value: value})
 	case "receiver_details":
 		c.publish(Event{Type: "receiver_details", Value: value})
 	case "clients":
 		if number, ok := value.(float64); ok {
+			c.mu.Lock()
 			c.Clients = int(number)
+			c.mu.Unlock()
 		}
 		c.publish(Event{Type: "clients", Value: value})
 	default:
@@ -510,9 +571,14 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
 		// receiver stopped, instead of a frozen spectrum that looks like
 		// scanning dead air forever (review H2). readLoop is the only
 		// publisher on this channel and it has just exited, so the close
-		// cannot race a send.
+		// cannot race a send. With Reconnect on, reaching this point means
+		// the retries are exhausted: the "error" and "reconnecting" events
+		// published along the way are the visibility, and the close stays
+		// the terminal signal.
 		c.eventsOnce.Do(func() { close(c.events) })
 	}()
+	delay := c.options.ReconnectInitial
+	attempts := 0
 	for {
 		select {
 		case <-c.quit:
@@ -523,16 +589,31 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		messageType, data, err := conn.ReadMessage()
-		if err != nil {
-			select {
-			case <-c.quit:
-				return
-			case <-ctx.Done():
-				return
-			default:
+		if err == nil {
+			// The connection works, so the next drop starts from the
+			// initial backoff and a fresh attempt budget.
+			delay = c.options.ReconnectInitial
+			attempts = 0
+			if messageType == websocket.BinaryMessage {
+				c.handleBinary(data)
+			} else {
+				c.handleText(string(data))
 			}
-			c.LastError = err
-			c.publish(Event{Type: "error", Value: err})
+			continue
+		}
+		select {
+		case <-c.quit:
+			return
+		case <-ctx.Done():
+			return
+		default:
+		}
+		c.mu.Lock()
+		c.LastError = err
+		c.mu.Unlock()
+		c.publish(Event{Type: "error", Value: err})
+		attempts++
+		if !c.options.Reconnect || attempts > reconnectAttempts {
 			// The recorder listens on audioEvents only; without an error
 			// there it waits out its whole duration and reports silence.
 			select {
@@ -541,11 +622,60 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
 			}
 			return
 		}
-		if messageType == websocket.BinaryMessage {
-			c.handleBinary(data)
-		} else {
-			c.handleText(string(data))
+		c.publish(Event{Type: "reconnecting", Value: delay})
+		select {
+		case <-time.After(delay):
+		case <-c.quit:
+			return
+		case <-ctx.Done():
+			return
 		}
+		delay *= 2
+		if delay > c.options.ReconnectMax {
+			delay = c.options.ReconnectMax
+		}
+		dialCtx, dialCancel := context.WithTimeout(ctx, c.options.OpenTimeout)
+		dialer := &websocket.Dialer{HandshakeTimeout: 15 * time.Second}
+		if !c.options.AllowPrivate {
+			dialer.NetDialContext = common.PublicDialContext(15 * time.Second)
+		}
+		newConn, _, dialErr := dialer.DialContext(dialCtx, c.URL, http.Header{})
+		dialCancel()
+		if dialErr != nil {
+			c.mu.Lock()
+			c.LastError = dialErr
+			c.mu.Unlock()
+			continue
+		}
+		newConn.SetReadLimit(maxFrameBytes)
+		// Reset the decoders before the handshake: a fresh connection
+		// restarts ADPCM state and sequence numbers. Profiles and modes
+		// belong to the dropped connection: the new server session
+		// re-advertises them, and keeping the stale list would both show
+		// the caller profiles the server may have changed and shortcut the
+		// handshake's own profiles wait (leaving the fresh profiles
+		// message to the read loop, which would mistake it for a healthy
+		// connection and reset the retry budget).
+		c.audio.Reset()
+		c.hd.Reset()
+		c.fft.Reset()
+		c.sequence = 0
+		c.mu.Lock()
+		c.Profiles = nil
+		c.Modes = nil
+		c.mu.Unlock()
+		if err := c.handshake(ctx, newConn); err != nil {
+			newConn.Close()
+			c.mu.Lock()
+			c.LastError = err
+			c.mu.Unlock()
+			continue
+		}
+		conn.Close()
+		conn = newConn
+		c.mu.Lock()
+		c.conn = newConn
+		c.mu.Unlock()
 	}
 }
 
@@ -624,6 +754,7 @@ func (c *Client) drainAudio() {
 func (c *Client) SelectProfile(ctx context.Context, profile string) error {
 	c.mu.Lock()
 	conn := c.conn
+	c.profile = profile
 	c.mu.Unlock()
 	if conn == nil {
 		return nil
