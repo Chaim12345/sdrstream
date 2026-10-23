@@ -54,6 +54,12 @@ type Activity struct {
 	Source             string     `json:"source"`
 	DurationSec        float64    `json:"duration_sec"`
 	AudioPath          string     `json:"audio_path,omitempty"`
+	// FrequencyRefined marks a coarse-panorama detection whose frequency
+	// was confirmed by a zoomed refinement window. Without it the
+	// frequency is a bin centre with FrequencyUncertaintyHz of error,
+	// and the detection is a candidate, not a tuned measurement.
+	FrequencyRefined       bool    `json:"frequency_refined,omitempty"`
+	FrequencyUncertaintyHz float64 `json:"frequency_uncertainty_hz,omitempty"`
 	Confidence         float64    `json:"confidence,omitempty"`
 	Language           string     `json:"language,omitempty"`
 	ASRModel           string     `json:"asr_model,omitempty"`
@@ -1095,6 +1101,20 @@ func (m *Monitor) report(ctx context.Context, candidate *candidate) {
 		Label:       m.opts.Label,
 	}
 	m.mu.Lock()
+	coarse := m.lastBinHz > coarseBinHz
+	binHz := m.lastBinHz
+	m.mu.Unlock()
+	if coarse {
+		if candidate.refined {
+			activity.FrequencyRefined = true
+		} else {
+			// One coarse bin of search radius was refined without a
+			// match: the true signal sits somewhere in the bin, so the
+			// honest uncertainty is half a bin either way.
+			activity.FrequencyUncertaintyHz = binHz / 2
+		}
+	}
+	m.mu.Lock()
 	m.nextID++
 	activity.ID = m.nextID
 	m.activities = append(m.activities, activity)
@@ -1106,6 +1126,18 @@ func (m *Monitor) report(ctx context.Context, candidate *candidate) {
 	m.opts.Logf("activity #%d %.4f MHz (%.0f kHz wide, %.1f dB above the floor)",
 		activity.ID, activity.FrequencyHz/1e6, activity.BandwidthHz/1e3, activity.LevelDB)
 
+	// A coarse candidate that refinement could not match is a
+	// neighbourhood, not a frequency: tuning a narrowband receiver to
+	// its bin centre can miss the signal by half a bin in either
+	// direction. Report the candidate with its uncertainty and skip the
+	// narrowband listen rather than dispatch a wrong-frequency
+	// recording as a success.
+	if coarse && !candidate.refined {
+		m.opts.Logf("activity #%d is an unrefined candidate (+/-%.1f kHz); narrowband listen skipped",
+			activity.ID, activity.FrequencyUncertaintyHz/1e3)
+		m.publish(activity)
+		return
+	}
 	if m.opts.Listen <= 0 {
 		m.publish(activity)
 		return

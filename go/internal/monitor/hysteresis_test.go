@@ -331,3 +331,98 @@ func TestDetectAllSaturatedWindow(t *testing.T) {
 		t.Fatalf("all-saturated window produced %d peaks", len(peaks))
 	}
 }
+
+// TestReportSkipsListenForUnrefinedCoarse: a coarse candidate whose
+// refinement finds no same-signal peak is published explicitly marked
+// with its frequency uncertainty, and no narrowband recording job is
+// dispatched for its bin-centre frequency.
+func TestReportSkipsListenForUnrefinedCoarse(t *testing.T) {
+	ctx := context.Background()
+	pano := panoFrame(-105, 30, 246)
+	// Zoomed window carries only a strong neighbour two coarse bins
+	// away: refinement must not match, so the candidate stays unrefined.
+	const coarseBinHz = 30e6 / 1024
+	const fineBinHz = coarseBinHz / 32
+	coarseFreq := (246 + 0.5) * coarseBinHz
+	span := 1024 * fineBinHz
+	source := &panoSource{
+		frames:       [][]float64{pano},
+		refineBins:   fineWindow(-100, map[int]float64{512 + 64: 50}),
+		refineCentre: coarseFreq,
+		refineSpan:   span,
+	}
+	var activities []Activity
+	var mu sync.Mutex
+	instance := New(Options{
+		Source: source, ThresholdDB: 10, DwellTime: time.Millisecond, Listen: 5 * time.Second,
+		OnActivity: func(a Activity) { mu.Lock(); activities = append(activities, a); mu.Unlock() },
+	})
+	instance.step(ctx)
+	time.Sleep(2 * time.Millisecond)
+	instance.step(ctx)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(activities) != 1 {
+		t.Fatalf("activities %d, want 1 (the marked unrefined candidate)", len(activities))
+	}
+	a := activities[0]
+	if a.FrequencyRefined {
+		t.Error("unmatched candidate marked refined")
+	}
+	if a.FrequencyUncertaintyHz != coarseBinHz/2 {
+		t.Errorf("uncertainty %.0f Hz, want %.0f (half a coarse bin)", a.FrequencyUncertaintyHz, coarseBinHz/2)
+	}
+	if len(instance.jobs) != 0 {
+		t.Errorf("narrowband listen dispatched for an unrefined candidate (%d jobs)", len(instance.jobs))
+	}
+}
+
+// TestReportDispatchesListenAfterRefine: once refinement confirms the
+// same signal, the recording job carries the refined frequency and the
+// activity is marked refined with no uncertainty.
+func TestReportDispatchesListenAfterRefine(t *testing.T) {
+	ctx := context.Background()
+	pano := panoFrame(-105, 30, 246)
+	const coarseBinHz = 30e6 / 1024
+	const fineBinHz = coarseBinHz / 32
+	coarseFreq := (246 + 0.5) * coarseBinHz
+	span := 1024 * fineBinHz
+	source := &panoSource{
+		frames:       [][]float64{pano},
+		refineBins:   fineWindow(-100, map[int]float64{508: 30}),
+		refineCentre: coarseFreq,
+		refineSpan:   span,
+	}
+	var activities []Activity
+	var mu sync.Mutex
+	instance := New(Options{
+		Source: source, ThresholdDB: 10, DwellTime: time.Millisecond, Listen: 5 * time.Second,
+		OnActivity: func(a Activity) { mu.Lock(); activities = append(activities, a); mu.Unlock() },
+	})
+	instance.step(ctx)
+	time.Sleep(2 * time.Millisecond)
+	instance.step(ctx)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(instance.jobs) != 1 {
+		t.Fatalf("jobs %d, want 1 recording for the refined candidate", len(instance.jobs))
+	}
+	work := <-instance.jobs
+	wantFreq := coarseFreq - span/2 + (508+0.5)*fineBinHz
+	if work.frequency < wantFreq-2*fineBinHz || work.frequency > wantFreq+2*fineBinHz {
+		t.Errorf("job frequency %.0f, want refined %.0f", work.frequency, wantFreq)
+	}
+	var recorded *Activity
+	for i := range instance.activities {
+		if instance.activities[i].ID == work.activityID {
+			recorded = &instance.activities[i]
+		}
+	}
+	if recorded == nil {
+		t.Fatal("no stored activity for the job")
+	}
+	if !recorded.FrequencyRefined || recorded.FrequencyUncertaintyHz != 0 {
+		t.Errorf("refined activity markers wrong: refined=%v uncertainty=%.0f",
+			recorded.FrequencyRefined, recorded.FrequencyUncertaintyHz)
+	}
+}
