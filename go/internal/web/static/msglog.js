@@ -25,6 +25,7 @@
   let force = true;
   let loadingOlder = false;
   let frozen = null;
+  let latestSnapshot = null;
   let currentShown = [];
   const tools = document.createElement('div');
   tools.className = 'toolbar msglog-tools';
@@ -42,7 +43,7 @@
   const resume = document.createElement('button'); resume.className = 'chip'; resume.type = 'button';
   resume.textContent = 'Resume latest';
   const note = document.createElement('span'); note.className = 'muted msglog-export-note';
-  note.textContent = 'Decoder counts follow search. Paused rows stay fixed; resume for new messages. Copy/export include all matches in loaded history.';
+  note.textContent = 'Decoder counts follow search. While paused, paging and copy/export use the frozen loaded snapshot. Resume latest to refresh.';
   nav.append(older, resume, note); box.after(nav);
 
   function resetPage() { limit = PAGE; force = true; msglogStuck = false; frozen = null; }
@@ -57,33 +58,26 @@
 
   function state(total, matched, shown) {
     document.getElementById('msglog-state').textContent = 'Showing ' + shown + ' of ' + matched +
-      ' matching messages · ' + total + ' total loaded' + (msglogStuck ? ' · scroll paused' : '');
+      ' matching messages · ' + total + ' total loaded' + (msglogStuck ? ' · frozen snapshot' : '');
     resume.hidden = !msglogStuck && limit === PAGE;
   }
   // Existing app.js copy/export handlers call this binding at click time.
   msglogText = function () {
-    return select(decodedItems(), msglogMode, search).map(a =>
+    return select(frozen ? frozen.all : decodedItems(), msglogMode, search).map(a =>
       fmtTime(a.started) + ' ' + a.mode + ' ' + (a.frequency_hz ? mhz(a.frequency_hz) : '') + '  ' + a.detail).join('\n');
   };
   renderMsglog = function () {
     if (oldMode !== msglogMode) { oldMode = msglogMode; resetPage(); }
-    const all = decodedItems();
-    const matched = select(all, msglogMode, search);
-    // Count equal rows from the newest end: a rolling feed evicts its oldest
-    // prefix, so surviving duplicate occurrences retain their identities.
-    const occurrences = new Map();
-    const keyed = matched.slice().reverse().map(a => {
-      const base = JSON.stringify([a.started, a.mode, a.frequency_hz, a.detail]);
-      const occurrence = occurrences.get(base) || 0; occurrences.set(base, occurrence + 1);
-      return { item: a, key: base + '#' + occurrence };
-    }).reverse();
+    // API polls recreate objects, and monitor IDs/gallery IDs are not a shared
+    // stable namespace. Freeze the whole loaded snapshot, not inferred identity
+    // across polls: duplicate rows and server eviction cannot change pagination.
     if (!msglogStuck) frozen = null;
-    if (msglogStuck && !frozen) frozen = currentShown.slice();
-    if (loadingOlder && frozen && frozen.length) {
-      const start = keyed.findIndex(a => a.key === frozen[0].key);
-      if (start >= 0) frozen = keyed.slice(Math.max(0, start - PAGE), start).concat(frozen);
-    }
-    const windowRows = frozen || keyed.slice(-limit);
+    if (msglogStuck && !frozen && latestSnapshot) frozen = latestSnapshot;
+    const all = frozen ? frozen.all : decodedItems();
+    const matched = select(all, msglogMode, search);
+    const keyed = matched.map((a, i) => ({ item: a, key: String(i) }));
+    if (!frozen) latestSnapshot = { all: all.slice() };
+    const windowRows = keyed.slice(-limit);
     currentShown = windowRows;
     const shown = windowRows.map(a => a.item);
     // Chips describe decoder totals AFTER detail search, before decoder selection.
@@ -144,9 +138,10 @@
     state(all.length, matched.length, shown.length);
   };
   box.addEventListener('scroll', () => {
-    if (msglogStuck && !frozen) frozen = currentShown.slice();
+    if (msglogStuck && !frozen && latestSnapshot) frozen = latestSnapshot;
     if (!msglogStuck) frozen = null;
-    state(decodedItems().length, select(decodedItems(), msglogMode, search).length, box.querySelectorAll('.msgline').length);
+    const all = frozen ? frozen.all : decodedItems();
+    state(all.length, select(all, msglogMode, search).length, box.querySelectorAll('.msgline').length);
   });
   renderMsglog();
 })(typeof window === 'undefined' ? globalThis : window);

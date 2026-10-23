@@ -57,9 +57,9 @@ test('rolling server eviction retains bounded paused snapshot and resume clears 
  rows.splice(0,rows.length,...Array.from({length:123},(_,i)=>({started:'replacement'+i,mode:'cw',detail:'rolled '+i})));
  c.renderMsglog();assert.equal(box.children.length,50);assert.equal(box.children[0].dataset.messageKey,first);
  const nav=created.find(n=>n.className==='toolbar msglog-history-nav');
- assert.equal(nav.children[0].hidden,true); // frozen oldest row no longer exists on server
+ assert.equal(nav.children[0].hidden,false); // frozen snapshot still owns older rows
  nav.children[1].fire('click');assert.equal(box.children.length,50);
- assert.notEqual(box.children[0].dataset.messageKey,first);
+ assert.equal(box.children[0].children[3].textContent,'rolled 73');
  assert.equal(c.msglogStuck,false);
 });
 
@@ -68,7 +68,7 @@ test('QA: partial eviction of an identical older row while paused keeps Load old
  rows[73]={...rows[72]};c.renderMsglog();       // identical pair; window = rows 73..122, first key is occurrence #1
  box.scrollTop=20;box.fire('scroll');
  const first=box.children[0].dataset.messageKey;
- assert.ok(first.endsWith('#0'),first); // newest equal occurrence survives prefix eviction
+ assert.equal(first,'73'); // stable index inside frozen snapshot
  rows.splice(72,1);                              // server evicts the first of the pair
  c.renderMsglog();
  const nav=created.find(n=>n.className==='toolbar msglog-history-nav');
@@ -78,4 +78,22 @@ test('QA: partial eviction of an identical older row while paused keeps Load old
  nav.children[0].fire('click');
  assert.equal(box.children.length,100);
  assert.equal(box.children[50].dataset.messageKey,first);
+});
+
+test('identical new arrival and poll object recreation cannot corrupt frozen older page',()=>{
+ const {c,node,rows,created}=setup();const box=node('msglog');
+ rows[74]={...rows[73]};c.renderMsglog();
+ const snapshot=rows.map(a=>({...a}));
+ box.scrollTop=20;box.fire('scroll');
+ rows.push({...rows[73]});
+ rows.splice(0,rows.length,...rows.map(a=>({...a})));
+ c.renderMsglog();
+ const nav=created.find(n=>n.className==='toolbar msglog-history-nav');
+ nav.children[0].fire('click');
+ assert.deepEqual(box.children.map(n=>n.children[3].textContent),snapshot.slice(-100).map(a=>a.detail));
+ assert.equal(box.children[0].children[3].textContent,'message 23');
+ assert.equal(box.children.filter(n=>n.children[3].textContent==='message 73').length,2);
+ assert.equal(c.msglogText().split('\n').length,123); // frozen copy/export, no hidden incoming duplicate
+ nav.children[1].fire('click');
+ assert.equal(c.msglogText().split('\n').length,124); // latest after resume
 });
