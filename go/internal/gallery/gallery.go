@@ -7,6 +7,7 @@ package gallery
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,8 +20,27 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/satnogs"
 )
 
+// SatNOGS observation data is distributed freely under CC BY-SA 4.0,
+// per https://network.satnogs.org/about/ - credit the network and its
+// ground stations and keep the licence with anything republished.
+const (
+	// LicenseName and LicenseURL identify the licence SatNOGS publishes
+	// observation data under.
+	LicenseName = "CC BY-SA 4.0"
+	LicenseURL  = "https://creativecommons.org/licenses/by-sa/4.0/"
+	// Attribution is the ready-to-use credit line for gallery displays.
+	Attribution = "SatNOGS network (network.satnogs.org) and its ground stations, CC BY-SA 4.0"
+)
+
+// ObservationLink is the public page backing one observation.
+func ObservationLink(id int) string {
+	return fmt.Sprintf("https://network.satnogs.org/observations/%d/", id)
+}
+
 // Item is one artefact from one observation.
 type Item struct {
+	Source        string    `json:"source,omitempty"` // "satnogs"; live decodes use "live"
+	ObservationURL string   `json:"observation_url,omitempty"`
 	ObservationID int       `json:"observation_id"`
 	Satellite     string    `json:"satellite"`
 	NoradID       int       `json:"norad_id"`
@@ -48,6 +68,8 @@ func Collect(observations []satnogs.Observation) []Item {
 		}
 		seen[url] = true
 		items = append(items, Item{
+			Source:        "satnogs",
+			ObservationURL: ObservationLink(observation.ID),
 			ObservationID: observation.ID,
 			Satellite:     observation.SatName,
 			NoradID:       observation.NoradID,
@@ -157,6 +179,25 @@ func Fetch(items []Item, dir string, timeout time.Duration, maxBytes int64, keep
 		saved = append(saved, got)
 	}
 	return saved, firstErr
+}
+
+// WriteManifest saves items as index.json in dir, with absolute paths
+// stripped so the directory can be moved. The web server loads the same
+// file, so a CLI-collected gallery opens in the UI unchanged.
+func WriteManifest(items []Item, dir string) error {
+	out := make([]Item, len(items))
+	copy(out, items)
+	for i := range out {
+		out[i].Path = ""
+	}
+	data, err := json.MarshalIndent(out, "", " ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "index.json"), data, 0o644)
 }
 
 func fetchOne(client *http.Client, item Item, dir string, maxBytes int64) (Item, error) {

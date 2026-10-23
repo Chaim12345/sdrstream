@@ -505,6 +505,18 @@ upcoming passes. Files are classified from their bytes, not the URL extension
 is passed. The web server refreshes the same gallery every 30 minutes and
 serves the files itself, so the browser never depends on the S3 bucket.
 
+Every run writes an `index.json` manifest next to the artefacts. Each entry
+carries its source (`satnogs` - live station decodes are filed as `live`
+instead), a link to the backing observation page, the recording station and
+the capture time, so an imported clip can always be told apart from this
+station's own reception and traced back to its origin. SatNOGS observation
+data is published by the network under CC BY-SA 4.0
+(https://network.satnogs.org/about/): credit "SatNOGS network
+(network.satnogs.org) and its ground stations, CC BY-SA 4.0" when
+republishing artefacts, and keep the share-alike terms. The gallery tab in
+the UI shows the same attribution line and links each card to its source
+observation.
+
 ### More receivers, and satellites we do not know about
 
 The WebSDR catalogue is a static file. The other large public network,

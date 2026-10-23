@@ -1126,6 +1126,13 @@ func cmdGallery(args []string) error {
 		fmt.Fprintf(os.Stderr, "some artefacts failed: %v\n", err)
 	}
 	sort.SliceStable(saved, func(i, j int) bool { return saved[i].Start.After(saved[j].Start) })
+	// The manifest keeps source, licence and the observation link next to
+	// the files; the web UI loads the same file unchanged.
+	if err := gallery.WriteManifest(saved, dir); err != nil {
+		fmt.Fprintf(os.Stderr, "manifest not written: %v\n", err)
+	} else {
+		fmt.Printf("manifest: %s (artefacts %s by %s)\n", filepath.Join(dir, "index.json"), gallery.LicenseName, gallery.Attribution)
+	}
 	lastID := -1
 	for _, item := range saved {
 		if item.ObservationID != lastID {

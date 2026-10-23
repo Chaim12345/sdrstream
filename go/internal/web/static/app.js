@@ -527,11 +527,19 @@ async function refreshGallery() {
 function renderGallery() {
   const box = el('gallery');
   const items = galleryItems || [];
-  const live = items.filter(it => (it.kind === 'image' && it.observation_id === 0) || it.satellite === 'Live reception');
-  const satnogs = items.filter(it => !live.includes(it));
+  // Source honesty: prefer the explicit field; the observation_id/satellite
+  // heuristic only covers manifests saved before the field existed.
+  const isLive = it => it.source ? it.source === 'live' : ((it.kind === 'image' && it.observation_id === 0) || it.satellite === 'Live reception');
+  const live = items.filter(isLive);
+  const satnogs = items.filter(it => !isLive(it));
   const active = document.querySelector('[data-gallery-kind][aria-selected="true"]')?.dataset.galleryKind || 'live';
   const shown = active === 'live' ? live : satnogs;
-  el('gallery-count').textContent = active === 'live' ? live.length + ' gate-passed live decodes' : satnogs.length + ' SatNOGS artefacts';
+  el('gallery-count').textContent = active === 'live' ? live.length + ' gate-passed live decode' + (live.length === 1 ? '' : 's') : satnogs.length + ' SatNOGS artefact' + (satnogs.length === 1 ? '' : 's');
+  const src = el('gallery-source');
+  if (src) {
+    if (active === 'live') { src.textContent = 'decoded by this receiver, gate-passed'; }
+    else { src.textContent = 'source: SatNOGS network (network.satnogs.org) - observation data CC BY-SA 4.0 - names link to the source observation'; }
+  }
   box.textContent = '';
   shown.slice(0, 60).forEach(it => {
     const card = document.createElement('div'); card.className = 'gcard';
@@ -544,7 +552,11 @@ function renderGallery() {
       const pre = document.createElement('pre'); pre.textContent = it.text || ''; card.appendChild(pre);
     }
     const body = document.createElement('div'); body.className = 'body';
-    const name = document.createElement('b'); name.textContent = it.satellite || ('#' + it.observation_id); body.appendChild(name);
+    const name = document.createElement('b'); body.appendChild(name);
+    if (it.observation_url) {
+      const link = document.createElement('a'); link.href = it.observation_url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+      link.textContent = it.satellite || ('#' + it.observation_id); name.appendChild(link);
+    } else { name.textContent = it.satellite || ('#' + it.observation_id); }
     const detail = document.createElement('div'); detail.textContent = caption.slice(caption.indexOf('·') + 1).trim(); body.appendChild(detail);
     card.appendChild(body); box.appendChild(card);
   });
@@ -583,15 +595,22 @@ async function refreshTestFixtures() {
     table.appendChild(body); box.appendChild(table);
   } catch (err) { box.textContent = 'Fixture list unavailable: ' + err; }
 }
-document.querySelectorAll('[data-gallery-kind]').forEach(button => button.addEventListener('click', () => {
+function selectGalleryTab(kind, updateHash) {
+  const button = document.querySelector('[data-gallery-kind="' + kind + '"]');
+  if (!button) return;
   document.querySelectorAll('[data-gallery-kind]').forEach(b => {
     b.setAttribute('aria-selected', String(b === button));
     b.classList.toggle('on', b === button);
   });
-  const test = button.dataset.galleryKind === 'test';
+  const test = kind === 'test';
   el('gallery').hidden = test; el('test-fixtures').hidden = !test;
   if (test) refreshTestFixtures(); else {el('test-fixtures').textContent='';renderGallery()}
+  if (updateHash !== false) history.replaceState(null, '', '#gallery-' + kind);
+}
+document.querySelectorAll('[data-gallery-kind]').forEach(button => button.addEventListener('click', () => {
+  selectGalleryTab(button.dataset.galleryKind, true);
 }));
+
 
 /* ---------- stations ---------- */
 let stationRows = [];
@@ -1973,7 +1992,12 @@ applyTheme();
 initSettingsView();
 buildRxControls();
 initMonitorLifecycle();
-if (location.hash && el('view-' + location.hash.slice(1))) showView(location.hash.slice(1)); else showView('overview');
+{
+  const gal = /^#gallery-(live|satnogs|test)$/.exec(location.hash || '');
+  if (gal) { showView('gallery'); selectGalleryTab(gal[1], false); }
+  else if (location.hash && el('view-' + location.hash.slice(1))) showView(location.hash.slice(1));
+  else showView('overview');
+}
 refreshReceiverPanel(); renderMsglog();
 setInterval(refreshReceiverPanel, 3000);
 setInterval(renderMsglog, 4000);

@@ -141,6 +141,8 @@ type SatelliteInfo struct {
 
 // Server holds the state and serves the UI and API.
 type LiveGalleryItem struct {
+	Source        string    `json:"source,omitempty"` // "live"; SatNOGS imports use "satnogs"
+	ObservationURL string   `json:"observation_url,omitempty"`
 	ObservationID int       `json:"observation_id"`
 	Satellite     string    `json:"satellite"`
 	Station       string    `json:"station"`
@@ -337,12 +339,9 @@ func (s *Server) saveGallery() {
 	for i := range items {
 		items[i].Path = ""
 	}
-	data, err := json.MarshalIndent(items, "", " ")
-	if err != nil {
-		return
+	if err := gallery.WriteManifest(items, s.galleryDir); err != nil {
+		log.Printf("gallery: save manifest: %v", err)
 	}
-	_ = os.MkdirAll(s.galleryDir, 0o755)
-	_ = os.WriteFile(filepath.Join(s.galleryDir, "index.json"), data, 0o644)
 }
 
 // loadGallery restores the manifest and drops entries whose files vanished.
@@ -360,6 +359,9 @@ func (s *Server) loadGallery() {
 		path := filepath.Join(s.galleryDir, item.Name)
 		if _, err := os.Stat(path); err != nil {
 			continue
+		}
+		if item.Source == "" {
+			item.Source = "satnogs" // manifests predate the source field
 		}
 		item.Path = path
 		kept = append(kept, item)
@@ -1064,7 +1066,7 @@ func (s *Server) AddLiveArtifact(activity monitor.Activity, pngData []byte) erro
 	if station == "" {
 		station = activity.Source
 	}
-	item := LiveGalleryItem{ObservationID: 0, Satellite: "Live reception", Station: station, Start: activity.Started, Mode: activity.Mode, FrequencyHz: int64(activity.FrequencyHz), Kind: kind, Name: name, URL: "/gallery/" + url.PathEscape(name), Size: int64(len(data)), Text: activity.Detail}
+	item := LiveGalleryItem{Source: "live", ObservationID: 0, Satellite: "Live reception", Station: station, Start: activity.Started, Mode: activity.Mode, FrequencyHz: int64(activity.FrequencyHz), Kind: kind, Name: name, URL: "/gallery/" + url.PathEscape(name), Size: int64(len(data)), Text: activity.Detail}
 	if activity.AudioPath != "" {
 		audioName := name + ".wav"
 		src, err := os.ReadFile(activity.AudioPath)

@@ -1,6 +1,7 @@
 package gallery
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -108,5 +109,52 @@ func TestFetch(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "7-raw.bin")); !os.IsNotExist(err) {
 		t.Fatalf("binary artefact was kept even though keepBinary is false")
+	}
+}
+
+func TestCollectSourceAndLicenceLink(t *testing.T) {
+	observations := []satnogs.Observation{{ID: 15259232, SatName: "ISS", Station: "Veve-UHF", PayloadURL: "https://example.test/audio.ogg"}}
+	items := Collect(observations)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].Source != "satnogs" {
+		t.Fatalf("source = %q, want satnogs", items[0].Source)
+	}
+	want := "https://network.satnogs.org/observations/15259232/"
+	if items[0].ObservationURL != want {
+		t.Fatalf("observation url = %q, want %q", items[0].ObservationURL, want)
+	}
+	if LicenseName != "CC BY-SA 4.0" || !strings.Contains(Attribution, "SatNOGS") {
+		t.Fatalf("licence constants changed: %q %q", LicenseName, Attribution)
+	}
+}
+
+func TestWriteManifestRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	items := []Item{{
+		Source: "satnogs", ObservationURL: ObservationLink(42), ObservationID: 42,
+		Satellite: "ISS", Station: "test-station", Kind: "image", Name: "42-w.png",
+		Path: filepath.Join(dir, "42-w.png"), Size: 10,
+	}}
+	if err := WriteManifest(items, dir); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var loaded []Item
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("loaded %d items, want 1", len(loaded))
+	}
+	if loaded[0].Path != "" {
+		t.Fatalf("manifest must strip absolute paths, got %q", loaded[0].Path)
+	}
+	if loaded[0].Source != "satnogs" || loaded[0].ObservationURL != ObservationLink(42) {
+		t.Fatalf("provenance lost: %+v", loaded[0])
 	}
 }

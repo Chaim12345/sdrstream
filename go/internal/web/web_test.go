@@ -1203,3 +1203,49 @@ func TestLogTailEndpoint(t *testing.T) {
 		t.Fatalf("unconfigured: status=%d, want 404", rec.Code)
 	}
 }
+
+func TestGalleryManifestLoadAndSourceFields(t *testing.T) {
+	dir := t.TempDir()
+	png := append([]byte("\x89PNG\r\n\x1a\n"), []byte("pixels")...)
+	for _, name := range []string{"42-a.png", "7-legacy.png"} {
+		if err := os.WriteFile(filepath.Join(dir, name), png, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One item with full provenance, one legacy item without the source field.
+	items := []gallery.Item{
+		{Source: "satnogs", ObservationURL: gallery.ObservationLink(42), ObservationID: 42,
+			Satellite: "ISS", Station: "Veve-UHF", Kind: "image", Name: "42-a.png",
+			Start: time.Unix(1_700_000_000, 0), Path: filepath.Join(dir, "42-a.png")},
+		{ObservationID: 7, Satellite: "ISS", Station: "old", Kind: "image",
+			Name: "7-legacy.png", Start: time.Unix(1_699_000_000, 0), Path: filepath.Join(dir, "7-legacy.png")},
+	}
+	if err := gallery.WriteManifest(items, dir); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{galleryDir: dir, scanIndex: make(map[string]int)}
+	server.loadGallery()
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest("GET", "/api/gallery.json", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	var out []gallery.Item
+	if err := json.Unmarshal(recorder.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("got %d items, want 2", len(out))
+	}
+	byID := map[int]gallery.Item{}
+	for _, it := range out {
+		byID[it.ObservationID] = it
+	}
+	full := byID[42]
+	if full.Source != "satnogs" || full.ObservationURL != "https://network.satnogs.org/observations/42/" {
+		t.Errorf("provenance lost through manifest load: %+v", full)
+	}
+	if legacy := byID[7]; legacy.Source != "satnogs" {
+		t.Errorf("legacy manifest item source = %q, want backfilled satnogs", legacy.Source)
+	}
+}
