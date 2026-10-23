@@ -33,12 +33,40 @@ jobs:
         run: ./android/fetch-engine.sh
       - name: Build APK
         working-directory: android
+        # versionCode must increase for in-place updates; 1000+run_number
+        # clears every historical release (highest was 3) and stays
+        # monotonic per workflow. Local builds keep the gradle default.
         run: |
+          VC=$((1000 + ${{ github.run_number }}))
           if [ -n "${{ inputs.appIdSuffix }}" ]; then
-            ./gradlew assembleDebug "-PappIdSuffix=${{ inputs.appIdSuffix }}"
+            ./gradlew assembleDebug "-PappIdSuffix=${{ inputs.appIdSuffix }}" "-PversionCode=$VC"
           else
-            ./gradlew assembleDebug
+            ./gradlew assembleDebug "-PversionCode=$VC"
           fi
+      - name: Sign APK with the stable release key (when secrets are configured)
+        # Without the secrets the artifact keeps gradle's per-runner debug
+        # signature (ephemeral). With them every build shares one cert, so
+        # builds update in place. The private key never enters the repo.
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -e
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/release.keystore
+          APKSIGNER=$(ls "$ANDROID_HOME/build-tools/"*/apksigner | sort -V | tail -1)
+          APK=$(find app/build/outputs/apk -name '*.apk' | head -1)
+          "$APKSIGNER" sign --ks /tmp/release.keystore \
+            --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
+            --key-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
+            --ks-key-name "$ANDROID_KEY_ALIAS" \
+            --out "$APK.signed" "$APK"
+          mv "$APK.signed" "$APK"
+          rm -f /tmp/release.keystore
+          "$APKSIGNER" verify --print-certs "$APK"
+          python3 ../scripts/apk-signer-fp.py "$APK"
       - uses: actions/upload-artifact@v4
         with:
           name: sdrstream-android-debug-apk

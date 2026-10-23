@@ -10,7 +10,7 @@ android {
         applicationId 'com.chaim12345.sdrstream'
         minSdk 26
         targetSdk 34
-        versionCode 3
+        versionCode (project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 3)
         versionName '0.1.2'
     }
 
