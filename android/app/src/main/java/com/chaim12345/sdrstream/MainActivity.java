@@ -277,6 +277,42 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * Applies a new UI password: the engine reads SDRSTREAM_UI_PASSWORD only
+     * at process start, so a running engine keeps accepting the OLD password
+     * (and rejecting the new one) until it restarts. Stop it, wait for the
+     * port to actually close, start it again, then reload the UI.
+     */
+    private void restartEngine() {
+        Toast.makeText(this, "Password saved - restarting engine to apply.",
+                Toast.LENGTH_LONG).show();
+        try {
+            startService(new Intent(this, EngineService.class)
+                    .setAction(EngineService.ACTION_STOP));
+        } catch (Throwable t) {
+            Diag.writeCrash(this, "stop engine for password change", t);
+        }
+        if (waitThread != null) waitThread.interrupt();
+        waitThread = new Thread(() -> {
+            for (int i = 0; i < 20 && !isFinishing(); i++) {
+                if (!portOpen()) break;
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+            try {
+                startEngineService();
+            } catch (Throwable t) {
+                Diag.writeCrash(this, "restart engine service", t);
+                Diag.recordEngineError(this, "could not restart the engine service: " + t);
+            }
+            loadWhenUp();
+        }, "engine-restart");
+        waitThread.start();
+    }
+
     /** Legacy options menu for devices that still have a menu key. */
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
@@ -315,8 +351,7 @@ public class MainActivity extends Activity {
                             String pw = input.getText().toString();
                             if (!pw.isEmpty()) {
                                 Prefs.setUiPassword(this, pw);
-                                Toast.makeText(this,
-                                        "Saved. Restart the app to apply.", Toast.LENGTH_LONG).show();
+                                restartEngine();
                             }
                         })
                         .setNegativeButton("Cancel", null)
