@@ -96,14 +96,14 @@ func pruneCaptures(dir string, maxBytes int64) (removed int, freed int64) {
 		if total <= maxBytes {
 			break
 		}
-		// Atomic recheck: a producer may have begun publishing this
-		// name after the candidate scan. Check and delete under the
-		// registry lock so the publish can never slip between.
+		// Atomic recheck under the registry lock: a producer may have
+		// begun publishing this name after the candidate scan, and its
+		// sidecar may have landed (possibly verified) since the scan
+		// read it. Both are re-judged at removal time; either outcome
+		// skips the deletion.
 		if err := removeCaptureIfNotPublishing(dir, item.name); err != nil {
 			continue
 		}
-		// The sidecar goes with its recording; a missing sidecar is fine.
-		_ = os.Remove(filepath.Join(dir, strings.TrimSuffix(item.name, ".wav")+".txt"))
 		total -= item.size
 		removed++
 		freed += item.size

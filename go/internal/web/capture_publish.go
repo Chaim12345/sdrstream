@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -57,11 +58,24 @@ func capturePublishInProgress(dir, wavName string) bool {
 // errPublishInProgress reports a prune attempt on a tracked capture.
 var errPublishInProgress = errors.New("capture publish in progress")
 
-// removeCaptureIfNotPublishing deletes dir/name only when no producer
-// is publishing it, atomically with respect to BeginCapturePublish:
-// the registry lock is held across the check AND the remove, so a
-// producer cannot register after the check and have its file deleted
-// mid-publish (the check-then-remove TOCTOU window).
+// errVerifiedAtRemoval reports a prune attempt whose deletion-time
+// recheck found the capture verified: its sidecar landed after the
+// candidate scan read the directory.
+var errVerifiedAtRemoval = errors.New("capture verified at removal time")
+
+// removeCaptureIfNotPublishing deletes dir/name (WAV plus sidecar) only
+// when no producer is publishing it and it is still unverified AT
+// REMOVAL TIME, atomically with respect to BeginCapturePublish: the
+// registry lock is held across both checks AND the removes.
+//
+// Two windows make the rechecks load-bearing. First, the prune
+// candidate scan reads the sidecar and the registry as two independent
+// observations: a producer finishing between them (sidecar written,
+// registry cleared) would let a stale "unknown" verdict delete a
+// verified capture. Second, the sidecar must go under the same lock as
+// the WAV: removing it after lock release could delete a NEW verified
+// sidecar from a same-name republish that started after the WAV
+// removal, demoting verified content to prunable-unknown.
 func removeCaptureIfNotPublishing(dir, wavName string) error {
 	key := filepath.Join(dir, wavName)
 	capturePublishes.Lock()
@@ -69,5 +83,13 @@ func removeCaptureIfNotPublishing(dir, wavName string) error {
 	if capturePublishes.paths[key] > 0 {
 		return errPublishInProgress
 	}
-	return os.Remove(key)
+	if verified, _ := captureVerified(dir, wavName); verified {
+		return errVerifiedAtRemoval
+	}
+	if err := os.Remove(key); err != nil {
+		return err
+	}
+	// The sidecar goes with its recording; a missing sidecar is fine.
+	_ = os.Remove(filepath.Join(dir, strings.TrimSuffix(wavName, ".wav")+".txt"))
+	return nil
 }

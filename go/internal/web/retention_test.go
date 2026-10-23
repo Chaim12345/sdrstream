@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -262,4 +263,56 @@ func TestPruneCapturesRepublishRace(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// A capture whose verified sidecar landed after the prune candidate
+// scan must survive removal: the deletion-time recheck is the only
+// guard for the window between the scan's sidecar read and its
+// registry check (producer finished in between).
+func TestRemoveCaptureRechecksVerifiedAtRemoval(t *testing.T) {
+	dir := t.TempDir()
+	name := "CAP_145000kHz_sstv_verified.wav"
+	finish := BeginCapturePublish(dir, name)
+	if err := common.WriteFileAtomic(filepath.Join(dir, name), make([]byte, 600), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCaptureMetadata(dir, name, CaptureMetadata{Mode: "sstv", Verified: true}); err != nil {
+		t.Fatal(err)
+	}
+	finish()
+	if err := removeCaptureIfNotPublishing(dir, name); !errors.Is(err, errVerifiedAtRemoval) {
+		t.Fatalf("verified capture removal: got %v, want errVerifiedAtRemoval", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+		t.Errorf("verified capture removed: %v", err)
+	}
+	sidecar := filepath.Join(dir, strings.TrimSuffix(name, ".wav")+".txt")
+	if _, err := os.Stat(sidecar); err != nil {
+		t.Errorf("verified capture sidecar removed: %v", err)
+	}
+}
+
+// An unknown capture (no sidecar) with no publish in progress is
+// removed together with any sidecar, atomically - a same-name
+// republish started afterwards must find a clean slate, never its new
+// sidecar deleted by a stale prune pass.
+func TestRemoveCaptureDeletesUnknownWithSidecar(t *testing.T) {
+	dir := t.TempDir()
+	name := "CAP_145000kHz_sstv_unknown.wav"
+	if err := common.WriteFileAtomic(filepath.Join(dir, name), make([]byte, 600), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sidecar := filepath.Join(dir, strings.TrimSuffix(name, ".wav")+".txt")
+	if err := common.WriteFileAtomic(sidecar, []byte("mode=sstv\nverified=false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeCaptureIfNotPublishing(dir, name); err != nil {
+		t.Fatalf("unknown capture removal: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+		t.Errorf("unknown capture WAV survived removal: %v", err)
+	}
+	if _, err := os.Stat(sidecar); !os.IsNotExist(err) {
+		t.Errorf("unknown capture sidecar survived removal: %v", err)
+	}
 }
