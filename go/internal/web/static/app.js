@@ -28,7 +28,10 @@ const fetchJSON = async (url, options = {}) => {
   } finally { clearTimeout(timer); }
 };
 const fmtTime = iso => new Date(iso).toLocaleTimeString([], { hour12: false });
-const fmtDate = iso => new Date(iso).toLocaleString([], { hour12: false });
+const fmtDate = iso => {
+  const d = new Date(iso);
+  return (isNaN(d) || d.getFullYear() < 2000) ? 'date unknown' : d.toLocaleString([], { hour12: false });
+};
 const mhz = hz => (hz / 1e6).toFixed(4) + ' MHz';
 const safeURL = value => { try { const u = new URL(value, location.href); return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : ''; } catch { return ''; } };
 const link = (href, text) => {
@@ -512,6 +515,7 @@ async function refreshSats() {
 
 /* ---------- gallery + lightbox ---------- */
 let galleryItems = [];
+let pendingTextView = null;
 async function refreshGallery() {
   const box = el('gallery');
   try {
@@ -522,55 +526,101 @@ async function refreshGallery() {
     note.textContent = 'gallery unavailable: ' + err; box.appendChild(note);
     return;
   }
-  renderGallery();
+  if (pendingTextView) {
+    const wanted = pendingTextView; pendingTextView = null;
+    const it = (galleryItems || []).find(x => x.kind === 'text' && x.name === wanted);
+    if (it) {
+      selectGalleryTab(it.source === 'live' ? 'live' : (it.source || 'satnogs') === 'satnogs' ? 'satnogs' : 'test', false);
+      openTextView(it);
+    }
+  }
+  const activeTab = document.querySelector('[data-gallery-kind][aria-selected="true"]')?.dataset.galleryKind || 'live';
+  if (activeTab === 'test') refreshTestFixtures(); else renderGallery();
 }
+function galleryCard(it) {
+  const card = document.createElement('div'); card.className = 'gcard';
+  const caption = (it.satellite || ('#' + it.observation_id)) + ' · ' + (it.station || 'unknown receiver') + ' · ' + (it.frequency_hz ? mhz(it.frequency_hz) : 'frequency unknown') + ' · ' + fmtDate(it.start) + (it.mode ? ' · ' + it.mode : '');
+  if (it.kind === 'image') {
+    const img = document.createElement('img'); img.loading = 'lazy'; img.src = it.url; img.alt = it.satellite || 'decoded image';
+    card.appendChild(img);
+    card.addEventListener('click', () => openLightbox(it.url, caption));
+  } else if (it.kind === 'text') {
+    const pre = document.createElement('pre'); pre.textContent = it.text || ''; card.appendChild(pre);
+    if (it.url) {
+      const open = document.createElement('button'); open.type = 'button'; open.className = 'chip read-full';
+      open.textContent = 'read full text';
+      open.addEventListener('click', () => openTextView(it));
+      card.appendChild(open);
+    }
+  }
+  const body = document.createElement('div'); body.className = 'body';
+  const name = document.createElement('b'); body.appendChild(name);
+  if (it.observation_url) {
+    const link = document.createElement('a'); link.href = it.observation_url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+    link.textContent = it.satellite || ('#' + it.observation_id); name.appendChild(link);
+  } else { name.textContent = it.satellite || ('#' + it.observation_id); }
+  const detail = document.createElement('div'); detail.textContent = caption.slice(caption.indexOf('·') + 1).trim(); body.appendChild(detail);
+  if (it.decoded_from) {
+    const lin = document.createElement('div'); lin.className = 'muted';
+    lin.textContent = 'decoded by sdrstream from ' + it.decoded_from; body.appendChild(lin);
+  }
+  if (it.decode_status) {
+    const lin = document.createElement('div'); lin.className = 'muted';
+    lin.textContent = it.decode_status; body.appendChild(lin);
+  }
+  card.appendChild(body);
+  return card;
+}
+
+async function openTextView(it) {
+  el('textview-caption').textContent = (it.satellite || it.name) + (it.decoded_from ? ' - decoded from ' + it.decoded_from : '');
+  el('textview-body').textContent = 'loading...';
+  el('textview-download').href = it.url;
+  el('textview-copy').textContent = 'copy';
+  el('textview').hidden = false;
+  el('textview-close').focus();
+  let full = '';
+  try {
+    const resp = await fetch(it.url);
+    full = resp.ok ? await resp.text() : 'could not load full text (HTTP ' + resp.status + ')';
+  } catch (err) { full = 'could not load full text: ' + err; }
+  el('textview-body').textContent = full;
+  el('textview-copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(full); el('textview-copy').textContent = 'copied'; }
+    catch (err) { el('textview-copy').textContent = 'copy failed'; }
+    setTimeout(() => { el('textview-copy').textContent = 'copy'; }, 1500);
+  };
+}
+function closeTextView() { el('textview').hidden = true; }
+el('textview-close').addEventListener('click', closeTextView);
+el('textview').addEventListener('click', e => { if (e.target === el('textview')) closeTextView(); });
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (!el('textview').hidden) closeTextView();
+  if (!el('lightbox').hidden) closeLightbox();
+});
+
 function renderGallery() {
   const box = el('gallery');
   const items = galleryItems || [];
   // Source honesty: prefer the explicit field; the observation_id/satellite
   // heuristic only covers manifests saved before the field existed.
   const isLive = it => it.source ? it.source === 'live' : ((it.kind === 'image' && it.observation_id === 0) || it.satellite === 'Live reception');
+  const srcOf = it => it.source || 'satnogs';
   const live = items.filter(isLive);
-  const satnogs = items.filter(it => !isLive(it));
+  const satnogs = items.filter(it => !isLive(it) && srcOf(it) === 'satnogs');
+  const testItems = items.filter(it => !isLive(it) && srcOf(it) !== 'satnogs');
   const active = document.querySelector('[data-gallery-kind][aria-selected="true"]')?.dataset.galleryKind || 'live';
+  if (active === 'test') return; // the test tab owns its own rendering and meta
   const shown = active === 'live' ? live : satnogs;
-  const archSources = [...new Set(satnogs.map(it => it.source || 'satnogs'))];
-  const onlySatnogs = archSources.length === 1 && archSources[0] === 'satnogs';
-  el('gallery-count').textContent = active === 'live' ? live.length + ' gate-passed live decode' + (live.length === 1 ? '' : 's') : satnogs.length + (onlySatnogs ? ' SatNOGS artefact' : ' archived artefact') + (satnogs.length === 1 ? '' : 's');
+  el('gallery-count').textContent = active === 'live' ? live.length + ' gate-passed live decode' + (live.length === 1 ? '' : 's') : satnogs.length + ' SatNOGS artefact' + (satnogs.length === 1 ? '' : 's');
   const src = el('gallery-source');
   if (src) {
     if (active === 'live') { src.textContent = 'decoded by this receiver, gate-passed'; }
-    else if (onlySatnogs) { src.textContent = 'source: SatNOGS network (network.satnogs.org) - observation data CC BY-SA 4.0 - names link to the source observation'; }
-    else { src.textContent = 'sources: ' + archSources.join(', '); }
+    else { src.textContent = 'source: SatNOGS network (network.satnogs.org) - observation data CC BY-SA 4.0 - names link to the source observation'; }
   }
   box.textContent = '';
-  shown.slice(0, 60).forEach(it => {
-    const card = document.createElement('div'); card.className = 'gcard';
-    const caption = (it.satellite || ('#' + it.observation_id)) + ' · ' + (it.station || 'unknown receiver') + ' · ' + (it.frequency_hz ? mhz(it.frequency_hz) : 'frequency unknown') + ' · ' + fmtDate(it.start) + (it.mode ? ' · ' + it.mode : '');
-    if (it.kind === 'image') {
-      const img = document.createElement('img'); img.loading = 'lazy'; img.src = it.url; img.alt = it.satellite || 'decoded image';
-      card.appendChild(img);
-      card.addEventListener('click', () => openLightbox(it.url, caption));
-    } else if (it.kind === 'text') {
-      const pre = document.createElement('pre'); pre.textContent = it.text || ''; card.appendChild(pre);
-    }
-    const body = document.createElement('div'); body.className = 'body';
-    const name = document.createElement('b'); body.appendChild(name);
-    if (it.observation_url) {
-      const link = document.createElement('a'); link.href = it.observation_url; link.target = '_blank'; link.rel = 'noopener noreferrer';
-      link.textContent = it.satellite || ('#' + it.observation_id); name.appendChild(link);
-    } else { name.textContent = it.satellite || ('#' + it.observation_id); }
-    const detail = document.createElement('div'); detail.textContent = caption.slice(caption.indexOf('·') + 1).trim(); body.appendChild(detail);
-    if (it.decoded_from) {
-      const lin = document.createElement('div'); lin.className = 'muted';
-      lin.textContent = 'decoded by sdrstream from ' + it.decoded_from; body.appendChild(lin);
-    }
-    if (it.decode_status) {
-      const lin = document.createElement('div'); lin.className = 'muted';
-      lin.textContent = it.decode_status; body.appendChild(lin);
-    }
-    card.appendChild(body); box.appendChild(card);
-  });
+  shown.slice(0, 60).forEach(it => box.appendChild(galleryCard(it)));
   if (!shown.length) {
     const note = document.createElement('div'); note.className = 'empty';
     note.textContent = active === 'live' ? 'no gate-passed live decodes yet' : 'no SatNOGS artefacts downloaded yet';
@@ -591,10 +641,21 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbo
 
 async function refreshTestFixtures() {
   const box = el('test-fixtures');
+  const items = galleryItems || [];
+  const isLive = it => it.source ? it.source === 'live' : ((it.kind === 'image' && it.observation_id === 0) || it.satellite === 'Live reception');
+  const testItems = items.filter(it => !isLive(it) && (it.source || 'satnogs') !== 'satnogs');
+  el('gallery-count').textContent = testItems.length + ' test fixture artefact' + (testItems.length === 1 ? '' : 's');
+  const src = el('gallery-source');
+  if (src) src.textContent = 'local test fixtures - not network observations';
+  box.textContent = '';
+  if (testItems.length) {
+    const cards = document.createElement('div'); cards.className = 'gallery';
+    testItems.slice(0, 60).forEach(it => cards.appendChild(galleryCard(it)));
+    box.appendChild(cards);
+  }
   try {
     const files = await fetchJSON('/api/test-fixtures.json');
-    box.textContent = '';
-    if (!files.length) { box.textContent = 'No test fixtures found.'; return; }
+    if (!files.length && !testItems.length) { box.textContent = 'No test fixtures found.'; return; }
     const table = document.createElement('table');
     table.innerHTML = '<thead><tr><th>fixture</th><th>type</th><th>bytes</th></tr></thead>';
     const body = document.createElement('tbody');
@@ -2010,7 +2071,9 @@ buildRxControls();
 initMonitorLifecycle();
 {
   const gal = /^#gallery-(live|satnogs|test)$/.exec(location.hash || '');
+  const galText = /^#gallery-text-(.+)$/.exec(location.hash || '');
   if (gal) { showView('gallery'); selectGalleryTab(gal[1], false); }
+  else if (galText) { showView('gallery'); pendingTextView = decodeURIComponent(galText[1]); }
   else if (location.hash && el('view-' + location.hash.slice(1))) showView(location.hash.slice(1));
   else showView('overview');
 }

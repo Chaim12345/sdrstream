@@ -18,7 +18,7 @@ const realAPRSFixture = "../../../tests/data/real_aprs_wa8lmf_30s.wav"
 // binary ground truth for what counts as decoded.
 func TestDecodeFramesAFSKRealOffAir(t *testing.T) {
 	if _, err := os.Stat(realAPRSFixture); err != nil {
-		t.Skip("off-air APRS fixture not present:", err)
+		t.Fatal("committed off-air APRS fixture missing - the positive decode test must not silently skip:", err)
 	}
 	dir := t.TempDir()
 	name := "999-audio.wav"
