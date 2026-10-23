@@ -14,6 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Validate inputs (fail fast, before the expensive build)
+        run: |
+          echo "event: ${{ github.event_name }}"
+          echo "appIdSuffix input: '${{ inputs.appIdSuffix }}'"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -z "${{ inputs.appIdSuffix }}" ]; then
+            echo "::error::appIdSuffix arrived EMPTY on a manual dispatch - inputs are not reaching the job; refusing to build the wrong package"
+            exit 1
+          fi
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
@@ -43,6 +51,29 @@ jobs:
           else
             ./gradlew assembleDebug "-PversionCode=$VC"
           fi
+      - name: Assert artifact identity (package, provider, versionCode)
+        working-directory: android
+        run: |
+          set -e
+          pip install --quiet androguard
+          APK=$(find app/build/outputs/apk -name '*.apk' | head -1)
+          echo "artifact: $APK"
+          SUFFIX="${{ inputs.appIdSuffix }}" WANT="com.chaim12345.sdrstream" python3 - "$APK" <<'ENDASSERT'
+          import os, sys, logging
+          logging.disable(logging.CRITICAL)
+          from androguard.core.apk import APK
+          suffix = os.environ.get("SUFFIX", "")
+          want = os.environ["WANT"] + ("." + suffix if suffix else "")
+          a = APK(sys.argv[1])
+          pkg = a.get_package()
+          providers = list(a.get_providers())
+          print("package:", pkg, "versionCode:", a.get_androidversion_code())
+          print("providers:", providers)
+          assert pkg == want, f"package mismatch: got {pkg}, want {want}"
+          assert want + ".logs" in providers, f"log provider authority {want}.logs missing"
+          assert a.get_androidversion_code() >= 1000, "CI build must carry the monotonic versionCode"
+          print("identity assertions PASS")
+          ENDASSERT
       - name: Sign APK with the stable release key (when secrets are configured)
         # Without the secrets the artifact keeps gradle's per-runner debug
         # signature (ephemeral). With them every build shares one cert, so
@@ -71,6 +102,11 @@ jobs:
           "$APKSIGNER" verify --print-certs "$APK"
           pip install --quiet androguard
           python3 ../scripts/apk-signer-fp.py "$APK"
+          APKSIGNER_SHA=$("$APKSIGNER" verify --print-certs "$APK" | grep -oP 'SHA-256 digest: \K[0-9a-f]+' | head -1)
+          ANDRO_SHA=$(python3 ../scripts/apk-signer-fp.py "$APK" | grep -oP 'v2 SHA-256: \K[0-9A-F:]+' | tr -d ':' | tr 'A-F' 'a-f')
+          echo "apksigner: $APKSIGNER_SHA"; echo "androguard: $ANDRO_SHA"
+          [ -n "$APKSIGNER_SHA" ] && [ "$APKSIGNER_SHA" = "$ANDRO_SHA" ] || { echo "::error::signer digest mismatch between apksigner and androguard"; exit 1; }
+          echo "signer cross-check PASS"
       - uses: actions/upload-artifact@v4
         with:
           name: sdrstream-android-debug-apk
