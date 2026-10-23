@@ -93,6 +93,11 @@ type Status struct {
 	Passes     []PassInfo      `json:"passes"`
 	Satellites []SatelliteInfo `json:"satellites"`
 	Receivers  int             `json:"receivers"`
+	// Network reports the startup connectivity self-check so an
+	// unreachable network reads as failed, not as empty success.
+	// Nil means the check has not completed yet.
+	NetworkOK     *bool  `json:"network_ok,omitempty"`
+	NetworkDetail string `json:"network_detail,omitempty"`
 }
 
 // PassInfo is one predicted pass.
@@ -191,6 +196,8 @@ type Server struct {
 	galleryAt         time.Time
 	monitor           *monitor.Monitor
 	monitorHooks      MonitorHooks
+	networkOK         *bool
+	networkDetail     string
 	feeds             *feeds.Manager
 	scans             []ScanStatus
 	scanIndex         map[string]int
@@ -821,9 +828,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if len(captures) > statusCaptureLimit {
 		captures = captures[len(captures)-statusCaptureLimit:]
 	}
+	s.mu.Lock()
+	networkOK, networkDetail := s.networkOK, s.networkDetail
+	s.mu.Unlock()
 	writeJSON(w, Status{
 		UpdatedAt: time.Now(), Captures: captures,
 		Passes: passes, Receivers: len(catalogue.Table),
+		NetworkOK: networkOK, NetworkDetail: networkDetail,
 	})
 }
 
@@ -1529,6 +1540,15 @@ type MonitorStartSpec struct {
 type MonitorHooks struct {
 	Start func(MonitorStartSpec) error
 	Stop  func() error
+}
+
+// SetNetworkCheck records the result of the startup connectivity
+// self-check; handleStatus reports it.
+func (s *Server) SetNetworkCheck(ok bool, detail string) {
+	s.mu.Lock()
+	s.networkOK = &ok
+	s.networkDetail = detail
+	s.mu.Unlock()
 }
 
 // SetMonitorHooks installs runtime monitor control for /api/monitor/control.

@@ -1705,6 +1705,8 @@ func cmdWeb(args []string) error {
 		Multimon:     *monitorMultimon,
 		Direwolf:     *monitorDirewolf,
 	}
+	go runStartupNetworkCheck(ctx, server)
+
 	runtimeMon := &runtimeMonitor{server: server, cfg: monitorCfg}
 	server.SetMonitorHooks(web.MonitorHooks{
 		Start: func(spec web.MonitorStartSpec) error {
@@ -1731,6 +1733,47 @@ func cmdWeb(args []string) error {
 		fmt.Printf("monitoring %s (%s)\n", *monitorServer, *monitorKind)
 	}
 	return server.ServeContext(ctx, fmt.Sprintf("%s:%d", *host, *port))
+}
+
+// runStartupNetworkCheck verifies real outbound connectivity (DNS +
+// HTTPS to the receiver directory) shortly after boot and records the
+// outcome on /api/status.json. On Android a broken resolver turns every
+// live panel into empty UI that reads as success; this makes the
+// failure explicit in engine.log ("network check: FAILED ...") and in
+// the status endpoint. It retries for a few minutes because a phone
+// radio may still be coming up when the engine starts.
+func runStartupNetworkCheck(ctx context.Context, server *web.Server) {
+	const target = "receiverbook.de"
+	client := &http.Client{Timeout: 15 * time.Second}
+	for attempt := 1; attempt <= 6; attempt++ {
+		checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		_, err := net.DefaultResolver.LookupHost(checkCtx, target)
+		if err == nil {
+			req, reqErr := http.NewRequestWithContext(checkCtx, http.MethodGet, "https://"+target+"/map", nil)
+			var resp *http.Response
+			if reqErr == nil {
+				resp, err = client.Do(req)
+				if resp != nil {
+					resp.Body.Close()
+				}
+			} else {
+				err = reqErr
+			}
+		}
+		cancel()
+		if err == nil {
+			log.Printf("network check: ok (DNS + https://%s reachable)", target)
+			server.SetNetworkCheck(true, "dns+https ok")
+			return
+		}
+		log.Printf("network check: FAILED attempt %d/6: %v", attempt, err)
+		server.SetNetworkCheck(false, err.Error())
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(30 * time.Second):
+		}
+	}
 }
 
 // monitorDefaults carries the flag-derived tuning shared by the
