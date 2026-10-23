@@ -327,7 +327,7 @@ func TestProbeWAVDurationClampsToActualPayload(t *testing.T) {
 	if err := os.WriteFile(p, wavFixture(80000, 8000, 8000), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	d, err := probeWAVDuration(p)
+	d, _, err := probeWAV(p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestProbeWAVDurationClampsToActualPayload(t *testing.T) {
 	if err := os.WriteFile(p2, wavFixture(80000, 80000, 8000), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	d, err = probeWAVDuration(p2)
+	d, _, err = probeWAV(p2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +459,7 @@ func TestProbeMatchesDecoder_UnderstatedDeclared(t *testing.T) {
 		{"fmt ", 16, fmtChunk(44100, 1)},
 		{"data", half, full},
 	})
-	d, err := probeWAVDuration(p)
+	d, _, err := probeWAV(p)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -484,7 +484,7 @@ func TestProbeMatchesDecoder_MultipleDataChunks(t *testing.T) {
 		{"data", half, make([]byte, half)},
 		{"data", 1 << 30, make([]byte, half)},
 	})
-	d, err := probeWAVDuration(p)
+	d, _, err := probeWAV(p)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -508,7 +508,7 @@ func TestProbeMatchesDecoder_EmptyFirstDataChunk(t *testing.T) {
 		{"data", 0, []byte{}},
 		{"data", 441000, make([]byte, 441000)},
 	})
-	d, err := probeWAVDuration(p)
+	d, _, err := probeWAV(p)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestProbeMatchesDecoder_GarbageBlockAlign(t *testing.T) {
 		{"fmt ", 16, fc},
 		{"data", 88200, make([]byte, 88200)},
 	})
-	d, err := probeWAVDuration(p)
+	d, _, err := probeWAV(p)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -547,5 +547,52 @@ func TestProbeMatchesDecoder_GarbageBlockAlign(t *testing.T) {
 	}
 	if len(samples) != 44100 || rate != 44100 {
 		t.Fatalf("decoder read %d samples @ %d, want 44100 @ 44100", len(samples), rate)
+	}
+}
+
+func TestDecodeFramesSampleBudgetPreflight(t *testing.T) {
+	// 40 MB mono 44.1 kHz WAV: 475 s, UNDER the 480 s duration cap, but
+	// 20,971,520 estimated samples, OVER the 16 M sample budget. The budget
+	// check must be the one that fires, before the decoder allocates.
+	dir := t.TempDir()
+	name := "7-budget.wav"
+	payload := 40 * 1024 * 1024
+	if err := os.WriteFile(filepath.Join(dir, name), wavFixture(uint32(payload), payload, 44100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	audio := Item{Kind: "audio", Mode: "SSTV", Name: name, Path: filepath.Join(dir, name), Source: "satnogs"}
+	items := []Item{audio}
+	if frames := DecodeFrames(items, dir); len(frames) != 0 {
+		t.Fatalf("over-budget audio produced %d frame(s), want 0", len(frames))
+	}
+	if !strings.Contains(items[0].DecodeStatus, "memory budget") {
+		t.Fatalf("budget reason missing (duration cap must not fire first): %q", items[0].DecodeStatus)
+	}
+	if items[0].Path == "" || items[0].Name != name {
+		t.Fatalf("source item not preserved: %+v", items[0])
+	}
+}
+
+func TestProbeWAVEstimatedSamples(t *testing.T) {
+	// estSamples mirrors decoder arithmetic: dataBytes/2/channels, rate
+	// does not reduce it.
+	dir := t.TempDir()
+	p := filepath.Join(dir, "s.wav")
+	if err := os.WriteFile(p, wavFixture(176400, 176400, 44100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, n, err := probeWAV(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d < 1.99 || d > 2.01 || n != 88200 {
+		t.Fatalf("probe = %vs / %d samples, want 2s / 88200", d, n)
+	}
+	samples, rate, err := decode.ReadWAV(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(samples)) != n || rate != 44100 {
+		t.Fatalf("decoder read %d samples, probe estimated %d", len(samples), n)
 	}
 }

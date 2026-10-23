@@ -215,6 +215,11 @@ func WriteManifest(items []Item, dir string) error {
 var (
 	// maxWAVBytes caps a converted or source WAV for frame decoding.
 	maxWAVBytes int64 = 64 << 20
+	// maxDecodeSamples caps the estimated decoded mono sample count before
+	// allocation: the decoder materialises one float64 per sample, so this
+	// bounds the transient allocation to ~128 MB, a conservative budget
+	// for Android-class devices. Var so tests can shrink it.
+	maxDecodeSamples int64 = 16 << 20
 	// maxDecodeDurationSec caps the audio length handed to a decoder;
 	// decode time is linear in samples, so this bounds CPU per artefact.
 	maxDecodeDurationSec = 480.0
@@ -230,26 +235,27 @@ func runFFmpeg(ctx context.Context, binary string, args ...string) error {
 	return nil
 }
 
-// probeWAVDuration reads a WAV header and returns the payload duration in
-// seconds. The data chunk length is clamped to the bytes the file actually
-// holds, so a header declaring more (or less) than the real payload does
-// not set the bound alone.
-func probeWAVDuration(path string) (float64, error) {
+// probeWAV reads a WAV header and returns the payload duration in seconds
+// and the estimated decoded mono sample count, without loading samples.
+// Validation mirrors decode.ReadWAV arithmetic: 16-bit PCM only, rate > 0,
+// channels < 1 coerced to 1, first data chunk only, data clamped to the
+// bytes actually present.
+func probeWAV(path string) (float64, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	header := make([]byte, 12)
 	if _, err := io.ReadFull(f, header); err != nil {
-		return 0, fmt.Errorf("short file")
+		return 0, 0, fmt.Errorf("short file")
 	}
 	if string(header[0:4]) != "RIFF" || string(header[8:12]) != "WAVE" {
-		return 0, fmt.Errorf("not a RIFF/WAVE file")
+		return 0, 0, fmt.Errorf("not a RIFF/WAVE file")
 	}
 	var rate, channels, bits int64
 	var dataBytes int64
@@ -264,17 +270,17 @@ func probeWAVDuration(path string) (float64, error) {
 		switch string(chunk[0:4]) {
 		case "fmt ":
 			if size < 16 {
-				return 0, fmt.Errorf("short fmt chunk")
+				return 0, 0, fmt.Errorf("short fmt chunk")
 			}
 			fmtbuf := make([]byte, 16)
 			if _, err := io.ReadFull(f, fmtbuf); err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 			channels = int64(binary.LittleEndian.Uint16(fmtbuf[2:4]))
 			rate = int64(binary.LittleEndian.Uint32(fmtbuf[4:8]))
 			bits = int64(binary.LittleEndian.Uint16(fmtbuf[14:16]))
 			if _, err := f.Seek(pos+size+(size&1), io.SeekStart); err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 		case "data":
 			// The decoder reads the FIRST data chunk and stops; the
@@ -292,21 +298,29 @@ func probeWAVDuration(path string) (float64, error) {
 			}
 		default:
 			if _, err := f.Seek(pos+size+(size&1), io.SeekStart); err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 		}
 		if dataSeen && rate > 0 {
 			break
 		}
 	}
-	if rate <= 0 || channels <= 0 || bits <= 0 {
-		return 0, fmt.Errorf("missing or invalid fmt chunk")
+	if rate <= 0 {
+		return 0, 0, fmt.Errorf("missing or invalid fmt chunk")
 	}
-	bytesPerSec := rate * channels * (bits / 8)
-	if bytesPerSec <= 0 {
-		return 0, fmt.Errorf("invalid PCM parameters")
+	if bits != 16 {
+		// decode.ReadWAV only accepts 16-bit PCM.
+		return 0, 0, fmt.Errorf("only 16-bit PCM is supported")
 	}
-	return float64(dataBytes) / float64(bytesPerSec), nil
+	if channels < 1 {
+		// decode.ReadWAV coerces missing channel counts to mono.
+		channels = 1
+	}
+	// int64 throughout: rate*channels*2 stays far below overflow even for
+	// header-maximum rate (2^32-1) and channels (65535).
+	bytesPerSec := rate * channels * 2
+	estSamples := dataBytes / 2 / channels
+	return float64(dataBytes) / float64(bytesPerSec), estSamples, nil
 }
 
 // DecodeFrames runs the project's own decoders over downloaded audio
@@ -369,13 +383,20 @@ func DecodeFrames(saved []Item, dir string) []Item {
 		// clamped to the bytes actually present: a padded or truncated
 		// file is measured by its real payload, not its declaration, and
 		// over-limit audio is rejected before the full sample load.
-		duration, err := probeWAVDuration(path)
+		duration, estSamples, err := probeWAV(path)
 		if err != nil {
 			item.DecodeStatus = "frame decode skipped: unreadable audio: " + err.Error()
 			continue
 		}
 		if duration > maxDecodeDurationSec {
 			item.DecodeStatus = fmt.Sprintf("frame decode skipped: audio longer than the %d s decode limit", int(maxDecodeDurationSec))
+			continue
+		}
+		// Preflight the allocation: the decoder materialises one float64
+		// per decoded sample, so reject over-budget files before any large
+		// slice is allocated (rate does not reduce the count; channels do).
+		if estSamples > maxDecodeSamples {
+			item.DecodeStatus = fmt.Sprintf("frame decode skipped: estimated %d decoded samples over the %d M sample memory budget", estSamples, maxDecodeSamples>>20)
 			continue
 		}
 		samples, rate, err := decode.ReadWAV(path)
