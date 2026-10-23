@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || 'fix/android-startup-crash' }}
+          ref: ${{ inputs.ref || 'fix/android-menu-access' }}
           path: app
       - uses: actions/checkout@v4
         with:

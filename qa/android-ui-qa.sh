@@ -38,6 +38,33 @@ adb shell input keyevent KEYCODE_MENU; sleep 2; shot 03-after-menu-key; dump 03-
 if grep -qi "Show UI password" "$R-03-after-menu-key.xml"; then log "MENU REACHABLE via KEYCODE_MENU (not available on gesture-nav phones)"; else log "KEYCODE_MENU opens nothing"; fi
 adb shell input keyevent KEYCODE_BACK 2>/dev/null; sleep 1
 
+# Touch path: tap a visible "Menu" control, then "Show UI password".
+tapnode() { # tapnode <xml> <regex on attrs>  -> taps center, echoes ok/none
+  python3 - "$1" "$2" <<'PY' > /tmp/tap.txt
+import re,sys
+x=open(sys.argv[1],errors='ignore').read()
+for m in re.finditer(r'<node[^>]*?(?:%s)[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"'%sys.argv[2],x):
+    a,b,c,d=map(int,m.groups()); print((a+c)//2,(b+d)//2); break
+PY
+  if [ -s /tmp/tap.txt ]; then adb shell input tap $(cat /tmp/tap.txt); echo ok; else echo none; fi
+}
+adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 3
+dump 03b-pre-menu
+R1=$(tapnode "$R-03b-pre-menu.xml" 'content-desc="Menu"|text="Menu"|text="⋮"')
+log "tap visible Menu control: $R1"
+if [ "$R1" = ok ]; then
+  sleep 2; shot 03c-menu-open; dump 03c-menu-open
+  log "menu items visible: $(grep -oE 'text="(Show UI password|Set UI password|Source code[^"]*|Stop engine|Diagnostics|Share logs)"' $R-03c-menu-open.xml | tr '\n' ' ')"
+  R2=$(tapnode "$R-03c-menu-open.xml" 'text="Show UI password"')
+  log "tap Show UI password: $R2"
+  sleep 2; shot 03d-password-dialog; dump 03d-password-dialog
+  SHOWN=$(grep -oE 'text="Log in to the UI with:[^"]*"' "$R-03d-password-dialog.xml" | sed 's/.*&#10;&#10;\([0-9a-f]\{36\}\)&#10;.*/\1/')
+  case "$SHOWN" in [0-9a-f]*) echo "::add-mask::$SHOWN"; log "dialog shows a 36-hex password (masked)";; *) log "dialog did not show a password";; esac
+  ONDEV=$(adb shell run-as $PKG cat shared_prefs/sdrstream.xml 2>/dev/null | sed -n 's/.*name="ui_password">\([^<]*\)<.*/\1/p')
+  [ -n "$SHOWN" ] && [ "$SHOWN" = "$ONDEV" ] && log "dialog password MATCHES on-device stored password" || log "dialog password does NOT match stored password"
+  adb shell input keyevent KEYCODE_BACK; sleep 1
+fi
+
 # Login with the generated password (read in CI; masked, never printed).
 PW=$(adb shell run-as $PKG cat shared_prefs/sdrstream.xml 2>/dev/null | sed -n 's/.*name="ui_password">\([^<]*\)<.*/\1/p')
 echo "::add-mask::$PW"
