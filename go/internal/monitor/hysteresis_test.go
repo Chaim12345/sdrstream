@@ -1,9 +1,9 @@
 package monitor
 
 import (
-	"math"
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -69,7 +69,7 @@ func TestStepAveragingSuppressesOneFrameSpike(t *testing.T) {
 	quiet := panoFrame(-105, 0, 300)
 
 	transient := New(Options{
-		Source: &panoSource{frames: [][]float64{spike, quiet, quiet}},
+		Source:      &panoSource{frames: [][]float64{spike, quiet, quiet}},
 		ThresholdDB: 10, AverageFrames: 3, DwellTime: time.Millisecond,
 	})
 	for i := 0; i < 6; i++ {
@@ -83,7 +83,7 @@ func TestStepAveragingSuppressesOneFrameSpike(t *testing.T) {
 	}
 
 	steady := New(Options{
-		Source: &panoSource{frames: [][]float64{spike, spike, spike}},
+		Source:      &panoSource{frames: [][]float64{spike, spike, spike}},
 		ThresholdDB: 10, AverageFrames: 3, DwellTime: time.Millisecond,
 	})
 	for i := 0; i < 3; i++ {
@@ -168,9 +168,9 @@ func TestStepRefineCoarsePanorama(t *testing.T) {
 		Source: source, ThresholdDB: 10, DwellTime: time.Millisecond,
 		OnActivity: func(a Activity) { mu.Lock(); activities = append(activities, a); mu.Unlock() },
 	})
-	instance.step(ctx)          // candidate
+	instance.step(ctx) // candidate
 	time.Sleep(2 * time.Millisecond)
-	instance.step(ctx)          // dwell passed: refine, then report
+	instance.step(ctx) // dwell passed: refine, then report
 	source.mu.Lock()
 	if len(source.refineCalls) != 1 {
 		t.Fatalf("refine calls %v, want exactly 1", source.refineCalls)

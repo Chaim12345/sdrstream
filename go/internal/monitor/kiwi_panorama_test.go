@@ -67,14 +67,14 @@ func TestChooseModeCoarsePanorama(t *testing.T) {
 		bandwidth, frequency float64
 		want                 string
 	}{
-		{0, 550e3, "am"},   // MW broadcast
-		{0, 1.5e6, "am"},   // top of the MW band
-		{0, 7.2e6, "usb"},  // 40 m amateur
-		{0, 14.2e6, "usb"}, // 20 m amateur
-		{0, 27.5e6, "usb"}, // CB
-		{0, 145e6, "fm"},   // VHF stays FM
-		{0, 122e6, "am"},   // airband stays AM
-		{29e3, 7.2e6, "fm"},  // unchanged: a trusted wide measurement on HF
+		{0, 550e3, "am"},    // MW broadcast
+		{0, 1.5e6, "am"},    // top of the MW band
+		{0, 7.2e6, "usb"},   // 40 m amateur
+		{0, 14.2e6, "usb"},  // 20 m amateur
+		{0, 27.5e6, "usb"},  // CB
+		{0, 145e6, "fm"},    // VHF stays FM
+		{0, 122e6, "am"},    // airband stays AM
+		{29e3, 7.2e6, "fm"}, // unchanged: a trusted wide measurement on HF
 	}
 	for _, c := range cases {
 		if got := ChooseModeAt("auto", c.bandwidth, c.frequency); got != c.want {

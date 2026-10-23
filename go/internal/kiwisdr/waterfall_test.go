@@ -1,8 +1,8 @@
 package kiwisdr
 
 import (
-	"math"
 	"encoding/binary"
+	"math"
 	"testing"
 	"time"
 )

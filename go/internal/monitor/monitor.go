@@ -60,10 +60,10 @@ type Activity struct {
 	// and the detection is a candidate, not a tuned measurement.
 	FrequencyRefined       bool    `json:"frequency_refined,omitempty"`
 	FrequencyUncertaintyHz float64 `json:"frequency_uncertainty_hz,omitempty"`
-	Confidence         float64    `json:"confidence,omitempty"`
-	Language           string     `json:"language,omitempty"`
-	ASRModel           string     `json:"asr_model,omitempty"`
-	ASRFallback        bool       `json:"asr_fallback,omitempty"`
+	Confidence             float64 `json:"confidence,omitempty"`
+	Language               string  `json:"language,omitempty"`
+	ASRModel               string  `json:"asr_model,omitempty"`
+	ASRFallback            bool    `json:"asr_fallback,omitempty"`
 }
 
 // Options configures a monitor.
@@ -165,12 +165,12 @@ type Monitor struct {
 	centreHz   float64
 	spanHz     float64
 	spectrumOK bool
-	lastBinHz float64 // bin width of the newest spectrum frame, for mode choice
+	lastBinHz  float64 // bin width of the newest spectrum frame, for mode choice
 	// frameHistory is the short sliding window of spectrum frames the
 	// detector averages over when Options.AverageFrames > 1.
 	frameHistory [][]float64
-	tunedHz    float64
-	bc         broadcastState
+	tunedHz      float64
+	bc           broadcastState
 }
 
 // candidate is a peak that is currently present in the spectrum.
