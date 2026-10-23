@@ -69,13 +69,14 @@
     if (oldMode !== msglogMode) { oldMode = msglogMode; resetPage(); }
     const all = decodedItems();
     const matched = select(all, msglogMode, search);
-    // Occurrence keys distinguish repeated equal messages in this chronological snapshot.
+    // Count equal rows from the newest end: a rolling feed evicts its oldest
+    // prefix, so surviving duplicate occurrences retain their identities.
     const occurrences = new Map();
-    const keyed = matched.map(a => {
+    const keyed = matched.slice().reverse().map(a => {
       const base = JSON.stringify([a.started, a.mode, a.frequency_hz, a.detail]);
       const occurrence = occurrences.get(base) || 0; occurrences.set(base, occurrence + 1);
       return { item: a, key: base + '#' + occurrence };
-    });
+    }).reverse();
     if (!msglogStuck) frozen = null;
     if (msglogStuck && !frozen) frozen = currentShown.slice();
     if (loadingOlder && frozen && frozen.length) {

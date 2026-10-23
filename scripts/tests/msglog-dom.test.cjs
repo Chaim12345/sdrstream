@@ -62,3 +62,20 @@ test('rolling server eviction retains bounded paused snapshot and resume clears 
  assert.notEqual(box.children[0].dataset.messageKey,first);
  assert.equal(c.msglogStuck,false);
 });
+
+test('QA: partial eviction of an identical older row while paused keeps Load older working',()=>{
+ const {c,node,rows,created}=setup();const box=node('msglog');
+ rows[73]={...rows[72]};c.renderMsglog();       // identical pair; window = rows 73..122, first key is occurrence #1
+ box.scrollTop=20;box.fire('scroll');
+ const first=box.children[0].dataset.messageKey;
+ assert.ok(first.endsWith('#0'),first); // newest equal occurrence survives prefix eviction
+ rows.splice(72,1);                              // server evicts the first of the pair
+ c.renderMsglog();
+ const nav=created.find(n=>n.className==='toolbar msglog-history-nav');
+ assert.equal(box.children[0].dataset.messageKey,first);
+ assert.equal(box.scrollTop,20);
+ assert.equal(nav.children[0].hidden,false,'72 older rows still exist, Load older must stay available');
+ nav.children[0].fire('click');
+ assert.equal(box.children.length,100);
+ assert.equal(box.children[50].dataset.messageKey,first);
+});
