@@ -271,6 +271,34 @@ func (r *Runner) RunOnce(ctx context.Context, entries []Entry) (*Audit, error) {
 		if duration < time.Second {
 			continue
 		}
+		// Protect upcoming slots: when this occurrence is being served late
+		// (a retry of an earlier failure, or queued behind other work), a
+		// distinct occurrence whose slot begins within this capture's
+		// planned window takes precedence, so a late capture never pushes a
+		// scheduled broadcast off its slot. Defer instead of truncating: a
+		// shortened capture would be recorded-but-rejected by the decode
+		// gate, which permanently consumes the occurrence. The service poll
+		// loop revisits the deferred occurrence once the slot has been
+		// served. An occurrence at its own scheduled start is itself the
+		// protected slot and always runs.
+		if o.Start.Before(now) {
+			conflict := false
+			for _, up := range Plan(entries, now, duration) {
+				if up.Key() == o.Key() || up.Start.Before(now) {
+					continue
+				}
+				if prev, ok := state.Attempts[up.Key()]; ok {
+					if prev.Status == "recorded" || now.Sub(prev.Finished) < time.Minute || prev.Status == "interrupted" {
+						continue
+					}
+				}
+				conflict = true
+				break
+			}
+			if conflict {
+				continue
+			}
+		}
 		receivers := ReceiversFor(r.Receivers, o.Entry.Target)
 		if len(receivers) == 0 {
 			continue

@@ -174,3 +174,60 @@ func TestServiceKeepsScheduleOnReloadFailure(t *testing.T) {
 		t.Fatal("no captures after reload failure")
 	}
 }
+
+func TestUpcomingSlotProtectedFromRetry(t *testing.T) {
+	// A failed occurrence with a long window becomes retry-eligible. Its
+	// retry must not start when a distinct scheduled slot begins inside the
+	// retry's planned capture window: the retry defers, the slot captures
+	// on time, and the retry runs afterwards.
+	now := utc("2026-10-22T00:39:30Z")
+	dir := t.TempDir()
+	retry := Entry{ID: "retry", StartMinute: 5, EndMinute: 55, Target: decode.HFTarget{Name: "retry", CarrierKHz: 6000, DialKHz: 6000, Mode: "usb"}}
+	slot := Entry{ID: "slot", StartMinute: 40, EndMinute: 50, Target: decode.HFTarget{Name: "slot", CarrierKHz: 7000, DialKHz: 7000, Mode: "usb"}}
+	r := Runner{
+		Dir:       dir,
+		Receivers: []Receiver{{URL: "a", Type: "kiwi", MaxKHz: 30000}, {URL: "b", Type: "kiwi", MaxKHz: 30000}},
+		Listen:    240 * time.Second,
+		Now:       func() time.Time { return now },
+		Record:    okRecord(2880000),
+	}
+	// Seed a past failure on the retry entry so it is retry-eligible (this
+	// benches receiver a, so later captures in this test land on b).
+	r.Record = func(context.Context, Receiver, decode.HFTarget, time.Duration) (decode.HFResult, error) {
+		return decode.HFResult{}, fmt.Errorf("refused")
+	}
+	failAt := utc("2026-10-22T00:10:00Z")
+	r.Now = func() time.Time { return failAt }
+	a, err := r.RunOnce(context.Background(), []Entry{retry})
+	if err != nil || a.Status != "failed" {
+		t.Fatal(a, err)
+	}
+	// At 00:39:30 the retry would run 240s and overlap the 00:40 slot.
+	r.Now = func() time.Time { return now }
+	var captured []string
+	r.Record = func(_ context.Context, _ Receiver, tg decode.HFTarget, d time.Duration) (decode.HFResult, error) {
+		captured = append(captured, tg.Name)
+		return okRecord(2880000)(context.Background(), Receiver{}, tg, d)
+	}
+	a, err = r.RunOnce(context.Background(), []Entry{retry, slot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != nil || len(captured) != 0 {
+		t.Fatalf("retry should defer before the upcoming slot, got audit %+v captures %v", a, captured)
+	}
+	// Once the slot starts, it is captured on time.
+	slotNow := utc("2026-10-22T00:40:00Z")
+	r.Now = func() time.Time { return slotNow }
+	a, err = r.RunOnce(context.Background(), []Entry{retry, slot})
+	if err != nil || a == nil || a.Occurrence.Entry.ID != "slot" {
+		t.Fatalf("slot should capture at its start, got %+v err %v", a, err)
+	}
+	// After the slot is recorded, the retry proceeds with its window intact.
+	after := utc("2026-10-22T00:44:10Z")
+	r.Now = func() time.Time { return after }
+	a, err = r.RunOnce(context.Background(), []Entry{retry, slot})
+	if err != nil || a == nil || a.Occurrence.Entry.ID != "retry" {
+		t.Fatalf("retry should resume after the slot, got %+v err %v", a, err)
+	}
+}
