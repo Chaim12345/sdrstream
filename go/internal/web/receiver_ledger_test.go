@@ -199,10 +199,14 @@ func TestReceiverCaptureLedgerServedOverAPI(t *testing.T) {
 // recovered from the failed expansion run (docs/recovery/navtex-ext-490-4209
 // on feat/navtex-ext-490-4209-recovery; the decode text in these sidecars is
 // verbatim from proof-490-oostende-20261023T0010Z.txt and
-// proof-490-portpatrick-20261023T0020Z.txt). Neither passed the live gate -
-// one was rejected by the then English-only vocabulary, one ran past the
-// window - so the ledger must show them as unverified with the gate reason,
-// while keeping the genuine decoded content visible.
+// proof-490-portpatrick-20261023T0020Z.txt). The original WAVs died with the
+// expansion agent's sandbox - only the decode text survives, and that is
+// exactly what these fixtures are: sidecars with NO matching WAV. The
+// capture list and the ledger must keep them visible with an empty audio
+// link (the UI labels that "audio unavailable"), never invent a player.
+// Neither passed the live gate - one was rejected by the then English-only
+// vocabulary, one ran past the window - so they ledger as unverified with
+// the gate reason.
 func TestReceiverLedgerRealPreservedProofs(t *testing.T) {
 	fixtures, err := filepath.Glob(filepath.Join("testdata", "receiverproof", "*.txt"))
 	if err != nil || len(fixtures) != 2 {
@@ -211,15 +215,11 @@ func TestReceiverLedgerRealPreservedProofs(t *testing.T) {
 	capturesDir := t.TempDir()
 	ledgerPath := filepath.Join(t.TempDir(), "sdrstream-ledger.jsonl")
 	for _, fx := range fixtures {
-		base := strings.TrimSuffix(filepath.Base(fx), ".txt")
 		data, err := os.ReadFile(fx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := common.WriteWAVFile(filepath.Join(capturesDir, base+".wav"), []int16{1, 2, 3}, 7119); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(capturesDir, base+".txt"), data, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(capturesDir, filepath.Base(fx)), data, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -228,7 +228,12 @@ func TestReceiverLedgerRealPreservedProofs(t *testing.T) {
 	got := s.scanCaptures()
 	l.Close()
 	if len(got) != 2 {
-		t.Fatalf("scanCaptures = %d, want 2", len(got))
+		t.Fatalf("scanCaptures = %d, want 2 sidecar-only records", len(got))
+	}
+	for _, c := range got {
+		if c.URL != "" || c.Samples != 0 {
+			t.Fatalf("text-only proof must not gain an audio link: %+v", c)
+		}
 	}
 	entries := l.Query(ReceiverLedgerSource, 5000)
 	if len(entries) != 2 {
@@ -245,6 +250,9 @@ func TestReceiverLedgerRealPreservedProofs(t *testing.T) {
 	}
 	if oostende == nil || portpatrick == nil {
 		t.Fatalf("missing fixture entries: %+v", entries)
+	}
+	if oostende.Ref != "" || portpatrick.Ref != "" {
+		t.Fatalf("text-only proofs must ledger without an audio link: %q / %q", oostende.Ref, portpatrick.Ref)
 	}
 	if !strings.Contains(oostende.Detail, "OOSTENDERADIO MSI 395/26") {
 		t.Fatalf("oostende decode text = %q", oostende.Detail)

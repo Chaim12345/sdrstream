@@ -589,3 +589,10 @@ kbd {
 #rxproof-list { display: grid; gap: 8px; margin-top: 6px; }
 .rxproof-card .badge-row { margin: 4px 0; }
 .rxproof-card audio { margin-top: 6px; }
+
+/* The .pill display rule must not defeat the hidden attribute (the ON AIR
+   pill showed with no monitor running because of this). */
+[hidden] { display: none !important; }
+
+/* Spectrogram evidence in proof views */
+.proof-spec { display: block; max-width: 100%; width: 460px; border-radius: 6px; margin-top: 6px; border: 1px solid var(--line); }

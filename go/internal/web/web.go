@@ -534,6 +534,69 @@ func (s *Server) listCaptures() []Capture {
 			URL:     "/audio/" + url.PathEscape(name),
 		})
 	}
+	// A sidecar whose WAV is gone is still proof: the decode text survives
+	// even though the audio does not. List it with no URL and no samples so
+	// the UI shows the decode with an "audio unavailable" label instead of
+	// either hiding the proof or offering a player that cannot play.
+	seen := map[string]bool{}
+	for _, c := range out {
+		seen[c.Path] = true
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".txt") {
+			continue
+		}
+		base := strings.TrimSuffix(name, ".txt")
+		if seen[base+".wav"] {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		var freq float64
+		mode, receiver, detail, kind, target, gate := "", "sdrstream", "", "", "", ""
+		verified := false
+		started := info.ModTime().UTC()
+		if sidecar, err := os.ReadFile(filepath.Join(s.capturesDir, name)); err == nil {
+			for _, line := range strings.Split(string(sidecar), "\n") {
+				switch {
+				case strings.HasPrefix(line, "frequency_hz="):
+					freq, _ = strconv.ParseFloat(strings.TrimPrefix(line, "frequency_hz="), 64)
+				case strings.HasPrefix(line, "mode="):
+					mode = strings.TrimPrefix(line, "mode=")
+				case strings.HasPrefix(line, "receiver="):
+					receiver = strings.TrimPrefix(line, "receiver=")
+				case strings.HasPrefix(line, "decode="):
+					detail = strings.TrimPrefix(line, "decode=")
+				case strings.HasPrefix(line, "kind="):
+					kind = strings.TrimPrefix(line, "kind=")
+				case strings.HasPrefix(line, "target="):
+					target = strings.TrimPrefix(line, "target=")
+				case strings.HasPrefix(line, "gate="):
+					gate = strings.TrimPrefix(line, "gate=")
+				case line == "verified=true":
+					verified = true
+				case strings.HasPrefix(line, "started="):
+					if parsed, err := time.Parse(time.RFC3339, strings.TrimPrefix(line, "started=")); err == nil {
+						started = parsed.UTC()
+					}
+				}
+			}
+		}
+		satellite := base
+		if i := strings.IndexByte(base, '_'); i > 0 {
+			satellite = base[:i]
+		}
+		out = append(out, Capture{
+			Satellite: satellite, Receiver: receiver,
+			FrequencyHz: freq, Mode: mode, Decode: detail,
+			Kind: kind, Target: target, Verified: verified, Gate: gate,
+			Start: started,
+			Path:  name, // the surviving sidecar, as the ledger identity
+		})
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
 	return out
 }
@@ -748,6 +811,19 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 	name, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/audio/"))
 	if err != nil || strings.ContainsAny(name, "/\\") || name == "" {
 		http.NotFound(w, r)
+		return
+	}
+	// Spectrogram evidence is generated offline from the saved WAV and
+	// cached beside it; the audio itself never leaves this directory.
+	if strings.HasSuffix(name, ".wav.spec.png") {
+		pngBytes, err := s.spectrogramFor(strings.TrimSuffix(name, ".spec.png"))
+		if err != nil {
+			http.Error(w, "spectrogram unavailable: "+err.Error(), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		_, _ = w.Write(pngBytes)
 		return
 	}
 	// Only recordings are served; the directory may hold other files.

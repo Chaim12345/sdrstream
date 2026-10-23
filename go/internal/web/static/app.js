@@ -203,6 +203,17 @@ function captureProof(c) {
     const audio = document.createElement('audio');
     audio.className = 'proof-audio'; audio.controls = true; audio.preload = 'none'; audio.src = c.url;
     row('listen', audio);
+    if (/\.wav$/i.test(c.url)) {
+      const spec = document.createElement('img');
+      spec.className = 'proof-spec'; spec.loading = 'lazy'; spec.alt = 'spectrogram of the archived clip';
+      spec.src = c.url + '.spec.png';
+      spec.onerror = () => { spec.hidden = true; };
+      row('spectrogram', spec);
+    }
+  } else {
+    const none = document.createElement('span'); none.className = 'muted';
+    none.textContent = 'audio unavailable - only the decode text survives';
+    row('listen', none);
   }
   row('receiver', c.receiver || 'unknown');
   const started = new Date(c.start);
@@ -1823,6 +1834,17 @@ function renderReceiverProof(entries) {
       au.setAttribute('aria-label', 'listen to ' + (e.label || 'capture'));
       card.appendChild(au);
       card.appendChild(recordButtonFor(au));
+      if (/\.wav$/i.test(e.ref)) {
+        const spec = document.createElement('img');
+        spec.className = 'proof-spec'; spec.loading = 'lazy'; spec.alt = 'spectrogram of the archived clip';
+        spec.src = e.ref + '.spec.png';
+        spec.onerror = () => { spec.hidden = true; };
+        card.appendChild(spec);
+      }
+    } else {
+      const none = document.createElement('div'); none.className = 'card-meta';
+      none.textContent = 'audio unavailable - only the decode text survives';
+      card.appendChild(none);
     }
     card.appendChild(Object.assign(document.createElement('div'), { className: 'card-meta', textContent: 'archived ' + e.id }));
     box.appendChild(card);
