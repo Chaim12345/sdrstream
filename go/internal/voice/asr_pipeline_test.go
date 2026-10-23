@@ -228,3 +228,214 @@ func TestTranscribeASRCleanFallbackBeatsHallucinatedPrimary(t *testing.T) {
 		t.Errorf("model = %q, want fallback.bin", res.Model)
 	}
 }
+
+// Marker-only output is whisper labelling non-speech, not a transcript: it
+// must be dropped at any confidence, and a clean fallback that clears
+// MinConfidence must get its chance against it.
+func TestTranscribeASRDropsMarkerOnlyChunk(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeScriptedWhisper(t, dir, []scriptedCall{{text: "[music]", conf: 0.95}})
+	rate := 8000
+	res, err := TranscribeASR(context.Background(), twoBursts(rate, 1.2, 1.2), rate, asrIntegrityOptions(binary, dir, 30))
+	if err != nil {
+		t.Fatalf("TranscribeASR: %v", err)
+	}
+	if res.Text != "" {
+		t.Errorf("text = %q, want marker-only output dropped", res.Text)
+	}
+}
+
+func TestTranscribeASRMarkerPrimaryYieldsToCleanFallback(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeScriptedWhisper(t, dir, []scriptedCall{
+		{text: "[music]", conf: 0.95},
+		{text: "clear forecast", conf: 0.85},
+	})
+	o := asrIntegrityOptions(binary, dir, 30)
+	fallback := filepath.Join(dir, "fallback.bin")
+	if err := os.WriteFile(fallback, []byte("fake model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o.FallbackModel = fallback
+	rate := 8000
+	res, err := TranscribeASR(context.Background(), twoBursts(rate, 1.2, 1.2), rate, o)
+	if err != nil {
+		t.Fatalf("TranscribeASR: %v", err)
+	}
+	if res.Text != "clear forecast" {
+		t.Errorf("text = %q, want the clean fallback over the marker primary", res.Text)
+	}
+	if !res.Fallback {
+		t.Error("Fallback flag not set")
+	}
+}
+
+// Selection contract (independent reviewer): validity ranks before
+// confidence - an invention's confidence says nothing. These tests pin the
+// contract in every direction; MinConfidence is the retry trigger, NOT a
+// publishing floor.
+
+// Hallucinated primary, valid fallback below the bar but higher confidence:
+// the old c2>conf branch bypassed the batch-2 floor. Valid beats invention.
+func TestTranscribeASRValidFallbackBeatsInventionBelowBar(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeScriptedWhisper(t, dir, []scriptedCall{
+		{text: "thank you", conf: 0.1},                // canned hallucination
+		{text: "november three zero over", conf: 0.3}, // valid, below the 0.5 bar, but higher
+	})
+	o := asrIntegrityOptions(binary, dir, 30) // MinConfidence 0.5
+	fallback := filepath.Join(dir, "fallback.bin")
+	if err := os.WriteFile(fallback, []byte("fake model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o.FallbackModel = fallback
+	rate := 8000
+	res, err := TranscribeASR(context.Background(), twoBursts(rate, 1.2, 1.2), rate, o)
+	if err != nil {
+		t.Fatalf("TranscribeASR: %v", err)
+	}
+	if res.Text != "november three zero over" {
+		t.Errorf("text = %q, want the valid fallback over the invention", res.Text)
+	}
+	if !res.Fallback {
+		t.Error("Fallback flag not set")
+	}
+}
+
+// Hallucinated primary at HIGH confidence, valid fallback at low: the
+// invention's confidence is meaningless, the valid fallback still wins.
+func TestTranscribeASRValidFallbackBeatsHighConfidenceInvention(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeScriptedWhisper(t, dir, []scriptedCall{
+		{text: "thank you for watching", conf: 0.9},
+		{text: "november three zero over", conf: 0.3},
+	})
+	o := asrIntegrityOptions(binary, dir, 30)
+	fallback := filepath.Join(dir, "fallback.bin")
+	if err := os.WriteFile(fallback, []byte("fake model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o.FallbackModel = fallback
+	rate := 8000
+	res, err := TranscribeASR(context.Background(), twoBursts(rate, 1.2, 1.2), rate, o)
+	if err != nil {
+		t.Fatalf("TranscribeASR: %v", err)
+	}
+	if res.Text != "november three zero over" {
+		t.Errorf("text = %q, want the valid fallback over the confident invention", res.Text)
+	}
+}
+
+// Both models invent: the chunk is dropped, nothing is published.
+func TestTranscribeASRDropsChunkWhenBothInvent(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeScriptedWhisper(t, dir, []scriptedCall{
+		{text: "thank you", conf: 0.7},
+		{text: "thank you for watching", conf: 0.9},
+	})
+	o := asrIntegrityOptions(binary, dir, 30)
+	fallback := filepath.Join(dir, "fallback.bin")
+	if err := os.WriteFile(fallback, []byte("fake model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o.FallbackModel = fallback
+	rate := 8000
+	res, err := TranscribeASR(context.Background(), twoBursts(rate, 1.2, 1.2), rate, o)
+	if err != nil {
+		t.Fatalf("TranscribeASR: %v", err)
+	}
+	if res.Text != "" {
+		t.Errorf("text = %q, want both inventions dropped", res.Text)
+	}
+}
+
+// A failed primary plus a valid fallback publishes the fallback - there is
+// no publishing floor - and one bad chunk must not error the whole run.
+// (The error path itself is covered by the slot tests with exit codes.)
+
+// PlanChunks is exported: hand-built segments outside the audio must be
+// clamped, not sliced into a panic.
+func TestPlanChunksClampsOutOfRangeSegments(t *testing.T) {
+	rate := 8000
+	x := make([]float64, rate) // 1 s
+	chunks := PlanChunks(x, rate, []SpeechSegment{{0, 0.5}, {2.0, 3.0}, {-1, 0.2}}, 25)
+	if len(chunks) != 1 {
+		t.Fatalf("chunks = %d, want 1", len(chunks))
+	}
+	// splitLong drops the fully out-of-range segment {2,3} and clamps the
+	// negative start: 0.5 s of audio + 150 ms join silence + 0.2 s.
+	want := rate/2 + rate*3/20 + rate/5
+	if len(chunks[0].Samples) != want {
+		t.Errorf("chunk samples = %d, want %d after clamping", len(chunks[0].Samples), want)
+	}
+}
+
+// splitLong must clamp segments to the audio: no cut and no returned segment
+// may reach past the last sample.
+func TestSplitLongClampsToAudio(t *testing.T) {
+	rate := 8000
+	x := make([]float64, rate) // 1 s
+	segs := splitLong(x, rate, []SpeechSegment{{0.5, 3.0}, {2.0, 2.5}, {0.1, 0.4}}, 0.3)
+	// {0.5,3} clamps to {0.5,1} and splits into three; {2,2.5} is wholly
+	// outside and dropped; {0.1,0.4} splits into two.
+	if len(segs) != 5 {
+		t.Fatalf("segments = %d, want 5 (out-of-range one skipped): %+v", len(segs), segs)
+	}
+	for _, s := range segs {
+		if s.End > 1.0 || s.Start < 0 || s.End <= s.Start {
+			t.Errorf("segment %+v escapes the audio", s)
+		}
+	}
+}
+
+// Reverse direction from the fallback fixes (independent reviewer): a clean
+// but low-confidence primary must NOT be replaced by a higher-confidence
+// known hallucination from the fallback model - accepting the invention
+// would drop the real words with the chunk.
+func TestTranscribeASRCleanPrimarySurvivesHallucinatedFallback(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeScriptedWhisper(t, dir, []scriptedCall{
+		{text: "november two three alpha bravo", conf: 0.6},
+		{text: "thank you for watching", conf: 0.9},
+	})
+	// Reviewer's exact case: bar 0.8, primary clean at 0.6 (unsure, so the
+	// fallback DOES run), fallback invents a canned phrase at 0.9.
+	o := asrIntegrityOptions(binary, dir, 30)
+	o.MinConfidence = 0.8
+	fallback := filepath.Join(dir, "fallback.bin")
+	if err := os.WriteFile(fallback, []byte("fake model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o.FallbackModel = fallback
+	rate := 8000
+	res, err := TranscribeASR(context.Background(), twoBursts(rate, 1.2, 1.2), rate, o)
+	if err != nil {
+		t.Fatalf("TranscribeASR: %v", err)
+	}
+	if got := countScriptedCalls(t, dir); got != 2 {
+		t.Fatalf("scripted calls = %d, want 2 (primary then fallback)", got)
+	}
+	if res.Text != "november two three alpha bravo" {
+		t.Errorf("text = %q, want the clean primary to survive the hallucinated fallback", res.Text)
+	}
+	if res.Fallback {
+		t.Error("Fallback flag set although the hallucinated fallback must not win")
+	}
+	if res.Model != "primary.bin" {
+		t.Errorf("model = %q, want primary.bin", res.Model)
+	}
+}
+
+// countScriptedCalls reads the scripted fake's invocation counter.
+func countScriptedCalls(t *testing.T, dir string) int {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "calls.count"))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("bad counter: %v", err)
+	}
+	return n
+}

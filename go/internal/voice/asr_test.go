@@ -97,4 +97,14 @@ func TestHallucination(t *testing.T) {
 	if hallucination("november two three alpha bravo over", 0.6) {
 		t.Fatal("real traffic dropped")
 	}
+	// Marker-only output and the guard's canned YouTube phrases fail at any
+	// confidence: they are never broadcast content (guard.go contract).
+	for _, text := range []string{"[music]", "(applause)", "[BLANK_AUDIO]", "Thank you for watching", "subtitles by the community"} {
+		if !hallucination(text, 0.95) {
+			t.Fatalf("%q is a hallucination at any confidence", text)
+		}
+	}
+	if hallucination("thanks for watching", 0.95) != true {
+		t.Fatal("canned phrase fails at any confidence after the guard alignment")
+	}
 }
