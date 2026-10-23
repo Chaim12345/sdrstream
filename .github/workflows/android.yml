@@ -3,6 +3,11 @@ on:
   push:
     paths: ['android/**', 'go/**', '.github/workflows/android.yml']
   workflow_dispatch:
+    inputs:
+      appIdSuffix:
+        description: 'Optional debug applicationId suffix (e.g. dbg) for a side-by-side test build'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -28,7 +33,12 @@ jobs:
         run: ./android/fetch-engine.sh
       - name: Build APK
         working-directory: android
-        run: ./gradlew assembleDebug
+        run: |
+          if [ -n "${{ inputs.appIdSuffix }}" ]; then
+            ./gradlew assembleDebug "-PappIdSuffix=${{ inputs.appIdSuffix }}"
+          else
+            ./gradlew assembleDebug
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: sdrstream-android-debug-apk
