@@ -102,6 +102,38 @@ else
   log "no EditText found on screen (login form not exposed)"
 fi
 
+# Set UI password flow (stale-env bug check): change it, expect new works, old rejected.
+NEWPW="qaNewPass123"
+OLDPW="$PW"
+edit_center() { python3 - "$1" <<'PY'
+import re,sys
+x=open(sys.argv[1],errors='ignore').read()
+best=None
+for m in re.finditer(r'<node[^>]*class="android.widget.EditText"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"',x):
+    a,b,c,d=map(int,m.groups()); best=((a+c)//2,(b+d)//2)
+print("%d %d"%best if best else "")
+PY
+}
+adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 3; dump 06b
+S1=$(tapnode "$R-06b.xml" 'content-desc="Menu"|text="Menu"|text="⋮"'); log "set-pw: tap Menu: $S1"
+if [ "$S1" = ok ]; then
+  sleep 2; dump 06c; S2=$(tapnode "$R-06c.xml" 'text="Set UI password"'); log "set-pw: tap Set UI password: $S2"
+  sleep 2; dump 06d; shot 06d-set-dialog
+  adb shell input tap $(edit_center "$R-06d.xml"); sleep 1; adb shell input text "$NEWPW"; sleep 1; shot 06e-typed
+  dump 06e; S3=$(tapnode "$R-06e.xml" 'text="Save"'); log "set-pw: tap Save: $S3"
+  sleep 25; shot 06f-after-save; dump 06f
+  log "after save: engine process $(alive); toast/page text: $(grep -oE 'text="[^"]+"' $R-06f.xml | head -8 | tr '\n' ' ')"
+  for TRY in old new; do
+    [ $TRY = old ] && CAND="$OLDPW" || CAND="$NEWPW"
+    dump 06g-$TRY; C=$(edit_center "$R-06g-$TRY.xml")
+    if [ -n "$C" ]; then
+      adb shell input tap $C; sleep 1; adb shell input text "$CAND"; adb shell input keyevent KEYCODE_ENTER; sleep 6
+      shot 06h-$TRY; dump 06h-$TRY
+      if grep -q 'class="android.widget.EditText"' "$R-06h-$TRY.xml"; then log "set-pw: $TRY password -> still on login form (rejected)"; else log "set-pw: $TRY password -> ACCEPTED (left login form)"; fi
+    else log "set-pw: no login field for $TRY try (maybe already logged in)"; fi
+  done
+fi
+
 # Lifecycle: background/foreground, then force-stop and relaunch.
 adb shell input keyevent KEYCODE_HOME; sleep 5
 log "after HOME: $(alive)"
