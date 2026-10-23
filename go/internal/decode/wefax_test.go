@@ -2,6 +2,7 @@ package decode
 
 import (
 	"bytes"
+	"image"
 	"image/png"
 	"math"
 	"math/rand"
@@ -19,6 +20,8 @@ type wefaxFixture struct {
 	noiseAmp     float64 // additive white noise amplitude
 	startToneSec float64 // 300 Hz IOC-576 start tone before phasing
 	bars         bool    // image content: horizontal bars (mid-chart captures)
+	gradient     bool    // image content: vertical gray-scale bands (tone fidelity)
+	gradBands    int     // number of gradient bands; 0 -> 6
 	carrierHz    float64 // steady carrier near the white tone (beat test)
 	carrierAmp   float64
 }
@@ -67,6 +70,23 @@ func encodeWEFAX(f wefaxFixture) []float64 {
 					// periodic white wedge.
 					if il%7 < 3 && px > 0.1+0.3*math.Abs(math.Sin(float64(il/7))) && px < 0.8 {
 						grey = 1.0
+					}
+				} else if f.gradient {
+					// Checkerboard cells take the x-band gray level
+					// instead of white: the proven tracker-friendly
+					// structure exercises intermediate tones, not
+					// just the bilevel endpoints. Flat band content
+					// alone biases the local clock votes (plateaus).
+					nb := f.gradBands
+					if nb == 0 {
+						nb = 6
+					}
+					if (int(px*20)+il)%2 == 0 {
+						band := int(px * float64(nb))
+						if band >= nb {
+							band = nb - 1
+						}
+						grey = float64(band) / float64(nb - 1)
 					}
 				} else if il < f.imageLines/2 {
 					// Diagonal stripe over the upper half, checkerboard below.
@@ -202,6 +222,70 @@ func TestWEFAXRejectsConstantTone(t *testing.T) {
 func TestWEFAXRejectsShort(t *testing.T) {
 	if _, err := WEFAXImage(make([]float64, 4000), 12000, 120, 576); err == nil {
 		t.Fatal("short recording accepted")
+	}
+}
+
+// wefaxBandMeans returns the mean rendered gray level at the centers
+// of nb vertical bands, averaged over image rows [y0, y1). The middle
+// 40% of each band is sampled, away from band edges.
+func wefaxBandMeans(img image.Image, nb, y0, y1 int) []float64 {
+	b := img.Bounds()
+	w := b.Dx()
+	if y1 > b.Dy() {
+		y1 = b.Dy()
+	}
+	means := make([]float64, nb)
+	counts := make([]int, nb)
+	for y := y0; y < y1; y++ {
+		for band := 0; band < nb; band++ {
+			for k := 0; k < 8; k++ {
+				x := int((float64(band) + 0.3 + 0.4*float64(k)/7) * float64(w) / float64(nb))
+				g, _, _, _ := img.At(x, y).RGBA()
+				means[band] += float64(g >> 8)
+				counts[band]++
+			}
+		}
+	}
+	for band := range means {
+		if counts[band] > 0 {
+			means[band] /= float64(counts[band])
+		}
+	}
+	return means
+}
+
+func TestWEFAXGradientToneMapping(t *testing.T) {
+	// Intermediate gray levels ("colour" coverage): checkerboard cells
+	// take one of six x-band levels, so the render must order the bands
+	// dark to light with no inversion, use the full tone range, and
+	// hold that alignment down the chart. Measured on this fixture
+	// (2026-10-23, deterministic): band means about
+	// [39 44 54 107 128 149], stable within 5 gray levels between the
+	// top and bottom of the image region; the dark-end compression is
+	// the two-bin ratio demod, asserted here only as ordering.
+	f := wefaxFixture{rate: 12000, phasingLines: 60, imageLines: 80, startToneSec: 3, gradient: true, noiseAmp: 0.15}
+	pngData, rep := decodeWEFAXFixture(t, f)
+	if rep.SyncSource != "phasing-wedge" {
+		t.Errorf("sync source %q, want phasing-wedge", rep.SyncSource)
+	}
+	img, err := png.Decode(bytes.NewReader(pngData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	top := wefaxBandMeans(img, 6, 70, 90)
+	bottom := wefaxBandMeans(img, 6, 100, 130)
+	for b := 1; b < 6; b++ {
+		if top[b] < top[b-1]+3 {
+			t.Errorf("band %d mean %.0f not above band %d mean %.0f; tone order broken", b, top[b], b-1, top[b-1])
+		}
+	}
+	if top[5]-top[0] < 80 {
+		t.Errorf("tone range %.0f, want >= 80 (black-to-white endpoints)", top[5]-top[0])
+	}
+	for b := 0; b < 6; b++ {
+		if math.Abs(top[b]-bottom[b]) > 12 {
+			t.Errorf("band %d mean drifted %.0f -> %.0f down-chart; alignment unstable", b, top[b], bottom[b])
+		}
 	}
 }
 
