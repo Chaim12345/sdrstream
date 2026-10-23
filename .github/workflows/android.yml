@@ -64,7 +64,7 @@ jobs:
           "$APKSIGNER" sign --ks /tmp/release.keystore \
             --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
             --key-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
-            --ks-key-name "$ANDROID_KEY_ALIAS" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
             --out "$APK.signed" "$APK"
           mv "$APK.signed" "$APK"
           rm -f /tmp/release.keystore
