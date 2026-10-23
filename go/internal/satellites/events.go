@@ -1,5 +1,10 @@
 package satellites
 
+import (
+	"strings"
+	"time"
+)
+
 // Event is a dated transmission event that temporarily overrides a
 // satellite's usual downlink plan, such as an ARISS SSTV series. Event
 // entries are added only from current, dated source evidence and carry
@@ -37,4 +42,46 @@ var Events = []Event{
 			"transceiver stays on 437.825 MHz APRS until end of 2026. Series 34 uses 70cm, not the " +
 			"legacy 145.800 MHz downlink.",
 	},
+}
+
+// ActiveEvent returns the dated event overriding the satellite's downlink
+// plan at time at, or nil. Window bounds are inclusive; entries whose
+// dates do not parse are skipped rather than trusted.
+func ActiveEvent(name string, at time.Time) *Event {
+	for i := range Events {
+		ev := &Events[i]
+		if !strings.EqualFold(strings.TrimSpace(ev.Satellite), strings.TrimSpace(name)) {
+			continue
+		}
+		start, err1 := time.Parse(time.RFC3339, ev.StartUTC)
+		end, err2 := time.Parse(time.RFC3339, ev.EndUTC)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		if !at.Before(start) && !at.After(end) {
+			return ev
+		}
+	}
+	return nil
+}
+
+// EventCovering returns the dated event whose window intersects
+// [start, end], or nil. Used at planning time: an event starting inside
+// the lookahead window must already drive frequency and receiver choice.
+func EventCovering(name string, start, end time.Time) *Event {
+	for i := range Events {
+		ev := &Events[i]
+		if !strings.EqualFold(strings.TrimSpace(ev.Satellite), strings.TrimSpace(name)) {
+			continue
+		}
+		evStart, err1 := time.Parse(time.RFC3339, ev.StartUTC)
+		evEnd, err2 := time.Parse(time.RFC3339, ev.EndUTC)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		if evStart.Before(end) && start.Before(evEnd) {
+			return ev
+		}
+	}
+	return nil
 }

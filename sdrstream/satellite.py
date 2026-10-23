@@ -52,6 +52,8 @@ class ChasePlan:
     #: Preferred over ``tle_text`` by :func:`_record_pass` because it survives
     #: the six-digit catalog numbers the TLE layout cannot hold.
     orbit_record: Optional[object] = None
+    #: The dated event that overrode the catalogue downlink, when one did.
+    event: Optional[object] = None
 
     def summary(self) -> str:
         lines = [
@@ -96,14 +98,21 @@ def plan_pass(
     TLE set. The GP path is preferred because it is the only one that carries
     six-digit NORAD catalog numbers.
     """
+    from . import events as events_module
     from . import tle as tle_module
 
+    # A dated transmission event (e.g. an ARISS SSTV series) temporarily
+    # overrides the satellite's catalogue downlink: tune the event
+    # frequency and vet receiver coverage against it, not the legacy one.
+    event = events_module.active_event(satellite.name, at=start)
+    downlink_hz = event.downlink_hz if event is not None else satellite.downlink_hz
+
     if receiver is None and (latitude is None or longitude is None):
-        candidates = catalogue.for_frequency(satellite.downlink_hz)
+        candidates = catalogue.for_frequency(downlink_hz)
         if not candidates:
             raise ValueError(
                 "no known receiver covers %.4f MHz; pass a receiver or "
-                "observer coordinates" % (satellite.downlink_hz / 1e6)
+                "observer coordinates" % (downlink_hz / 1e6)
             )
         receiver = candidates[0]
 
@@ -116,10 +125,10 @@ def plan_pass(
         latitude, longitude = receiver.location
 
     # A bare observer has no bands to check; only real receivers are vetted.
-    if receiver.bands and not receiver.can_hear(satellite.downlink_hz):
+    if receiver.bands and not receiver.can_hear(downlink_hz):
         raise ValueError(
             "%s cannot hear %.4f MHz (bands: %s)"
-            % (receiver.url, satellite.downlink_hz / 1e6,
+            % (receiver.url, downlink_hz / 1e6,
                ", ".join(b.name for b in receiver.bands) or "none")
         )
 
@@ -171,7 +180,7 @@ def plan_pass(
     while t <= end:
         shifts.append(
             tracker.look_angle(t, latitude, longitude)
-            .doppler_shift(satellite.downlink_hz)
+            .doppler_shift(downlink_hz)
         )
         t += timedelta(seconds=10)
     return ChasePlan(
@@ -180,10 +189,11 @@ def plan_pass(
         passes=passes,
         start=begin,
         end=end,
-        start_frequency_hz=satellite.downlink_hz + (shifts[0] if shifts else 0.0),
+        start_frequency_hz=downlink_hz + (shifts[0] if shifts else 0.0),
         doppler_range_hz=(int(min(shifts)), int(max(shifts))) if shifts else (0, 0),
         tle_text=text,
         orbit_record=record,
+        event=event,
     )
 
 

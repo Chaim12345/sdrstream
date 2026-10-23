@@ -124,6 +124,10 @@ func (s *Service) Run(ctx context.Context) error {
 			}
 			continue
 		}
+		if next.event != "" {
+			s.say(fmt.Sprintf("event override: %s - tuning %.4f MHz per dated table",
+				next.event, float64(next.plan.Satellite.DownlinkHz)/1e6))
+		}
 		s.say(fmt.Sprintf("next: %s over %s, rise %s UTC (peak %.0f deg), waiting %s",
 			next.plan.Satellite.Name, shortURL(next.plan.Receiver.URL),
 			next.plan.Passes[0].Rise.Format("15:04:05"), next.plan.Passes[0].MaxElevation(),
@@ -140,6 +144,7 @@ type candidate struct {
 	plan     satellite.ChasePlan
 	priority int
 	key      string
+	event    string // dated event that overrode the catalogue downlink, "" if none
 }
 
 // plan finds the best next pass: earliest rise wins; when two passes overlap,
@@ -150,6 +155,18 @@ func (s *Service) plan() (*candidate, time.Duration) {
 		sat, err := satByName(name)
 		if err != nil || sat.Status != "active" {
 			continue
+		}
+		// A dated transmission event (e.g. an ARISS SSTV series on 70cm)
+		// overrides the catalogue downlink for the whole lookahead window:
+		// tune the event frequency and vet receiver coverage against it,
+		// never silently against the legacy default.
+		eventName := ""
+		now := time.Now()
+		windowEnd := now.Add(time.Duration(s.opts.LookaheadH * float64(time.Hour)))
+		if ev := satellites.EventCovering(sat.Name, now, windowEnd); ev != nil {
+			sat.DownlinkHz = ev.DownlinkHz
+			sat.Mode = ev.Mode
+			eventName = ev.Name
 		}
 		receivers := catalogue.ForFrequency(float64(sat.DownlinkHz))
 		if len(receivers) == 0 {
@@ -175,7 +192,7 @@ func (s *Service) plan() (*candidate, time.Duration) {
 				s.done[key] = true
 				continue
 			}
-			candidates = append(candidates, candidate{sat: sat, plan: one, priority: priority, key: key})
+			candidates = append(candidates, candidate{sat: sat, plan: one, priority: priority, key: key, event: eventName})
 			break // only the first open pass per satellite
 		}
 	}

@@ -73,8 +73,8 @@ def plan(passes, satellites, receivers, min_el=MIN_ELEVATION_DEG):
 
     ``passes`` is a mapping satellite-name -> (pass, receiver) pairs
     pre-filtered to rise above ``min_el``. Priority order wins over
-    start time: an earlier NOAA 15 pass beats a later ISS pass, and a
-    NOAA 15 pass beats an ISS pass at any time.
+    start time: an earlier pass of a higher-priority satellite beats a
+    later pass of a lower-priority one at any time.
     """
     for sat in satellites:
         best: Optional[Plan] = None

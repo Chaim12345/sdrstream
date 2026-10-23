@@ -8,6 +8,8 @@ expire. The Go implementation is authoritative.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Optional
 
 
 @dataclass
@@ -49,3 +51,27 @@ EVENTS = [
         ),
     ),
 ]
+
+
+def _parse_when(text: str) -> Optional[datetime]:
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def active_event(satellite: str, at: Optional[datetime] = None) -> Optional[Event]:
+    """The dated event overriding the satellite's downlink plan at ``at``
+    (UTC, default now), or None. Bounds are inclusive; entries whose dates
+    do not parse are skipped rather than trusted."""
+    at = at or datetime.now(timezone.utc)
+    want = satellite.strip().upper()
+    for ev in EVENTS:
+        if ev.satellite.strip().upper() != want:
+            continue
+        start, end = _parse_when(ev.start_utc), _parse_when(ev.end_utc)
+        if start is None or end is None:
+            continue
+        if start <= at <= end:
+            return ev
+    return None
