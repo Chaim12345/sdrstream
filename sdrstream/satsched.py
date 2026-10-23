@@ -11,9 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-# Default recording priority, in order. NOAA 15 leads: it is the
-# strongest transmitter and its APT signal is the easiest first decode.
-DEFAULT_PRIORITY = ["NOAA 15", "NOAA 19", "NOAA 18", "ISS"]
+# Default recording priority, in order. NOAA 15/18/19 were decommissioned
+# in 2025 (NOAA OSPO) and their APT transmitters are unvalidated
+# (2026-10-23 attempts were noise-only), so the automatic default does not
+# schedule retired birds; they remain selectable by explicit request.
+# ISS leads: current, validated traffic (SSTV events, APRS).
+DEFAULT_PRIORITY = ["ISS"]
 
 # A NOAA pass only counts if it rises above this elevation: APT decodes
 # need signal, and low passes drown in noise.

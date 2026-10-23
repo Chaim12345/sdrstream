@@ -35,7 +35,7 @@ type Options struct {
 	LookaheadH   float64  // default 24
 	LeadSeconds  float64  // pre-tune before AOS; default 90
 	TailSeconds  float64  // keep recording after LOS; default 60
-	Priority     []string // satellite names, highest first; default: NOAA 15/18/19 then ISS
+	Priority     []string // satellite names, highest first; default: ISS (see below)
 	Offline      bool     // use cached TLEs only
 	Server       *web.Server
 	Say          func(string) // progress lines; nil logs
@@ -75,7 +75,12 @@ func New(opts Options) *Service {
 		opts.TailSeconds = 60
 	}
 	if len(opts.Priority) == 0 {
-		opts.Priority = []string{"NOAA 15", "NOAA 19", "NOAA 18", "ISS"}
+		// NOAA 15/18/19 were decommissioned in 2025 (NOAA OSPO) and their
+		// APT transmitters are unvalidated - 2026-10-23 attempts were
+		// noise-only. Auto-scheduling must not default to retired birds;
+		// they stay selectable by explicit request. ISS leads: current,
+		// validated traffic (SSTV events, APRS).
+		opts.Priority = []string{"ISS"}
 	}
 	say := opts.Say
 	if say == nil {
