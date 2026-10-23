@@ -647,3 +647,17 @@ kbd {
 .sat-note { font-size: 11px; opacity: 0.75; margin-top: 2px; }
 
 .pass-warn { font-size: 12px; color: #e0a458; margin-top: 4px; }
+
+/* BEGIN decoder history enhancement (msglog.js) */
+.msglog-tools #msglog-state { flex-basis: 100%; font-size: .8rem; }
+#view-decodes .msglog { height: 32dvh; min-height: 190px; max-height: 420px; }
+.msglog-tools label { flex-basis: 100%; font-size: .85rem; color: var(--muted); }
+.msglog-tools input { flex: 1 1 210px; min-width: 0; min-height: 44px; }
+.msglog-tools button, .msglog-history-nav button, #msglog-modes button { min-height: 44px; }
+.msglog-export-note { flex-basis: 100%; font-size: .8rem; }
+#msglog .msg-detail { overflow-wrap: anywhere; min-width: 0; }
+@media (max-width: 480px) {
+  .msglog-tools, .msglog-history-nav { gap: 8px; }
+  .msglog-tools input { width: 100%; flex-basis: 100%; }
+}
+/* END decoder history enhancement */
