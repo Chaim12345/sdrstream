@@ -234,5 +234,17 @@
       },
       "gate_abs_pts": 2.5
     }
+  ],
+  "observed_reruns": [
+    {
+      "who": "independent QA rerun",
+      "when": "2026-10-23/24",
+      "result": "radio+12dB asr 17.0% (92/540) vs pinned 16.9% (91/540) - one-word cross-environment drift, within the +2.5pt gate"
+    },
+    {
+      "who": "harness owner recheck",
+      "when": "2026-10-24",
+      "result": "radio+12dB asr 16.9% reproduced exactly on the owner's sandbox"
+    }
   ]
 }
