@@ -3676,12 +3676,7 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 	updateMetrics()
 	noteKiwiProgress(host, results)
 	ownDeadline := errors.Is(ctx.Err(), context.DeadlineExceeded)
-	processed := make(map[string]bool, len(results))
 	for _, result := range results {
-		processed[result.Target.Name] = true
-	}
-	for _, result := range results {
-		processed[result.Target.Name] = true
 		key := keys[result.Target.Name]
 		if key == "" {
 			continue
@@ -3730,44 +3725,61 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 		}
 		setScanResult(server, key, "decoded", result.Gate.Reason)
 	}
-	// Never advance past unprocessed targets: everything the session did not
-	// finish is deferred to the next visit, not reported as failed.
-	deferred := make(map[string]bool, len(remaining))
-	for _, target := range remaining {
-		deferred[target.Name] = true
+	return markSessionOutcomes(server, keys, targets, results, remaining, err, ownDeadline)
+}
+
+// markSessionOutcomes labels every queued scan row once a receiver
+// session ends. A session that ends cleanly at the target/time cap
+// leaves its unvisited targets "deferred" - they resume on the next
+// visit, never reported as failed. A session that ends on an error
+// (connection lost mid-target, refusal, timeout) marks every
+// unprocessed target with the failure instead: labeling those rows
+// "deferred" hid the real reason the station stopped decoding - under
+// the old code every target row claimed a cap on any session error.
+// The rotation cursor only advances over processed results either
+// way, so no target is silently skipped.
+func markSessionOutcomes(server *web.Server, keys map[string]string, targets []decode.HFTarget, results []decode.HFResult, remaining []decode.HFTarget, sessionErr error, ownDeadline bool) scanOutcome {
+	processed := make(map[string]bool, len(results))
+	for _, result := range results {
+		processed[result.Target.Name] = true
+	}
+	if sessionErr == nil {
+		// Never advance past unprocessed targets: everything the
+		// session did not finish is deferred to the next visit, not
+		// reported as failed.
+		for _, target := range remaining {
+			if processed[target.Name] {
+				continue
+			}
+			if key := keys[target.Name]; key != "" {
+				setScanResult(server, key, "deferred", "receiver session target/time cap; next visit resumes after the last processed target")
+			}
+		}
+		return scanOutcome{}
+	}
+	outcome := classifyScanFailure(sessionErr)
+	if ownDeadline {
+		outcome = scanOutcome{skipped: true}
+	}
+	state := "error"
+	if outcome.refused {
+		state = "refused/skipped"
+	}
+	if outcome.timedOut {
+		state = "timeout"
+	}
+	if ownDeadline {
+		state = "deferred"
+	}
+	for _, target := range targets {
 		if processed[target.Name] {
 			continue
 		}
 		if key := keys[target.Name]; key != "" {
-			setScanResult(server, key, "deferred", "receiver session target/time cap; next visit resumes after the last processed target")
+			setScanResult(server, key, state, sessionErr.Error())
 		}
 	}
-	if err != nil {
-		outcome := classifyScanFailure(err)
-		if ownDeadline {
-			outcome = scanOutcome{skipped: true}
-		}
-		state := "error"
-		if outcome.refused {
-			state = "refused/skipped"
-		}
-		if outcome.timedOut {
-			state = "timeout"
-		}
-		if ownDeadline {
-			state = "deferred"
-		}
-		for _, target := range targets {
-			if processed[target.Name] || deferred[target.Name] {
-				continue
-			}
-			if key := keys[target.Name]; key != "" {
-				setScanResult(server, key, state, err.Error())
-			}
-		}
-		return outcome
-	}
-	return scanOutcome{}
+	return outcome
 }
 
 func setScanResult(server *web.Server, key string, state, result string) {
