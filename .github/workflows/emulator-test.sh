@@ -71,10 +71,22 @@ if [ "$INSTALL_OK" = 1 ]; then
     echo "tapped $ATTR=$VAL at $XY"
     return 0
   }
+  # A late dialog (battery-exemption prompt reappears on every cold start)
+  # can own the focused window and hide the menu node from the dump. Dismiss
+  # and retry a few times before declaring the control missing.
+  for i in 1 2 3; do
+    if tap_node content-desc Menu menu-open; then
+      break
+    fi
+    adb shell input keyevent KEYCODE_BACK >/dev/null 2>&1 || true
+    sleep 2
+    adb shell am start -n com.chaim12345.sdrstream/.MainActivity >/dev/null 2>&1 || true
+    sleep 3
+  done
   # Open the overflow menu via its always-visible button, then open the
   # password dialog. The password shown is generated fresh on the ephemeral
   # CI emulator - not the user's device password.
-  if tap_node content-desc Menu menu-open; then
+  if [ -f "$OUT/$LABEL-menu-open.png" ]; then
     tap_node text "Show UI password" password-dialog || true
     adb shell input keyevent KEYCODE_BACK || true
   fi
