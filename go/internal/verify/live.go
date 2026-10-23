@@ -115,6 +115,50 @@ func Image(kind string, data []byte) Result {
 	return Result{true, "image ok"}
 }
 
+// WEFAXImage gates a decoded WEFAX chart on the decoder's own sync
+// evidence, not on PNG variance alone: a confidently wrong sync (false
+// phasing wedge, biased period fit) still renders a large, high-variance
+// PNG. The structural Image checks run first and are unchanged.
+//
+// The floors below are decision thresholds derived from fixture
+// measurements on 2026-10-23, not physical constants: valid
+// phasing-wedge fixtures refined to wedge contrast >= 0.86 while a
+// false wedge measured 0.28; a good mid-chart line-correlation fit
+// scored period 0.37 / deskew 0.38 / drift 667 ppm while a biased fit
+// on adversarial content scored 0.31 / 0.29 / 2596 ppm. The drift
+// sanity bound is three times the largest fixture drift. When evidence
+// is ambiguous the verdict is not live.
+func WEFAXImage(kind string, data []byte, syncSource string, wedgeContrast, driftPPM, periodScore, deskewCorr float64) Result {
+	if r := Image(kind, data); !r.Live {
+		return r
+	}
+	diag := fmt.Sprintf("sync %s, wedge contrast %.2f, drift %+.0f ppm, period score %.2f, deskew %.2f",
+		syncSource, wedgeContrast, driftPPM, periodScore, deskewCorr)
+	const wedgeContrastMin = 0.5
+	const periodScoreMin = 0.35
+	const deskewMin = 0.30
+	const driftAbsMax = 2000
+	if driftPPM > driftAbsMax || driftPPM < -driftAbsMax {
+		return Result{false, "wefax: fitted drift beyond the sanity bound (" + diag + ")"}
+	}
+	switch syncSource {
+	case "phasing-wedge":
+		if wedgeContrast < wedgeContrastMin {
+			return Result{false, "wefax: refined wedge contrast below floor (" + diag + ")"}
+		}
+	case "line-correlation":
+		if periodScore < periodScoreMin || deskewCorr < deskewMin {
+			return Result{false, "wefax: mid-chart period fit below floor (" + diag + ")"}
+		}
+	default:
+		return Result{false, "wefax: unknown sync evidence (" + diag + ")"}
+	}
+	// The verdict attests the sync evidence above and PNG structure; it
+	// does not certify chart geometry or readability (the deskew metric
+	// itself is content-dependent).
+	return Result{true, "wefax verified: " + diag}
+}
+
 // Live rejects empty, fixture-like, unstructured, or malformed live output.
 // The scanner may show an unverified result in its status table, but only this
 // function authorizes a record to become a live gallery item.
@@ -132,6 +176,10 @@ func Live(kindValue, modeValue, detail string, imageData []byte, anchors ...stri
 		if modeValue != "sstv" && modeValue != "wefax" {
 			return errors.New("image mode is not SSTV/WEFAX")
 		}
+		// WEFAX charts are gated by the decoder's own sync-evidence
+		// verification (WEFAXImage, via the hfrun decode path) before
+		// they reach this gate; here we only require a real PNG, same
+		// as APT above.
 		verdict := Image(modeValue, imageData)
 		if !verdict.Live {
 			return fmt.Errorf("image verification rejected content: %s", verdict.Reason)

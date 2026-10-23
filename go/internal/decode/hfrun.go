@@ -178,9 +178,9 @@ func decodeHF(ctx context.Context, target HFTarget, server string, samples16 []i
 		}
 		result.Gate = verify.Text("navtex", result.Text, target.Expect)
 	case "wefax":
-		if pngData, err := WEFAXImage(samples, rate, target.LinesPerMin, target.IOC); err == nil {
+		if pngData, rep, err := WEFAXImageDetailed(samples, rate, target.LinesPerMin, target.IOC); err == nil {
 			result.ImagePNG = pngData
-			result.Gate = verify.Image("wefax", pngData)
+			result.Gate = verify.WEFAXImage("wefax", pngData, rep.SyncSource, rep.WedgeContrast, rep.DriftPPM, rep.PeriodScore, rep.DeskewCorr)
 		} else {
 			result.Gate = verify.Result{Live: false, Reason: err.Error()}
 		}

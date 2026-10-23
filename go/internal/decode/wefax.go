@@ -616,6 +616,26 @@ func (t *wefaxTrace) findPhasing(lineHops, fromLine, toLine int) (startLine int,
 		}
 		return acc / float64(n)
 	}
+	// A phasing block is a white wedge on BLACK lines (the fixture
+	// encoder's 5% wedge on black, and the DWD blocks the winLines
+	// comment cites). restBlack is the mean rest-of-line level over the
+	// candidate block; without this gate a tall light chart band scores
+	// 0.5+ as a false wedge (measured 2026-10-23: real blocks rest at
+	// about 0.05, a light band at 0.4+). The floor sits between those
+	// fixture measurements; it is not a physical constant.
+	const restBlackMax = 0.2
+	restBlack := func(off, s int) float64 {
+		acc, n := 0.0, 0
+		for l := s; l < s+winLines && l < nLines; l++ {
+			base := off + l*lineHops
+			acc += t.wedgeMean(base+wedge, base+lineHops)
+			n++
+		}
+		if n == 0 {
+			return 1
+		}
+		return acc / float64(n)
+	}
 	type cand struct {
 		s int
 		o int
@@ -692,8 +712,11 @@ func (t *wefaxTrace) findPhasing(lineHops, fromLine, toLine int) (startLine int,
 	// Earliest block within 2% of the best score: effectively the
 	// argmax, preferring the earlier block only on a near-tie (a
 	// clearly weaker early block is chart content faking a wedge).
+	// Candidates whose rest-of-line is not black are chart content
+	// faking a wedge and are skipped entirely, so a bright band cannot
+	// outscore a later real block either.
 	for _, c := range cands {
-		if c.v >= 0.98*best {
+		if c.v >= 0.98*best && restBlack(c.o, c.s) < restBlackMax {
 			return c.s, float64(c.o), c.v, true
 		}
 	}

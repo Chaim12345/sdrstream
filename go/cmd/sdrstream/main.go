@@ -3649,6 +3649,12 @@ func scanKiwiStation(ctx context.Context, server *web.Server, host string, targe
 			continue
 		}
 		activity := monitor.Activity{ID: int(time.Now().UnixNano()), Started: result.Started, FrequencyHz: result.Target.DialKHz * 1000, Kind: "data", Mode: result.Target.Kind, Detail: result.Text, VerificationAnchor: result.Target.Expect, Target: result.Target.Name, Source: host, AudioPath: audioPath}
+		if activity.Detail == "" && len(result.ImagePNG) > 0 {
+			// Image targets carry no text: surface the gate's sync
+			// diagnostics (wedge contrast, drift, deskew) so the
+			// gallery shows what was actually verified.
+			activity.Detail = result.Gate.Reason
+		}
 		imageData := result.ImagePNG
 		if len(imageData) > 0 {
 			activity.Kind = result.Target.Kind

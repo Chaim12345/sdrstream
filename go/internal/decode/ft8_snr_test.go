@@ -63,7 +63,7 @@ func ft8EncodeFreeText(t *testing.T, text string) [174]uint8 {
 	msg77 := new(big.Int).Lsh(n, 6)
 	var a91 [12]byte
 	for i := 0; i < 77; i++ {
-		if msg77.Bit(76 - i) != 0 {
+		if msg77.Bit(76-i) != 0 {
 			a91[i/8] |= 0x80 >> (i % 8)
 		}
 	}
@@ -96,7 +96,7 @@ func ft8EncodeFreeText(t *testing.T, text string) [174]uint8 {
 		}
 	}
 	// Gauss-Jordan to reduced row echelon form.
-	bit := func(r, j int) uint8 { return uint8(rows[r].a[j/64] >> (j % 64)) & 1 }
+	bit := func(r, j int) uint8 { return uint8(rows[r].a[j/64]>>(j%64)) & 1 }
 	for col := 0; col < 83; col++ {
 		pivot := -1
 		for r := col; r < 83; r++ {

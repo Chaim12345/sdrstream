@@ -87,7 +87,7 @@ func encodeWEFAX(f wefaxFixture) []float64 {
 							if band >= nb {
 								band = nb - 1
 							}
-							grey = float64(band) / float64(nb - 1)
+							grey = float64(band) / float64(nb-1)
 						}
 					}
 				} else if f.flatGradient {
@@ -102,7 +102,7 @@ func encodeWEFAX(f wefaxFixture) []float64 {
 					if band >= nb {
 						band = nb - 1
 					}
-					grey = float64(band) / float64(nb - 1)
+					grey = float64(band) / float64(nb-1)
 				} else if f.gradient {
 					// Checkerboard cells take the x-band gray level
 					// instead of white: the proven tracker-friendly
@@ -118,7 +118,7 @@ func encodeWEFAX(f wefaxFixture) []float64 {
 						if band >= nb {
 							band = nb - 1
 						}
-						grey = float64(band) / float64(nb - 1)
+						grey = float64(band) / float64(nb-1)
 					}
 				} else if il < f.imageLines/2 {
 					// Diagonal stripe over the upper half, checkerboard below.

@@ -18,9 +18,13 @@ func TestWEFAXFlatGradientPlateauBiasLimitation(t *testing.T) {
 	// comment in wefax.go); the render loses alignment down-chart and
 	// the band order breaks. Measured on this fixture (2026-10-23):
 	// top-of-chart means monotone, bottom-of-chart means
-	// [15 40 215 61 250 7] - order destroyed. A tracker fix makes the
-	// bottom means monotone too; when that happens, convert this into
-	// a correctness assertion instead of a limitation pin.
+	// [15 37 198 243 251 28] - order destroyed; the fitted drift is
+	// ~1184 ppm against a true 0, yet the sync-evidence gate still
+	// verifies it (real wedge, contrast 0.94, drift inside the sanity
+	// bound) and the deskew metric reads a vacuous 0.98 on flat
+	// content. A tracker fix makes the bottom means monotone and the
+	// drift honest; when that happens, convert this into a
+	// correctness assertion instead of a limitation pin.
 	f := wefaxFixture{rate: 12000, phasingLines: 60, imageLines: 80, startToneSec: 3, flatGradient: true, noiseAmp: 0.15}
 	pngData, _ := decodeWEFAXFixture(t, f)
 	img, err := png.Decode(bytes.NewReader(pngData))
@@ -47,25 +51,32 @@ func TestWEFAXFlatGradientPlateauBiasLimitation(t *testing.T) {
 	}
 }
 
-func TestWEFAXMidChartFalseWedgeLimitation(t *testing.T) {
-	// LIMITATION: mid-chart content with a tall light vertical band
-	// false-positives the phasing-wedge finder: the decoder reports a
-	// confident phasing-wedge sync with a wildly wrong drift instead of
-	// falling back to line correlation. Measured on this fixture
-	// (2026-10-23): sync "phasing-wedge", drift ~2981 ppm against a
-	// true 800 ppm, deskew corr 0.28. The verify.Image quality gate is
-	// geometry-blind (PNG validity, size, variance only), so such a
-	// render still passes as verified. A fix rejects the false wedge or
-	// fails the decode; when SyncSource stops being "phasing-wedge"
-	// here, convert this pin into a correctness assertion.
+func TestWEFAXMidChartFalseWedgeFixed(t *testing.T) {
+	// Fixed 2026-10-23: mid-chart content with a tall light vertical
+	// band used to false-positive the phasing-wedge finder (confident
+	// sync, drift ~2981 ppm vs true 800). The finder now requires a
+	// black rest-of-line, so this content falls back to line
+	// correlation. REMAINING LIMITATION: the wrap period fit is still
+	// biased on this gray-bar content (drift ~2596 ppm vs true 800,
+	// period score ~0.31), so the decode succeeds with wrong geometry;
+	// the verify.WEFAXImage gate rejects it via the period-score floor
+	// (0.35), which is what keeps it out of the verified gallery. If a
+	// better period estimator lands, the score rises and this test
+	// says to convert to a correctness assertion.
 	f := wefaxFixture{rate: 12000, imageLines: 120, bars: true, barGradient: true, gradBands: 4, lineSec: 0.5004, noiseAmp: 0.3}
 	_, rep := decodeWEFAXFixture(t, f)
-	if rep.SyncSource != "phasing-wedge" {
-		t.Errorf("sync source %q: false-wedge limitation no longer reproduces - if the decoder now rejects the wedge, convert this pin into a correctness assertion", rep.SyncSource)
+	if rep.SyncSource == "phasing-wedge" {
+		t.Error("false phasing-wedge sync is back: the rest-of-line blackness gate regressed")
+	}
+	if rep.SyncSource != "line-correlation" {
+		t.Errorf("sync source %q, want line-correlation fallback", rep.SyncSource)
+	}
+	if rep.PeriodScore >= 0.35 {
+		t.Errorf("period score %.2f now clears the verification floor: if drift is also near 800 the period fit improved - convert to a correctness assertion and re-derive the gate floor", rep.PeriodScore)
 	}
 	if math.Abs(rep.DriftPPM-800) < 500 {
-		t.Errorf("fitted drift %.0f ppm now near the true 800 ppm: limitation appears FIXED - convert this pin into a correctness assertion", rep.DriftPPM)
+		t.Logf("period fit now near the true 800 ppm (%.0f): bias fixed, tighten this test", rep.DriftPPM)
 	} else {
-		t.Logf("limitation stands: false phasing-wedge sync, drift %.0f ppm vs true 800", rep.DriftPPM)
+		t.Logf("remaining limitation stands: line-correlation fallback, drift %.0f ppm vs true 800, period score %.2f (gate rejects)", rep.DriftPPM, rep.PeriodScore)
 	}
 }
