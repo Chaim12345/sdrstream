@@ -120,6 +120,15 @@ func Image(kind string, data []byte) Result {
 // function authorizes a record to become a live gallery item.
 func Live(kindValue, modeValue, detail string, imageData []byte, anchors ...string) error {
 	if len(imageData) > 0 {
+		// APT images are gated by the APT decoder's own sync-lock
+		// verification before they reach this gate; here we only require
+		// a real PNG.
+		if modeValue == "apt" {
+			if !bytes.HasPrefix(imageData, []byte{0x89, 'P', 'N', 'G'}) {
+				return errors.New("apt image is not a PNG")
+			}
+			return nil
+		}
 		if modeValue != "sstv" && modeValue != "wefax" {
 			return errors.New("image mode is not SSTV/WEFAX")
 		}

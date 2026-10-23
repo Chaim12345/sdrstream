@@ -32,6 +32,8 @@ class Satellite:
     notes: str = ""
     #: Extra downlinks worth trying (beacons, telemetry, second channel).
     beacons: tuple = ()
+    #: CelesTrak element group carrying this satellite ("amateur" default).
+    group: str = "amateur"
 
     @property
     def downlink_khz(self) -> float:
@@ -56,6 +58,27 @@ class Satellite:
         """Doppler is significant enough to retune on UHF and above."""
         return self.downlink_hz >= 400_000_000
 
+
+#: 137 MHz weather-satellite downlinks. NOAA 15/18/19 were decommissioned in
+#: 2025 (NOAA OSPO) but their APT transmitters stayed on; notes carry the
+#: official status and the decoder confirms what is actually on the air.
+WEATHER_SATELLITES: Dict[str, Satellite] = {
+    s.name: s
+    for s in [
+        Satellite(
+            "NOAA 15", 25338, downlink_hz=137_620_000, mode="FM", group="weather",
+            notes="Decommissioned 2025-08-19 per NOAA OSPO; APT still reported on air. APT 137.620 MHz, wide FM.",
+        ),
+        Satellite(
+            "NOAA 18", 28654, downlink_hz=137_912_500, mode="FM", group="weather",
+            notes="Decommissioned 2025-06-06 per NOAA OSPO; APT still reported on air. APT 137.9125 MHz, wide FM.",
+        ),
+        Satellite(
+            "NOAA 19", 33591, downlink_hz=137_100_000, mode="FM", group="weather",
+            notes="Decommissioned 2025-08-13 per NOAA OSPO; APT still reported on air. APT 137.100 MHz, wide FM.",
+        ),
+    ]
+}
 
 #: Satellites most likely to be heard. Frequencies follow AMSAT's published
 #: coordination data; check the live TLE set for which are still transmitting.
@@ -259,12 +282,19 @@ def by_band(band: str) -> List[Satellite]:
 
 
 def by_name(name: str) -> Satellite:
-    """Look up a satellite, accepting the common short names."""
+    """Look up a satellite, accepting the common short names.
+
+    Searches the weather table too: NOAA 15/18/19 live there, and a pass
+    recording must not fail just because the bird is not an amateur sat.
+    """
     key = name.strip().upper()
-    if key in SATELLITES:
-        return SATELLITES[key]
-    for sat in SATELLITES.values():
-        if key == sat.name.upper() or key in sat.name.upper():
-            return sat
-    raise KeyError("unknown satellite %r; known: %s"
-                   % (name, ", ".join(sorted(SATELLITES))))
+    tables = (SATELLITES, WEATHER_SATELLITES)
+    for table in tables:
+        if key in table:
+            return table[key]
+    for table in tables:
+        for sat in table.values():
+            if key == sat.name.upper() or key in sat.name.upper():
+                return sat
+    known = sorted(list(SATELLITES) + list(WEATHER_SATELLITES))
+    raise KeyError("unknown satellite %r; known: %s" % (name, ", ".join(known)))

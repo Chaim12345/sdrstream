@@ -28,10 +28,11 @@ const userAgent = "sdrstream/0.1 (+satellite)"
 
 // Satellite bands we care about, in Hz.
 var amateurBands = map[string][2]float64{
-	"6m":   {50_000_000, 54_000_000},
-	"2m":   {144_000_000, 148_000_000},
-	"70cm": {420_000_000, 450_000_000},
-	"23cm": {1240_000_000, 1300_000_000},
+	"137mhz": {136_000_000, 138_000_000},
+	"6m":     {50_000_000, 54_000_000},
+	"2m":     {144_000_000, 148_000_000},
+	"70cm":   {420_000_000, 450_000_000},
+	"23cm":   {1240_000_000, 1300_000_000},
 }
 
 // statusResponse is the subset of /status.json the sweep uses.

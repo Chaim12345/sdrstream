@@ -70,7 +70,7 @@ func Unknown(limit int, status string, timeout time.Duration) ([]SeenSatellite, 
 		return nil, err
 	}
 	known := map[int]bool{}
-	for _, sat := range satellites.Table {
+	for _, sat := range satellites.All() {
 		known[sat.NoradID] = true
 	}
 	byID := map[int]*SeenSatellite{}

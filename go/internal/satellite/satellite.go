@@ -66,21 +66,37 @@ func (p ChasePlan) Summary() string {
 // General-Perturbations records and falling back to TLE text. GP records
 // are the modern element format: since the NORAD catalog passed 99,999 in
 // July 2026, new satellites are published only there, never as TLE text.
-func loadTracker(name, tleText string, offline bool) (*tracking.Tracker, error) {
+func loadTracker(name string, noradID int, group, tleText string, offline bool) (*tracking.Tracker, error) {
 	if tleText != "" {
 		return tracking.FromTLEText(tleText, name)
 	}
-	gp, err := tle.LoadGP("amateur", 24, offline, 60*time.Second)
+	if group == "" {
+		group = "amateur"
+	}
+	gp, err := tle.LoadGP(group, 24, offline, 60*time.Second)
 	if err == nil {
 		if tracker, gpErr := tracking.FromGPText(gp, name); gpErr == nil {
 			return tracker, nil
 		}
 	}
-	text, err := tle.Load("amateur", 24, offline, 60*time.Second)
+	text, err := tle.Load(group, 24, offline, 60*time.Second)
+	if err == nil {
+		if tracker, lookupErr := tracking.FromTLEText(text, name); lookupErr == nil {
+			return tracker, nil
+		}
+	}
+	// The group no longer carries this object (CelesTrak drops birds from
+	// their mission group when they are decommissioned, while still tracking
+	// them): fall back to the per-object catalogue-number lookup.
+	if noradID > 0 {
+		if single, catErr := tle.LoadCatnr(noradID, 24, offline, 60*time.Second); catErr == nil && single != "" {
+			return tracking.FromTLEText(single, name)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
-	return tracking.FromTLEText(text, name)
+	return nil, fmt.Errorf("no TLE found for %q in group %q or by catalogue number %d", name, group, noradID)
 }
 
 // PlanPass works out when and where to record sat. With receiver nil and no
@@ -115,7 +131,7 @@ func PlanPass(sat satellites.Sat, receiver *catalogue.Receiver,
 	}
 
 	text := tleText
-	tracker, err := loadTracker(sat.Name, text, offline)
+	tracker, err := loadTracker(sat.Name, sat.NoradID, sat.Group, text, offline)
 	if err != nil {
 		return ChasePlan{}, err
 	}
@@ -230,11 +246,34 @@ func modeFor(kind, mode string) string {
 	return strings.ToUpper(mode)
 }
 
+// aptBandwidthHz is the demodulator bandwidth NOAA APT needs: the downlink
+// is wide FM (+/-17 kHz deviation), so OpenWebRX's default narrow-FM filter
+// (~12.5 kHz) destroys the waveform. Weather-table birds only; amateur FM
+// voice satellites keep the narrow default.
+const aptBandwidthHz = int64(40000)
+
+// demodFor returns the receiver modulation and, where the receiver supports
+// it, an explicit bandwidth. Weather satellites get the wide filter APT
+// needs; everything else keeps the mode defaults.
+func demodFor(kind string, sat satellites.Sat) (string, *int64) {
+	mode := modeFor(kind, sat.Mode)
+	if kind == "openwebrx" && sat.Group == "weather" {
+		bw := aptBandwidthHz
+		return mode, &bw
+	}
+	return mode, nil
+}
+
 // segment opens a fresh connection, tunes, records one segment, closes.
+// say may be nil; it receives the profile-selection and bandwidth facts so a
+// capture log proves the audio chain that produced (or failed) a decode.
 func segment(ctx context.Context, plan ChasePlan, frequencyHz float64,
-	window time.Duration) ([]int16, int, error) {
+	window time.Duration, say func(string)) ([]int16, int, error) {
+	if say == nil {
+		say = func(string) {}
+	}
 	kind := plan.Receiver.Kind
-	mode := modeFor(kind, plan.Satellite.Mode)
+	mode, bandwidth := demodFor(kind, plan.Satellite)
 	if kind == "openwebrx" {
 		client, err := openwebrx.New(plan.Receiver.URL, openwebrx.DefaultOptions())
 		if err != nil {
@@ -244,8 +283,31 @@ func segment(ctx context.Context, plan ChasePlan, frequencyHz float64,
 			return nil, 0, err
 		}
 		defer client.Close()
+		// Tuning only works on a profile whose span covers the target
+		// frequency; servers often default to an HF profile. The receiver's
+		// band names carry the profile display names recorded when the
+		// receiver was verified, so select the matching one first.
+		profileMatched := false
+		if band, ok := plan.Receiver.BandFor(frequencyHz); ok && band.Name != "" {
+			for _, profile := range client.ProfileList() {
+				if strings.Contains(strings.ToLower(profile.Name), strings.ToLower(band.Name)) {
+					if err := client.SelectProfile(ctx, profile.Key); err != nil {
+						return nil, 0, err
+					}
+					say(fmt.Sprintf("  selected profile %s (%s)", profile.Key, profile.Name))
+					profileMatched = true
+					break
+				}
+			}
+			if !profileMatched {
+				say(fmt.Sprintf("  no profile matching band %q; tuning the server's default profile", band.Name))
+			}
+		}
+		if bandwidth != nil {
+			say(fmt.Sprintf("  wide-FM demod for APT: %s bandwidth %d Hz", mode, *bandwidth))
+		}
 		freq := int64(frequencyHz)
-		if err := client.Tune(ctx, &freq, mode, nil); err != nil {
+		if err := client.Tune(ctx, &freq, mode, bandwidth); err != nil {
 			return nil, 0, err
 		}
 		return client.RecordSamples(ctx, window)
@@ -277,7 +339,7 @@ func Chase(ctx context.Context, plan ChasePlan, outPath string,
 		say = func(string) {}
 	}
 	text := plan.TLEText
-	tracker, err := loadTracker(plan.Satellite.Name, text, offline)
+	tracker, err := loadTracker(plan.Satellite.Name, plan.Satellite.NoradID, plan.Satellite.Group, text, offline)
 	if err != nil {
 		return 0, err
 	}
@@ -322,7 +384,7 @@ func Chase(ctx context.Context, plan ChasePlan, outPath string,
 			break
 		}
 		window := math.Min(segmentSeconds, remaining)
-		samples, segmentRate, err := segment(ctx, plan, current, time.Duration(window*float64(time.Second)))
+		samples, segmentRate, err := segment(ctx, plan, current, time.Duration(window*float64(time.Second)), say)
 		if err != nil {
 			failures++
 			say(fmt.Sprintf("  segment failed (%s); retrying in %.0f s",
@@ -332,6 +394,14 @@ func Chase(ctx context.Context, plan ChasePlan, outPath string,
 			case <-ctx.Done():
 				return 0, ctx.Err()
 			}
+			continue
+		}
+		if len(samples) == 0 {
+			// No error, but also no audio: the same wedged-receiver
+			// symptom the watchdog targets. Count it as a failure so the
+			// next segment reconnects instead of stacking silent windows.
+			failures++
+			say("  segment returned no audio; reconnecting")
 			continue
 		}
 		failures = 0

@@ -725,6 +725,38 @@ func (c *Client) RecordSamples(ctx context.Context, duration time.Duration) ([]i
 	return samples, rate, nil
 }
 
+// WaitAudio blocks until the first audio chunk arrives, the receiver
+// reports an error, or timeout expires. It exists so callers can fail a
+// tune fast when a server accepts the tuning but streams nothing (a dead
+// demodulator or a wedged post-idle connection), instead of waiting out a
+// whole recording window on silence. The first chunk is consumed; callers
+// lose well under a second of audio, which is the right trade against
+// missing a whole pass.
+func (c *Client) WaitAudio(ctx context.Context, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-timer.C:
+			return fmt.Errorf("no audio within %s of tuning", timeout)
+		case <-ctx.Done():
+			return ctx.Err()
+		case event, ok := <-c.audioEvents:
+			if !ok {
+				return fmt.Errorf("receiver connection closed before audio")
+			}
+			if event.Type == "audio" {
+				return nil
+			}
+			if event.Type == "error" {
+				if err, ok := event.Value.(error); ok {
+					return err
+				}
+			}
+		}
+	}
+}
+
 // Concat flattens chunks into a single sample slice.
 func Concat(chunks []AudioChunk) []int16 {
 	total := 0

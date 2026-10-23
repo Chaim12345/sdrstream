@@ -5,17 +5,23 @@ import (
 	"sort"
 )
 
-// ForFrequency returns receivers whose published bands cover frequencyHz,
-// sorted by URL.
+// ForFrequency returns receivers whose published bands cover frequencyHz:
+// live-verified VHF/UHF receivers first (they actually answered and
+// streamed), then the generated WebSDR table sorted by URL.
 func ForFrequency(frequencyHz float64) []Receiver {
-	var out []Receiver
+	out := ForFrequencyVerified(frequencyHz)
+	seen := map[string]bool{}
+	for _, receiver := range out {
+		seen[receiver.URL] = true
+	}
+	var rest []Receiver
 	for _, receiver := range Table {
-		if receiver.CanHear(frequencyHz) {
-			out = append(out, receiver)
+		if receiver.CanHear(frequencyHz) && !seen[receiver.URL] {
+			rest = append(rest, receiver)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].URL < out[j].URL })
-	return out
+	sort.Slice(rest, func(i, j int) bool { return rest[i].URL < rest[j].URL })
+	return append(out, rest...)
 }
 
 // Nearest returns up to limit receivers that can hear frequencyHz, nearest to
