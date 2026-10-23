@@ -241,12 +241,12 @@ public class MainActivity extends Activity {
         try {
             Diag.writeReportFile(this);
             ArrayList<Uri> uris = new ArrayList<>();
-            uris.add(LogProvider.uriFor(Diag.DIAG_TXT));
+            uris.add(LogProvider.uriFor(this, Diag.DIAG_TXT));
             if (new File(getFilesDir(), Diag.ENGINE_LOG).exists()) {
-                uris.add(LogProvider.uriFor(Diag.ENGINE_LOG));
+                uris.add(LogProvider.uriFor(this, Diag.ENGINE_LOG));
             }
             if (new File(getFilesDir(), Diag.CRASH_LOG).exists()) {
-                uris.add(LogProvider.uriFor(Diag.CRASH_LOG));
+                uris.add(LogProvider.uriFor(this, Diag.CRASH_LOG));
             }
             Intent send = new Intent(Intent.ACTION_SEND_MULTIPLE);
             send.setType("text/plain");

@@ -39,7 +39,7 @@
 
         <provider
             android:name=".LogProvider"
-            android:authorities="com.chaim12345.sdrstream.logs"
+            android:authorities="${applicationId}.logs"
             android:exported="false"
             android:grantUriPermissions="true" />
     </application>

@@ -1,6 +1,7 @@
 package com.chaim12345.sdrstream;
 
 import android.content.ContentProvider;
+import android.content.Context;
 import android.content.ContentValues;
 import android.database.Cursor;
 import android.database.MatrixCursor;
@@ -16,10 +17,17 @@ import java.io.FileNotFoundException;
  * content:// URIs. Read-only, whitelisted file names, not exported.
  */
 public class LogProvider extends ContentProvider {
-    public static final String AUTHORITY = "com.chaim12345.sdrstream.logs";
+    /**
+     * Authority is derived from the runtime package name so a debug
+     * variant installed side by side (applicationId suffix) does not
+     * collide with the release app's provider.
+     */
+    public static String authority(Context context) {
+        return context.getPackageName() + ".logs";
+    }
 
-    public static Uri uriFor(String name) {
-        return new Uri.Builder().scheme("content").authority(AUTHORITY).path(name).build();
+    public static Uri uriFor(Context context, String name) {
+        return new Uri.Builder().scheme("content").authority(authority(context)).path(name).build();
     }
 
     private File resolve(Uri uri) throws FileNotFoundException {
