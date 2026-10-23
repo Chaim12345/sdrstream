@@ -226,3 +226,137 @@ func TestPruneCapturesKeepsAccountingWhenRemoveFails(t *testing.T) {
 		t.Errorf("new.wav survived the size pass: %v", err)
 	}
 }
+
+func TestPruneCapturesSkipsInProcessPublish(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	wav := filepath.Join(dir, "busy.wav")
+	if err := os.WriteFile(wav, make([]byte, 100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sidecar := filepath.Join(dir, "busy.txt")
+	if err := os.WriteFile(sidecar, []byte("kind=voice\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := now.Add(-2 * time.Hour)
+	if err := os.Chtimes(wav, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	finish := web.BeginCapturePublish(dir, "busy.wav")
+	// A same-name republish lands its new sidecar while the hold is up:
+	// the pruner must not remove it from under the producer.
+	if err := os.WriteFile(sidecar, []byte("kind=voice\nverified=true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	removed, _, err := pruneCaptures(dir, 0, time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Fatalf("removed = %d during publish, want 0", removed)
+	}
+	if _, err := os.Stat(wav); err != nil {
+		t.Errorf("WAV pruned mid-publish: %v", err)
+	}
+	data, err := os.ReadFile(sidecar)
+	if err != nil || string(data) != "kind=voice\nverified=true\n" {
+		t.Errorf("republished sidecar damaged mid-publish: %q, %v", data, err)
+	}
+
+	finish()
+	removed, _, err = pruneCaptures(dir, 0, time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d after publish finished, want 1", removed)
+	}
+	if _, err := os.Stat(wav); !os.IsNotExist(err) {
+		t.Errorf("WAV survives after publish finished: %v", err)
+	}
+}
+
+func TestPruneCapturesDeletesVerifiedPerFlagPolicy(t *testing.T) {
+	// The -captures-max-gb/-captures-retain pruner's documented policy
+	// caps the whole archive, verified captures included - unlike the
+	// web retention path, which never deletes verified. The shared
+	// coordination primitive must not smuggle the web exemption in.
+	dir := t.TempDir()
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	wav := filepath.Join(dir, "verified.wav")
+	if err := os.WriteFile(wav, make([]byte, 100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "verified.txt"), []byte("kind=voice\nverified=true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := now.Add(-2 * time.Hour)
+	if err := os.Chtimes(wav, old, old); err != nil {
+		t.Fatal(err)
+	}
+	removed, _, err := pruneCaptures(dir, 0, time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1: flag policy caps verified captures too", removed)
+	}
+	if _, err := os.Stat(wav); !os.IsNotExist(err) {
+		t.Errorf("verified capture survived flag prune: %v", err)
+	}
+}
+
+func TestPruneCapturesConcurrentWithWebRemoval(t *testing.T) {
+	// The CLI prune loop and the web retention loop can run in the same
+	// process; both coordinate through one registry. While a publish is
+	// held, both must skip; afterwards exactly one plain removal wins.
+	dir := t.TempDir()
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	wav := filepath.Join(dir, "race.wav")
+	if err := os.WriteFile(wav, make([]byte, 100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := now.Add(-2 * time.Hour)
+	if err := os.Chtimes(wav, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	finish := web.BeginCapturePublish(dir, "race.wav")
+	type result struct {
+		kind string
+		err  error
+	}
+	results := make(chan result, 2)
+	go func() {
+		_, _, err := pruneCaptures(dir, 0, time.Hour, now)
+		results <- result{"cli", err}
+	}()
+	go func() {
+		err := web.RemoveCaptureIfNotPublishing(dir, "race.wav", func() error {
+			return os.Remove(wav)
+		})
+		results <- result{"web", err}
+	}()
+	for i := 0; i < 2; i++ {
+		res := <-results
+		if res.kind == "cli" && res.err != nil {
+			t.Fatalf("cli prune error: %v", res.err)
+		}
+		if res.kind == "web" && !errors.Is(res.err, web.ErrCaptureBusy) {
+			t.Fatalf("web removal = %v, want ErrCaptureBusy", res.err)
+		}
+	}
+	if _, err := os.Stat(wav); err != nil {
+		t.Fatalf("WAV removed while publish held: %v", err)
+	}
+	finish()
+
+	removed, _, err := pruneCaptures(dir, 0, time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d after hold released, want 1", removed)
+	}
+}

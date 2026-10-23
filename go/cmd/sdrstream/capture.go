@@ -271,13 +271,28 @@ func pruneCapturesWith(dir string, maxBytes int64, maxAge time.Duration, now tim
 	removed := 0
 	var freed int64
 	remove := func(file item) {
-		path := filepath.Join(dir, file.name)
-		if err := removeFile(path); err != nil {
-			// The file survived; keep its bytes in the accounting or the
-			// size loop stops early and a full disk never drains.
+		// Coordinate with in-process producers and decoders through the
+		// web package's publish registry: a capture being published or
+		// decoded right now is skipped (retried next pass), and the WAV
+		// plus sidecar go under the same lock so a same-name republish
+		// cannot have its new sidecar removed from under it. The delete
+		// itself stays plain: this pruner's documented policy caps the
+		// whole archive, verified captures included, so unlike the web
+		// retention path there is no verified exemption here.
+		err := web.RemoveCaptureIfNotPublishing(dir, file.name, func() error {
+			path := filepath.Join(dir, file.name)
+			if err := removeFile(path); err != nil {
+				return err
+			}
+			_ = os.Remove(filepath.Join(dir, strings.TrimSuffix(file.name, ".wav")+".txt"))
+			return nil
+		})
+		if err != nil {
+			// Busy or failed removal: the file survived; keep its bytes
+			// in the accounting or the size loop stops early and a full
+			// disk never drains.
 			return
 		}
-		_ = os.Remove(filepath.Join(dir, strings.TrimSuffix(file.name, ".wav")+".txt"))
 		total -= file.size
 		removed++
 		freed += file.size
