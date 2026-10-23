@@ -230,13 +230,34 @@ func getJSON(path string, target interface{}, timeout time.Duration) error {
 }
 
 // Observations returns recent observations of one satellite by NORAD id.
+//
+// The network API's "satellite" query parameter does not filter by NORAD
+// catalogue id (observed 2026-10-23: satellite=25544 returned a mixed feed
+// of every satellite), so the results are filtered client-side on
+// norad_cat_id. Callers keep passing the NORAD id.
 func Observations(noradID int, limit int, timeout time.Duration) ([]Observation, error) {
 	path := fmt.Sprintf("/observations/?satellite=%d&format=json&limit=%d", noradID, limit)
 	var observations []Observation
 	if err := getJSON(path, &observations, timeout); err != nil {
 		return nil, err
 	}
-	return observations, nil
+	return onlyNorad(observations, noradID), nil
+}
+
+// onlyNorad keeps the observations whose NORAD id matches. An observation
+// with no NORAD id is kept as-is: the caller asked for data and an
+// unlabelled row is better than none.
+func onlyNorad(observations []Observation, noradID int) []Observation {
+	if noradID <= 0 {
+		return observations
+	}
+	var out []Observation
+	for _, o := range observations {
+		if o.NoradID == noradID || o.NoradID == 0 {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // Recent returns the unfiltered recent-observations feed.
@@ -263,7 +284,7 @@ func Between(start, end time.Time, noradID, limit int, timeout time.Duration) ([
 	if err := getJSON(path, &observations, timeout); err != nil {
 		return nil, err
 	}
-	return observations, nil
+	return onlyNorad(observations, noradID), nil
 }
 
 // Transmitters returns the DB's transmitter list for one satellite.
