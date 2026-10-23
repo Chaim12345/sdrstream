@@ -118,15 +118,31 @@ func (r *scanRoster) StartRefresh(ctx context.Context) {
 		return
 	}
 	go func() {
-		timer := time.NewTimer(r.interval)
+		// Until the first successful refresh, retry quickly instead of
+		// waiting a full interval: the initial fetch at process start runs
+		// before the network is necessarily up (notably right after an app
+		// launch on a phone), and an hour of empty roster reads as a dead
+		// app. After a success, fall back to the configured cadence.
+		const failureRetry = 2 * time.Minute
+		next := failureRetry
+		r.refreshMu.Lock()
+		if !r.lastRefresh.IsZero() {
+			next = r.interval
+		}
+		r.refreshMu.Unlock()
+		timer := time.NewTimer(next)
 		defer timer.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-timer.C:
-				_ = r.Refresh(ctx)
-				timer.Reset(r.interval)
+				if err := r.Refresh(ctx); err != nil {
+					next = failureRetry
+				} else {
+					next = r.interval
+				}
+				timer.Reset(next)
 			}
 		}
 	}()

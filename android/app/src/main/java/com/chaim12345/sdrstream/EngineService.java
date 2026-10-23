@@ -99,9 +99,20 @@ public class EngineService extends Service {
         //noinspection ResultOfMethodCallIgnored
         getCacheDir().mkdirs();
 
+        // Mobile-safe scan budget: the desktop defaults (49->100 concurrent
+        // receiver connections, 20 Mbit/s) are tuned for servers and are
+        // rude to shared public receivers and to a phone's radio, battery
+        // and data plan. Keep the same pipeline with a small footprint.
+        // Captures are capped so a long run cannot fill phone storage.
         ProcessBuilder pb = new ProcessBuilder(enginePath, "web",
                 "--host", "127.0.0.1", "--port", String.valueOf(PORT),
-                "--scan-open-directory", "--scan-kiwi-directory");
+                "--scan-open-directory", "--scan-kiwi-directory",
+                "--scan-start-connections", "4",
+                "--scan-max-connections", "8",
+                "--scan-ramp", "4,8",
+                "--scan-bandwidth-limit-mbps", "5",
+                "--scan-target-limit", "8",
+                "--captures-max-gb", "1");
         // Give the engine a real working directory: without this the child
         // inherits "/" and relative paths (e.g. the default captures dir)
         // resolve outside the sandbox and fail.
