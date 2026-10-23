@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -100,44 +101,97 @@ func TestCapturesMaxBytesDefault(t *testing.T) {
 	}
 }
 
-// A live producer publishes WAV then sidecar; between the atomic
-// rename and the sidecar write the capture reads as "unknown". The
-// new-file grace keeps such fresh captures out of the prunable set
-// without changing the historical policy: once the file ages past the
-// grace, the same capture prunes as unknown exactly as before. Uses
-// isolated temp fixtures only.
-func TestPruneCapturesProtectsInProgressProducer(t *testing.T) {
+// Producer/pruner coordination: a capture being published (WAV
+// written, sidecar pending) is skipped by the pruner through explicit
+// tracking, not any age rule - the fixture here is BACKDATED to 96 h,
+// so only the tracking state can explain its survival. Once finish
+// runs (sidecar written, or publish failed leaving the WAV), normal
+// rules apply: no sidecar = unknown = prunable, unchanged policy.
+// Isolated temp fixtures only.
+func TestPruneCapturesInProgressTracking(t *testing.T) {
 	dir := t.TempDir()
 	old := writeCaptureFixture(t, dir, "OLD_145000kHz_voice_x.wav", 600, 96*time.Hour, "mode=voice\n")
-	// Fresh capture with NO sidecar yet: producer is mid-publish.
-	fresh := "FRESH_145000kHz_sstv_x.wav"
-	if err := common.WriteFileAtomic(filepath.Join(dir, fresh), make([]byte, 600), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	fresh := writeCaptureFixture(t, dir, "FRESH_145000kHz_sstv_x.wav", 600, 96*time.Hour, "")
+
+	finish := BeginCapturePublish(dir, fresh)
 	removed, _ := pruneCaptures(dir, 500)
 	if removed != 1 {
-		t.Fatalf("removed=%d, want 1 (only the aged unknown)", removed)
+		t.Fatalf("removed=%d, want 1 (only the untracked unknown)", removed)
 	}
 	if _, err := os.Stat(filepath.Join(dir, old)); !os.IsNotExist(err) {
-		t.Error("aged unknown survived")
+		t.Error("untracked unknown survived")
 	}
 	if _, err := os.Stat(filepath.Join(dir, fresh)); err != nil {
-		t.Errorf("in-progress capture pruned: %v", err)
+		t.Errorf("in-progress publish pruned while tracked: %v", err)
 	}
-	if matches, _ := filepath.Glob(filepath.Join(dir, ".tmp-*")); len(matches) != 0 {
-		t.Errorf("atomic write left temp litter: %v", matches)
-	}
-	// Historical policy unchanged: aged past the grace with no sidecar,
-	// the same capture prunes as unknown.
-	past := time.Now().Add(-pruneNewFileGrace - time.Minute)
-	if err := os.Chtimes(filepath.Join(dir, fresh), past, past); err != nil {
-		t.Fatal(err)
-	}
+
+	// Publish completes: tracking ends. No sidecar, so the capture is
+	// unknown and prunes under the unchanged historical policy.
+	finish()
 	removed, _ = pruneCaptures(dir, 500)
 	if removed != 1 {
-		t.Fatalf("after grace removed=%d, want 1", removed)
+		t.Fatalf("after finish removed=%d, want 1", removed)
 	}
 	if _, err := os.Stat(filepath.Join(dir, fresh)); !os.IsNotExist(err) {
-		t.Error("aged unknown capture survived pruning")
+		t.Error("finished publish with no sidecar survived pruning")
+	}
+}
+
+// The full transaction shape the cmd producers use, driven
+// concurrently with the pruner: a tracked WAV must never be pruned
+// mid-publish, verified results must survive, and failed publishes
+// (finish with no sidecar) become normally prunable. Run under -race
+// to exercise the registry mutex against concurrent pruning.
+func TestPruneCapturesConcurrentPublishes(t *testing.T) {
+	dir := t.TempDir()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				pruneCaptures(dir, 500)
+			}
+		}
+	}()
+
+	const publishes = 12
+	var verifiedNames []string
+	for i := 0; i < publishes; i++ {
+		name := "CAP_145000kHz_sstv_x" + string(rune('a'+i)) + ".wav"
+		finish := BeginCapturePublish(dir, name)
+		if err := common.WriteFileAtomic(filepath.Join(dir, name), make([]byte, 600), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// Widen the WAV-to-sidecar window so the pruner sees the
+		// capture mid-publish.
+		time.Sleep(2 * time.Millisecond)
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s pruned mid-publish: %v", name, err)
+		}
+		if i%3 == 2 {
+			// Failed publish: no sidecar, finish, normally prunable.
+			finish()
+			continue
+		}
+		if err := WriteCaptureMetadata(dir, name, CaptureMetadata{Mode: "sstv", Verified: true}); err != nil {
+			t.Fatal(err)
+		}
+		finish()
+		verifiedNames = append(verifiedNames, name)
+	}
+	close(stop)
+	wg.Wait()
+	for _, name := range verifiedNames {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("verified capture %s lost: %v", name, err)
+		}
+	}
+	if matches, _ := filepath.Glob(filepath.Join(dir, ".tmp-*")); len(matches) != 0 {
+		t.Errorf("atomic writes left temp litter: %v", matches)
 	}
 }

@@ -58,9 +58,12 @@ func writeCaptureWAV(capturesDir string, wav []byte, meta captureMeta) (string, 
 		return "", err
 	}
 	path := filepath.Join(capturesDir, name)
-	// Atomic write: the retention pruner and web readers must never see
-	// a half-written WAV. The post-rename, pre-sidecar window is covered
-	// by the pruner's new-file grace, not by this write alone.
+	// Tracked publish: the retention pruner skips this capture until the
+	// sidecar lands (or the publish fails and finish runs), so it is
+	// never prunable between the WAV and sidecar writes. Atomic write
+	// keeps readers from ever seeing a half-written WAV.
+	finish := web.BeginCapturePublish(capturesDir, name)
+	defer finish()
 	if err := common.WriteFileAtomic(path, wav, 0o644); err != nil {
 		return "", err
 	}

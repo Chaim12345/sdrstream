@@ -45,19 +45,13 @@ func captureVerified(dir, wavName string) (verified, known bool) {
 	return false, false
 }
 
-// pruneNewFileGrace keeps a just-written capture out of the prunable
-// set. Producers publish WAV then sidecar; between the atomic rename
-// and the sidecar write the capture has no verdict and reads as
-// "unknown". Five minutes covers that window (and a slow producer)
-// without changing the historical policy: unknown captures older than
-// the grace prune exactly as before.
-const pruneNewFileGrace = 5 * time.Minute
-
 // pruneCaptures deletes captures (WAV plus sidecar) until the directory is
 // within maxBytes. Unverified and unknown captures go first, oldest first;
 // verified captures are never pruned, even when that leaves the directory
-// over budget. Captures younger than pruneNewFileGrace are never pruned:
-// their producer may still be between the WAV and sidecar writes. It
+// over budget. Captures a producer in this process is actively publishing
+// (WAV written, sidecar pending - see BeginCapturePublish) are skipped:
+// that is producer coordination, not an eligibility change - any capture
+// whose publish finished or failed is judged exactly as before. It
 // returns how many captures were removed and how many bytes that freed.
 func pruneCaptures(dir string, maxBytes int64) (removed int, freed int64) {
 	if dir == "" || maxBytes <= 0 {
@@ -87,9 +81,9 @@ func pruneCaptures(dir string, maxBytes int64) (removed int, freed int64) {
 		if verified, _ := captureVerified(dir, name); verified {
 			continue
 		}
-		if time.Since(info.ModTime()) < pruneNewFileGrace {
-			// Too new to judge: the producer may not have written the
-			// sidecar yet. Still counted in the budget total.
+		if capturePublishInProgress(dir, name) {
+			// A producer in this process holds this capture between
+			// its WAV and sidecar writes. Still counted in the total.
 			continue
 		}
 		prunable = append(prunable, candidate{name: name, size: info.Size(), modTime: info.ModTime()})

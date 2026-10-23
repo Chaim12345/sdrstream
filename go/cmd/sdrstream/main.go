@@ -3851,6 +3851,11 @@ func tryJukeboxAPRS(server *web.Server, samples []float64, rate int, wavPath, ca
 		return false
 	}
 	capture := filepath.Join(capturesDir, "APRS_144800kHz_aprs_jukebox_spdns_eu_"+time.Now().UTC().Format("20060102T150405Z")+".wav")
+	// Tracked publish: the pruner skips this capture until the sidecar
+	// lands (or finish runs on failure), so it is never prunable
+	// between the WAV and sidecar writes.
+	finishPublish := web.BeginCapturePublish(capturesDir, filepath.Base(capture))
+	defer finishPublish()
 	if os.MkdirAll(filepath.Dir(capture), 0755) != nil || finishInt16(samples, rate, capture) != nil {
 		return false
 	}
