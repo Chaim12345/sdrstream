@@ -51,3 +51,14 @@ test('search chips and exports use matching set; reset is honest50',()=>{
  input.value='absent';input.fire('input');assert.equal(c.msglogText(),'');
  c.msglogMode='';input.value='';input.fire('input');assert.equal(node('msglog').children.length,50);
 });
+test('rolling server eviction retains bounded paused snapshot and resume clears stale rows',()=>{
+ const {c,node,rows,created}=setup();const box=node('msglog');
+ box.scrollTop=0;box.fire('scroll');const first=box.children[0].dataset.messageKey;
+ rows.splice(0,rows.length,...Array.from({length:123},(_,i)=>({started:'replacement'+i,mode:'cw',detail:'rolled '+i})));
+ c.renderMsglog();assert.equal(box.children.length,50);assert.equal(box.children[0].dataset.messageKey,first);
+ const nav=created.find(n=>n.className==='toolbar msglog-history-nav');
+ assert.equal(nav.children[0].hidden,true); // frozen oldest row no longer exists on server
+ nav.children[1].fire('click');assert.equal(box.children.length,50);
+ assert.notEqual(box.children[0].dataset.messageKey,first);
+ assert.equal(c.msglogStuck,false);
+});
