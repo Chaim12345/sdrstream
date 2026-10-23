@@ -185,6 +185,14 @@ function renderPasses(status) {
 /* Per-item proof for one archived receiver capture (PR #5 record-all
    archive): the saved audio, decode text, receiver ID and UTC time, read
    from the capture sidecar the scanner writes next to every clip. */
+/* Clip length from the parsed WAV header values (samples / rate), shown so a
+   card carries the real duration even before a browser loads media metadata. */
+const fmtDuration = sec => {
+  if (!isFinite(sec) || sec <= 0) return '';
+  const m = Math.floor(sec / 60), r = Math.round(sec - m * 60);
+  return (m ? m + 'm ' : '') + r + 's';
+};
+
 function captureProof(c) {
   const wrap = document.createElement('div');
   const pb = document.createElement('button');
@@ -225,7 +233,7 @@ function captureProof(c) {
   row('raw decode', raw);
   row('verified', c.verified ? 'yes - live quality gate passed' : 'no' + (c.gate ? ' - ' + c.gate : ''));
   row('origin', c.target ? 'scheduled target "' + c.target + '"' : 'blind scan (no named target)');
-  row('archive', c.samples + ' samples at ' + c.rate + ' Hz');
+  row('archive', c.samples + ' samples at ' + c.rate + ' Hz' + (c.samples && c.rate ? ' (' + fmtDuration(c.samples / c.rate) + ')' : ''));
   pb.onclick = () => { pf.hidden = !pf.hidden; };
   wrap.append(pb, pf);
   return wrap;
@@ -360,7 +368,7 @@ function renderCaptures(status) {
       title.appendChild(when);
       card.appendChild(title);
       const meta = document.createElement('div'); meta.className = 'card-meta';
-      meta.textContent = shortURL(c.receiver) + ' · ' + c.samples + ' samples · ' + c.rate + ' Hz' + (c.frequency_hz ? ' · ' + mhz(c.frequency_hz) : '') + (c.mode ? ' · ' + c.mode : '');
+      meta.textContent = shortURL(c.receiver) + ' · ' + c.samples + ' samples · ' + c.rate + ' Hz' + (c.samples && c.rate ? ' · ' + fmtDuration(c.samples / c.rate) : '') + (c.frequency_hz ? ' · ' + mhz(c.frequency_hz) : '') + (c.mode ? ' · ' + c.mode : '');
       card.appendChild(meta);
       const badges = document.createElement('div'); badges.className = 'badge-row';
       const vb = document.createElement('span');

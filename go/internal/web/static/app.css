@@ -590,6 +590,15 @@ kbd {
 .rxproof-card .badge-row { margin: 4px 0; }
 .rxproof-card audio { margin-top: 6px; }
 
+/* Long archive filenames, badges and decode text must wrap inside the card
+   instead of clipping or pushing past its right edge. */
+.card { min-width: 0; }
+.card .card-meta { overflow-wrap: anywhere; word-break: break-word; }
+.card a { overflow-wrap: anywhere; word-break: break-word; }
+.card audio { max-width: 100%; }
+.card .detail { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.badge { white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+
 /* The .pill display rule must not defeat the hidden attribute (the ON AIR
    pill showed with no monitor running because of this). */
 [hidden] { display: none !important; }
