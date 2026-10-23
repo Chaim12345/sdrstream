@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -94,6 +95,11 @@ type Status struct {
 	Passes     []PassInfo      `json:"passes"`
 	Satellites []SatelliteInfo `json:"satellites"`
 	Receivers  int             `json:"receivers"`
+	// Network reports the startup connectivity self-check so an
+	// unreachable network reads as failed, not as empty success.
+	// Nil means the check has not completed yet.
+	NetworkOK     *bool  `json:"network_ok,omitempty"`
+	NetworkDetail string `json:"network_detail,omitempty"`
 }
 
 // PassInfo is one predicted pass.
@@ -191,6 +197,9 @@ type Server struct {
 	galleryDir        string
 	galleryAt         time.Time
 	monitor           *monitor.Monitor
+	monitorHooks      MonitorHooks
+	networkOK         *bool
+	networkDetail     string
 	feeds             *feeds.Manager
 	scans             []ScanStatus
 	scanIndex         map[string]int
@@ -861,9 +870,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if len(captures) > statusCaptureLimit {
 		captures = captures[len(captures)-statusCaptureLimit:]
 	}
+	s.mu.Lock()
+	networkOK, networkDetail := s.networkOK, s.networkDetail
+	s.mu.Unlock()
 	writeJSON(w, Status{
 		UpdatedAt: time.Now(), Captures: captures,
 		Passes: passes, Receivers: len(catalogue.Table),
+		NetworkOK: networkOK, NetworkDetail: networkDetail,
 	})
 }
 
@@ -1361,6 +1374,14 @@ func (s *Server) handleMonitorControl(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
+	switch r.FormValue("action") {
+	case "start":
+		s.handleMonitorStart(w, r)
+		return
+	case "stop":
+		s.handleMonitorStop(w)
+		return
+	}
 	s.mu.Lock()
 	instance := s.monitor
 	s.mu.Unlock()
@@ -1401,6 +1422,103 @@ func (s *Server) handleMonitorControl(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// monitorKinds are the receiver types the UI can start.
+var monitorKinds = map[string]bool{"openwebrx": true, "websdr": true, "kiwi": true, "kiwisdr": true}
+
+// handleMonitorStart starts a live monitor from UI-provided receiver
+// details. Construction failures (bad kind, unreachable receiver,
+// refused connection) come back as errors so the UI can show an honest
+// "failed" state instead of pretending an empty panel is success.
+func (s *Server) handleMonitorStart(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	hooks := s.monitorHooks
+	s.mu.Unlock()
+	if hooks.Start == nil {
+		http.Error(w, "starting a monitor from the UI is not supported by this build", http.StatusNotImplemented)
+		return
+	}
+	spec, err := parseMonitorStartSpec(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := hooks.Start(spec); err != nil {
+		http.Error(w, "monitor failed to start: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, map[string]interface{}{"running": true, "server": spec.Server, "kind": spec.Kind})
+}
+
+// handleMonitorStop detaches the running monitor. It is idempotent so a
+// double tap never reports an error.
+func (s *Server) handleMonitorStop(w http.ResponseWriter) {
+	s.mu.Lock()
+	hooks := s.monitorHooks
+	s.mu.Unlock()
+	if hooks.Stop == nil {
+		http.Error(w, "stopping a monitor from the UI is not supported by this build", http.StatusNotImplemented)
+		return
+	}
+	if err := hooks.Stop(); err != nil {
+		http.Error(w, "monitor failed to stop: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]interface{}{"running": false})
+}
+
+var monitorServerPattern = regexp.MustCompile(`^[A-Za-z0-9._\-:\[\]]{3,200}$`)
+
+// parseMonitorStartSpec validates the user-supplied receiver. The server
+// field is a host[:port] (an http(s):// scheme the user pasted is
+// stripped); anything else is rejected before it reaches a dialer.
+func parseMonitorStartSpec(r *http.Request) (MonitorStartSpec, error) {
+	spec := MonitorStartSpec{
+		Server:  strings.TrimSpace(r.FormValue("server")),
+		Kind:    strings.ToLower(strings.TrimSpace(r.FormValue("kind"))),
+		Profile: strings.TrimSpace(r.FormValue("profile")),
+		Label:   strings.TrimSpace(r.FormValue("label")),
+	}
+	if spec.Kind == "" {
+		spec.Kind = "openwebrx"
+	}
+	if !monitorKinds[spec.Kind] {
+		return spec, fmt.Errorf("kind must be openwebrx, websdr or kiwi")
+	}
+	if strings.HasPrefix(spec.Server, "http://") {
+		spec.Server = strings.TrimPrefix(spec.Server, "http://")
+	} else if strings.HasPrefix(spec.Server, "https://") {
+		spec.Server = strings.TrimPrefix(spec.Server, "https://")
+	}
+	spec.Server = strings.TrimSuffix(spec.Server, "/")
+	if !monitorServerPattern.MatchString(spec.Server) {
+		return spec, fmt.Errorf("server must be a receiver host[:port], e.g. jukebox.spdns.eu:8073")
+	}
+	if len(spec.Profile) > 64 || strings.ContainsAny(spec.Profile, " \t\r\n\"'\\") {
+		return spec, fmt.Errorf("invalid profile name")
+	}
+	if len(spec.Label) > 80 {
+		spec.Label = spec.Label[:80]
+	}
+	if raw := strings.TrimSpace(r.FormValue("start_hz")); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil || v <= 0 || v > 2e9 {
+			return spec, fmt.Errorf("start_hz must be a frequency in Hz")
+		}
+		spec.StartHz = v
+	}
+	if raw := strings.TrimSpace(r.FormValue("end_hz")); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil || v <= 0 || v > 2e9 {
+			return spec, fmt.Errorf("end_hz must be a frequency in Hz")
+		}
+		spec.EndHz = v
+	}
+	if spec.StartHz > 0 && spec.EndHz > 0 && spec.EndHz <= spec.StartHz {
+		return spec, fmt.Errorf("end_hz must be greater than start_hz")
+	}
+	return spec, nil
+}
+
 func (s *Server) ScanControl() (int, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1438,6 +1556,47 @@ func (s *Server) SetScanMetrics(metrics ScanMetrics) {
 func (s *Server) SetMonitor(instance *monitor.Monitor) {
 	s.mu.Lock()
 	s.monitor = instance
+	s.mu.Unlock()
+}
+
+// MonitorStartSpec describes a live monitor the UI asks the server to
+// start. Server is the receiver host[:port]; Kind is openwebrx, websdr
+// or kiwi; Profile selects an OpenWebRX profile when the receiver has
+// more than one.
+type MonitorStartSpec struct {
+	Server  string
+	Kind    string
+	Profile string
+	Label   string
+	// StartHz and EndHz optionally override the sweep range; they must
+	// sit inside the receiver's coverage or tuning fails honestly.
+	// Zero keeps the command's configured defaults.
+	StartHz float64
+	EndHz   float64
+}
+
+// MonitorHooks are registered by the embedding command, which owns
+// monitor construction and teardown. Start replaces any monitor already
+// running; Stop is idempotent. A nil function means the command does
+// not support that runtime control.
+type MonitorHooks struct {
+	Start func(MonitorStartSpec) error
+	Stop  func() error
+}
+
+// SetNetworkCheck records the result of the startup connectivity
+// self-check; handleStatus reports it.
+func (s *Server) SetNetworkCheck(ok bool, detail string) {
+	s.mu.Lock()
+	s.networkOK = &ok
+	s.networkDetail = detail
+	s.mu.Unlock()
+}
+
+// SetMonitorHooks installs runtime monitor control for /api/monitor/control.
+func (s *Server) SetMonitorHooks(hooks MonitorHooks) {
+	s.mu.Lock()
+	s.monitorHooks = hooks
 	s.mu.Unlock()
 }
 

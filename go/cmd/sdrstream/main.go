@@ -1694,75 +1694,263 @@ func cmdWeb(args []string) error {
 	if *capturesMaxGB > 0 || *capturesRetain > 0 {
 		go pruneCapturesLoop(ctx, *capturesDir, int64(*capturesMaxGB*float64(1<<30)), *capturesRetain, time.Minute, log.Printf)
 	}
+	monitorCfg := monitorDefaults{
+		Strategy:      *monitorStrategy,
+		AverageFrames: *monitorAverageFrames,
+		HysteresisDB:  *monitorHysteresisDB,
+		Channels:      channels,
+		ChannelPause:  *monitorChannelPause,
+		StartHz:       *monitorStart,
+		EndHz:         *monitorEnd,
+		StepHz:        *monitorStep,
+		ThresholdDB:   *monitorThreshold,
+		Dwell:         *monitorDwell,
+		Listen:        *monitorListen,
+		Mode:          *monitorMode,
+		Voice:         *monitorVoice,
+		VoiceOptions:  monitorVoiceOptions(*monitorVoiceLang, *monitorVoiceThreads, *monitorVoiceBeam, *monitorVoicePrompt),
+		VoiceNIM:      monitorNIMOptions(),
+		Multimon:      *monitorMultimon,
+		Direwolf:      *monitorDirewolf,
+	}
+	go runStartupNetworkCheck(ctx, server)
+
+	runtimeMon := &runtimeMonitor{server: server, cfg: monitorCfg}
+	server.SetMonitorHooks(web.MonitorHooks{
+		Start: func(spec web.MonitorStartSpec) error {
+			outDir := *monitorOut
+			if outDir == "" {
+				outDir = *capturesDir
+			}
+			return runtimeMon.start(ctx, spec, *monitorLabel, outDir)
+		},
+		Stop: func() error {
+			runtimeMon.stop()
+			return nil
+		},
+	})
 	if *monitorServer != "" {
-		monitorCtx, cancel := context.WithCancel(ctx)
-		defer cancel()
-		source, err := monitor.SourceForLocal(monitorCtx, *monitorKind, *monitorServer, *monitorProfile)
-		if err != nil {
+		if err := runtimeMon.start(ctx, web.MonitorStartSpec{
+			Server:  *monitorServer,
+			Kind:    *monitorKind,
+			Profile: *monitorProfile,
+			Label:   *monitorLabel,
+		}, *monitorLabel, *monitorOut); err != nil {
 			return err
 		}
-		instance := monitor.New(monitor.Options{
-			OnActivity: func(activity monitor.Activity) {
-				if activity.Detail != "" && (activity.Kind == "data" || activity.Kind == "cw" || activity.Kind == "sstv" || activity.Kind == "voice") {
-					if err := verify.Live(activity.Kind, activity.Mode, activity.Detail, nil, activity.VerificationAnchor); err != nil {
-						writeActivitySidecar(server, activity, false, err.Error())
-						log.Printf("gallery: verification rejected live text: %v", err)
-						return
-					}
-					writeActivitySidecar(server, activity, true, "live gate passed")
-					if err := server.AddLiveArtifact(activity, nil); err != nil {
-						log.Printf("gallery: save live text: %v", err)
-					}
-				}
-			},
-			OnImage: func(activity monitor.Activity, png []byte) {
-				if err := verify.Live(activity.Kind, activity.Mode, "", png); err != nil {
-					writeActivitySidecar(server, activity, false, err.Error())
-					log.Printf("gallery: verification rejected live image: %v", err)
-					return
-				}
-				writeActivitySidecar(server, activity, true, "live gate passed")
-				if err := server.AddLiveArtifact(activity, png); err != nil {
-					log.Printf("gallery: save live image: %v", err)
-				}
-			},
-			Source:          source,
-			Strategy:        *monitorStrategy,
-			Channels:        channels,
-			ChannelPause:    *monitorChannelPause,
-			StartHz:         *monitorStart,
-			EndHz:           *monitorEnd,
-			StepHz:          *monitorStep,
-			ThresholdDB:     *monitorThreshold,
-			AverageFrames:   *monitorAverageFrames,
-			HysteresisDB:    *monitorHysteresisDB,
-			Dwell:           *monitorDwell,
-			Listen:          *monitorListen,
-			Mode:            *monitorMode,
-			Voice:           *monitorVoice,
-			VoiceOptions:    monitorVoiceOptions(*monitorVoiceLang, *monitorVoiceThreads, *monitorVoiceBeam, *monitorVoicePrompt),
-			VoiceNIMOptions: monitorNIMOptions(),
-			MultimonBinary:  *monitorMultimon,
-			DirewolfBinary:  *monitorDirewolf,
-			OutDir:          *monitorOut,
-			OnCapture: func(activity monitor.Activity, path string) {
-				activity.AudioPath = path
-				writeActivitySidecar(server, activity, false, "pending verification")
-			},
-			Name:  *monitorServer,
-			Label: *monitorLabel,
-			Logf:  func(format string, args ...interface{}) { log.Printf("monitor: "+format, args...) },
-		})
-		if *monitorOut != "" {
-			if err := os.MkdirAll(*monitorOut, 0o755); err != nil {
-				return err
-			}
-		}
-		server.SetMonitor(instance)
-		go instance.Run(monitorCtx)
+
 		fmt.Printf("monitoring %s (%s)\n", *monitorServer, *monitorKind)
 	}
 	return server.ServeContext(ctx, fmt.Sprintf("%s:%d", *host, *port))
+}
+
+// runStartupNetworkCheck verifies real outbound connectivity (DNS +
+// HTTPS to the receiver directory) shortly after boot and records the
+// outcome on /api/status.json. On Android a broken resolver turns every
+// live panel into empty UI that reads as success; this makes the
+// failure explicit in engine.log ("network check: FAILED ...") and in
+// the status endpoint. It retries for a few minutes because a phone
+// radio may still be coming up when the engine starts.
+func runStartupNetworkCheck(ctx context.Context, server *web.Server) {
+	const target = "receiverbook.de"
+	client := &http.Client{Timeout: 15 * time.Second}
+	for attempt := 1; attempt <= 6; attempt++ {
+		checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		_, err := net.DefaultResolver.LookupHost(checkCtx, target)
+		if err == nil {
+			req, reqErr := http.NewRequestWithContext(checkCtx, http.MethodGet, "https://"+target+"/map", nil)
+			var resp *http.Response
+			if reqErr == nil {
+				resp, err = client.Do(req)
+				if resp != nil {
+					resp.Body.Close()
+				}
+			} else {
+				err = reqErr
+			}
+		}
+		cancel()
+		if err == nil {
+			log.Printf("network check: ok (DNS + https://%s reachable)", target)
+			server.SetNetworkCheck(true, "dns+https ok")
+			return
+		}
+		log.Printf("network check: FAILED attempt %d/6: %v", attempt, err)
+		server.SetNetworkCheck(false, err.Error())
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(30 * time.Second):
+		}
+	}
+}
+
+// monitorDefaults carries the flag-derived tuning shared by the
+// --monitor-server monitor and monitors started at runtime from the UI.
+type monitorDefaults struct {
+	Strategy string
+	// AverageFrames and HysteresisDB are the detector robustness knobs
+	// from the kiwi-waterfall work; 1/0 keep them off.
+	AverageFrames int
+	HysteresisDB  float64
+	Channels      []monitor.Channel
+	ChannelPause  time.Duration
+	StartHz       float64
+	EndHz         float64
+	StepHz        float64
+	ThresholdDB   float64
+	Dwell         time.Duration
+	Listen        time.Duration
+	Mode          string
+	Voice         bool
+	VoiceOptions  voice.Options
+	VoiceNIM      voice.NIMOptions
+	Multimon      string
+	Direwolf      string
+}
+
+// monitorOnActivity gates live text detections through verification
+// before they join the activity gallery.
+func monitorOnActivity(server *web.Server) func(monitor.Activity) {
+	return func(activity monitor.Activity) {
+		if activity.Detail != "" && (activity.Kind == "data" || activity.Kind == "cw" || activity.Kind == "sstv" || activity.Kind == "voice") {
+			if err := verify.Live(activity.Kind, activity.Mode, activity.Detail, nil, activity.VerificationAnchor); err != nil {
+				writeActivitySidecar(server, activity, false, err.Error())
+				log.Printf("gallery: verification rejected live text: %v", err)
+				return
+			}
+			writeActivitySidecar(server, activity, true, "live gate passed")
+			if err := server.AddLiveArtifact(activity, nil); err != nil {
+				log.Printf("gallery: save live text: %v", err)
+			}
+		}
+	}
+}
+
+// monitorOnImage gates live reconstructed images through verification.
+func monitorOnImage(server *web.Server) func(monitor.Activity, []byte) {
+	return func(activity monitor.Activity, png []byte) {
+		if err := verify.Live(activity.Kind, activity.Mode, "", png); err != nil {
+			writeActivitySidecar(server, activity, false, err.Error())
+			log.Printf("gallery: verification rejected live image: %v", err)
+			return
+		}
+		writeActivitySidecar(server, activity, true, "live gate passed")
+		if err := server.AddLiveArtifact(activity, png); err != nil {
+			log.Printf("gallery: save live image: %v", err)
+		}
+	}
+}
+
+// monitorOnCapture writes a provenance sidecar for every archived clip.
+func monitorOnCapture(server *web.Server) func(monitor.Activity, string) {
+	return func(activity monitor.Activity, path string) {
+		activity.AudioPath = path
+		writeActivitySidecar(server, activity, false, "pending verification")
+	}
+}
+
+// runtimeMonitor owns the one live monitor attached to the web server.
+// Start replaces a running monitor (a phone or shared receiver should
+// never carry two); Stop is idempotent. It backs /api/monitor/control's
+// start and stop actions.
+type runtimeMonitor struct {
+	server *web.Server
+	cfg    monitorDefaults
+
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	gen    int
+}
+
+// start builds and attaches a monitor for spec. Construction errors
+// (unknown kind, unreachable or refusing receiver) are returned so the
+// caller can report an honest failure to the UI.
+func (m *runtimeMonitor) start(ctx context.Context, spec web.MonitorStartSpec, label, outDir string) error {
+	monitorCtx, cancel := context.WithCancel(ctx)
+	source, err := monitor.SourceForLocal(monitorCtx, spec.Kind, spec.Server, spec.Profile)
+	if err != nil {
+		cancel()
+		return err
+	}
+	if outDir != "" {
+		if err := os.MkdirAll(outDir, 0o755); err != nil {
+			cancel()
+			return fmt.Errorf("monitor output dir: %w", err)
+		}
+	}
+	if spec.Label != "" {
+		label = spec.Label
+	}
+	startHz, endHz := m.cfg.StartHz, m.cfg.EndHz
+	if spec.StartHz > 0 {
+		startHz = spec.StartHz
+	}
+	if spec.EndHz > 0 {
+		endHz = spec.EndHz
+	}
+	instance := monitor.New(monitor.Options{
+		OnActivity:      monitorOnActivity(m.server),
+		OnImage:         monitorOnImage(m.server),
+		OnCapture:       monitorOnCapture(m.server),
+		Source:          source,
+		Strategy:        m.cfg.Strategy,
+		Channels:        m.cfg.Channels,
+		ChannelPause:    m.cfg.ChannelPause,
+		StartHz:         startHz,
+		EndHz:           endHz,
+		StepHz:          m.cfg.StepHz,
+		ThresholdDB:     m.cfg.ThresholdDB,
+		AverageFrames:   m.cfg.AverageFrames,
+		HysteresisDB:    m.cfg.HysteresisDB,
+		Dwell:           m.cfg.Dwell,
+		Listen:          m.cfg.Listen,
+		Mode:            m.cfg.Mode,
+		Voice:           m.cfg.Voice,
+		VoiceOptions:    m.cfg.VoiceOptions,
+		VoiceNIMOptions: m.cfg.VoiceNIM,
+		MultimonBinary:  m.cfg.Multimon,
+		DirewolfBinary:  m.cfg.Direwolf,
+		OutDir:          outDir,
+		Name:            spec.Server,
+		Label:           label,
+		Logf:            func(format string, args ...interface{}) { log.Printf("monitor: "+format, args...) },
+	})
+	m.mu.Lock()
+	if m.cancel != nil {
+		m.cancel()
+	}
+	m.cancel = cancel
+	m.gen++
+	gen := m.gen
+	m.mu.Unlock()
+	m.server.SetMonitor(instance)
+	go func() {
+		if err := instance.Run(monitorCtx); err != nil && monitorCtx.Err() == nil {
+			log.Printf("monitor: %v", err)
+		}
+		// If this monitor is still the attached one, detach so the UI
+		// shows "no monitor" instead of a stale dead receiver.
+		m.mu.Lock()
+		still := m.gen == gen
+		m.mu.Unlock()
+		if still {
+			m.server.SetMonitor(nil)
+		}
+	}()
+	return nil
+}
+
+// stop detaches and cancels the running monitor, if any.
+func (m *runtimeMonitor) stop() {
+	m.mu.Lock()
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+		m.gen++
+	}
+	m.mu.Unlock()
+	m.server.SetMonitor(nil)
 }
 
 // cmdFeeds reports a bounded snapshot of the configured public live feeds.
