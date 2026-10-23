@@ -1121,7 +1121,15 @@ function activityCard(a, fresh) {
     const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = a.detail;
     card.appendChild(detail);
   }
-  if (a.historical) {
+  // Verdict precedence matches activityGateVerdict (ui-features): a
+  // recorded rejection outranks everything - a repeated RecordGate can
+  // leave both fields set, and the card must agree with the filter.
+  if (a.rejected) {
+    // A known gate failure is not "verification unknown": say what happened.
+    const lin = document.createElement('div'); lin.className = 'muted';
+    lin.textContent = 'failed the live quality gate: ' + a.rejected;
+    card.appendChild(lin);
+  } else if (a.historical) {
     const lin = document.createElement('div'); lin.className = 'muted';
     lin.textContent = 'historical - verification unknown (no gate proof recorded)';
     card.appendChild(lin);
@@ -1129,11 +1137,6 @@ function activityCard(a, fresh) {
     // The gate reason recorded at verification time, verbatim.
     const lin = document.createElement('div'); lin.className = 'muted';
     lin.textContent = 'live gate passed: ' + a.verification;
-    card.appendChild(lin);
-  } else if (a.rejected) {
-    // A known gate failure is not "verification unknown": say what happened.
-    const lin = document.createElement('div'); lin.className = 'muted';
-    lin.textContent = 'failed the live quality gate: ' + a.rejected;
     card.appendChild(lin);
   }
   return card;
