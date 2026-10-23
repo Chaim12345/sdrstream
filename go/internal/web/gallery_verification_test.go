@@ -136,17 +136,18 @@ func TestGalleryLiveClass(t *testing.T) {
 func TestActivityDedupeKeyMatchesGalleryTwin(t *testing.T) {
 	start := time.Now().UTC()
 	freq := 14491234.7
-	mk := activityDedupeKey(start.UnixNano(), int64(freq), activityKindClass("sstv", "sstv", ""), "")
-	gk := activityDedupeKey(start.UnixNano(), 14491234, activityKindClass("image", "sstv", ""), "")
+	mk := activityDedupeKey(start.UnixNano(), int64(freq), activityKindClass("sstv", "sstv", ""), "sstv", "")
+	gk := activityDedupeKey(start.UnixNano(), 14491234, activityKindClass("image", "sstv", ""), "sstv", "")
 	if mk != gk {
 		t.Errorf("twin keys differ: monitor %q gallery %q", mk, gk)
 	}
 	distinct := map[string]string{
-		"text same signal":  activityDedupeKey(start.UnixNano(), 14491234, activityKindClass("text", "cw", "CQ DE R1"), "CQ DE R1"),
-		"voice same signal": activityDedupeKey(start.UnixNano(), 14491234, activityKindClass("voice", "speech", ""), ""),
-		"one Hz away":       activityDedupeKey(start.UnixNano(), 14491235, activityKindClass("image", "sstv", ""), ""),
-		"one second later":  activityDedupeKey(start.Add(time.Second).UnixNano(), 14491234, activityKindClass("image", "sstv", ""), ""),
-		"speech voice call": activityDedupeKey(start.UnixNano(), 14491234, activityKindClass("text", "speech", "hello"), "hello"),
+		"text same signal":           activityDedupeKey(start.UnixNano(), 14491234, activityKindClass("text", "cw", "CQ DE R1"), "cw", "CQ DE R1"),
+		"same payload other decoder": activityDedupeKey(start.UnixNano(), 14491234, activityKindClass("image", "sstv", ""), "wefax", ""),
+		"voice same signal":          activityDedupeKey(start.UnixNano(), 14491234, activityKindClass("voice", "speech", ""), "speech", ""),
+		"one Hz away":                activityDedupeKey(start.UnixNano(), 14491235, activityKindClass("image", "sstv", ""), "sstv", ""),
+		"one second later":           activityDedupeKey(start.Add(time.Second).UnixNano(), 14491234, activityKindClass("image", "sstv", ""), "sstv", ""),
+		"speech voice call":          activityDedupeKey(start.UnixNano(), 14491234, activityKindClass("text", "speech", "hello"), "speech", "hello"),
 	}
 	for name, k := range distinct {
 		if k == mk {

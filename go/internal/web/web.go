@@ -2084,7 +2084,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	// non-receiver sources are not activity and never enter the feed.
 	seen := make(map[string]int, len(items))
 	for i, a := range items {
-		seen[activityDedupeKey(a.Started.UnixNano(), int64(a.FrequencyHz), activityKindClass(a.Kind, a.Mode, a.Detail), a.Detail)] = i
+		seen[activityDedupeKey(a.Started.UnixNano(), int64(a.FrequencyHz), activityKindClass(a.Kind, a.Mode, a.Detail), a.Mode, a.Detail)] = i
 	}
 	for i, it := range live {
 		class := it.galleryLiveClass()
@@ -2120,7 +2120,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		// write truncates the frequency to int64 and uses a different
 		// kind vocabulary ("sstv" becomes "image"), so both sides key
 		// through activityKindClass.
-		if pos, dup := seen[activityDedupeKey(it.Start.UnixNano(), it.FrequencyHz, activityKindClass(it.Kind, it.Mode, it.Text), it.Text)]; dup {
+		if pos, dup := seen[activityDedupeKey(it.Start.UnixNano(), it.FrequencyHz, activityKindClass(it.Kind, it.Mode, it.Text), it.Mode, it.Text)]; dup {
 			// The monitor twin is already listed. A verified
 			// gallery entry carries the gate-owned provenance
 			// recorded at verification time, which is richer than
@@ -2136,8 +2136,12 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, items)
 }
 
-func activityDedupeKey(startUnixNano, freqHz int64, class, detail string) string {
-	return fmt.Sprintf("%d|%d|%s|%s", startUnixNano, freqHz, class, detail)
+func activityDedupeKey(startUnixNano, freqHz int64, class, mode, detail string) string {
+	// Mode carries the decoder identity: two decoders producing the
+	// same payload at the same instant and frequency (APRS vs POCSAG
+	// text) are distinct events, while a monitor twin and its gallery
+	// entry always share the mode the decode recorded.
+	return fmt.Sprintf("%d|%d|%s|%s|%s", startUnixNano, freqHz, class, mode, detail)
 }
 
 // activityKindClass maps the monitor and gallery kind vocabularies
