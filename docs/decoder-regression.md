@@ -50,6 +50,7 @@ raises the floor; commit the new baseline with the change.
 | ACARS | TLeconte/acarsdec `test.wav` (LGPL-2.0) | acarsdec output (sdr-acars fixture) |
 | HFDL | signals.taunus.de HFDL 300/600/1200 bps | at least one FCS-verified frame (no reference decoder run) |
 | APRS | committed WA8LMF TNC test CD excerpt | multimon-ng AFSK1200 |
+| SSTV (synthetic) | committed pysstv-generated Robot36 fixture (project-generated pattern; synthetic, not on-air proof) | VIS detect + full frame decode |
 | SSTV (negative) | committed generated RTTY clip | must produce zero detections |
 
 A real off-air SSTV positive sample is wanted but not yet rights-clean for

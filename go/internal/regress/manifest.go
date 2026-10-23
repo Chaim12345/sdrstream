@@ -145,6 +145,7 @@ func Manifest() []Case {
 			SHA256: "752acabede3f96e8f137567e8218fe3cd9aab61130b9198d0cbce6cf2cf53b80",
 			Ref:    "acarsdec output (jasonherald/sdr-acars fixture)", Golden: "acars_acarsdec_test.txt"},
 		// Committed recordings (no download needed).
+		{Name: "local/sstv-robot36-synthetic", Decoder: "sstv", Source: "SYNTHETIC fixture: pysstv-encoded (GPLv3 tool) project-generated pattern image, tools/gen_sstv_fixtures.py; not an on-air recording, not reception proof", Ref: "VIS detect + full frame decode of the encoded pattern", Golden: "sstv_robot36_synthetic.txt", Local: "internal/decode/testdata/sstv_robot36.wav"},
 		{Name: "local/sstv-negative-rtty", Decoder: "sstv", Source: "Generated RTTY reference clip (tests/data, repository licence) - no SSTV content", Ref: "negative ground truth: must not detect SSTV", Local: "../tests/data/ref_rtty.wav", Negative: true},
 		{Name: "local/aprs-wa8lmf-30s", Decoder: "aprs", Source: "WA8LMF TNC Test CD track 1, 30 s (tests/data)", Ref: "multimon-ng 1.x AFSK1200", Golden: "aprs_wa8lmf_30s.txt", Local: "../tests/data/real_aprs_wa8lmf_30s.wav"},
 		{Name: "local/wspr-utwente-0532", Decoder: "wspr", Source: "Twente WebSDR 7038.6 kHz live capture 2026-10-22", Ref: "wsprd 1.x", Golden: "wspr_utwente_0532.txt", Local: "internal/decode/testdata/wspr/live_websdr_utwente_7038p6kHz_20261022T0532Z.wav"},
