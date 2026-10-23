@@ -189,18 +189,22 @@ func fmDemodContext(ctx context.Context, samples []float64, rate int) ([]float64
 // sync-length window's 1200 Hz purity against the video band. Lines
 // whose sync cannot be found keep their expected position (coasting).
 func findSyncs(samples []float64, rate int, m sstvModeSpec, imageStartSec float64) []float64 {
-	syncs, _ := findSyncsContext(context.Background(), samples, rate, m, imageStartSec)
+	syncs, _, _ := findSyncsContext(context.Background(), samples, rate, m, imageStartSec)
 	return syncs
 }
 
 // findSyncsContext is findSyncs with a cancellation check per line.
-func findSyncsContext(ctx context.Context, samples []float64, rate int, m sstvModeSpec, imageStartSec float64) ([]float64, error) {
+// found reports which lines locked a real sync pulse: a coasted line
+// kept its expected position and its geometry is only as good as the
+// clock assumption, so the count is decode-quality evidence.
+func findSyncsContext(ctx context.Context, samples []float64, rate int, m sstvModeSpec, imageStartSec float64) ([]float64, []bool, error) {
 	const hopSec, winSec = 0.002, 0.008
 	p1200, err := tonePurityContext(ctx, samples, rate, sstvFreqSync, winSec, hopSec)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	syncs := make([]float64, m.height)
+	found := make([]bool, m.height)
 	lineSec := m.lineSec()
 	expected := imageStartSec + m.firstSyncSec
 	search := 0.012 // +/-12 ms search window
@@ -209,7 +213,7 @@ func findSyncsContext(ctx context.Context, samples []float64, rate int, m sstvMo
 	}
 	for y := 0; y < m.height; y++ {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// Line 0 with the sync at the line start follows the VIS stop
 		// bit directly, and the two form one continuous 1200 Hz
@@ -218,6 +222,7 @@ func findSyncsContext(ctx context.Context, samples []float64, rate int, m sstvMo
 		// re-anchor from line 1 on, where syncs are isolated.
 		if y == 0 && m.firstSyncSec == 0 {
 			syncs[0] = imageStartSec
+			found[0] = true
 			expected = imageStartSec + lineSec
 			continue
 		}
@@ -280,9 +285,10 @@ func findSyncsContext(ctx context.Context, samples []float64, rate int, m sstvMo
 			continue
 		}
 		syncs[y] = float64(bestPos) / float64(rate)
+		found[y] = true
 		expected = syncs[y] + lineSec
 	}
-	return syncs, nil
+	return syncs, found, nil
 }
 
 func purityOf(seg []float64, rate int, freq float64) float64 {
@@ -337,6 +343,29 @@ func sampleChannel(freq []float64, rate int, startSec, scanSec float64, width in
 	return complete
 }
 
+// SSTVReport carries the decode evidence for one SSTV frame. VIS and
+// parity prove a header was heard; they say nothing about frame
+// geometry. Geometry evidence is the sync-lock count: a coasted line
+// kept its expected position because no 1200 Hz sync pulse was found,
+// so its pixels sit wherever the constant-clock assumption puts them.
+type SSTVReport struct {
+	VIS          int    // VIS code that selected the mode
+	Mode         string // mode name, e.g. "Martin M1"
+	Width        int
+	Height       int
+	DecodedLines int // lines whose channels sampled inside the audio
+	CoastedLines int // lines with no sync lock; geometry unverified
+}
+
+// CoastFraction is the share of lines whose geometry rests on the
+// constant-clock assumption rather than a locked sync pulse.
+func (r SSTVReport) CoastFraction() float64 {
+	if r.Height == 0 {
+		return 0
+	}
+	return float64(r.CoastedLines) / float64(r.Height)
+}
+
 // SSTVImage decodes the first complete SSTV frame in samples into a PNG
 // image. The VIS header picks the mode; unsupported modes and frames
 // with under 80% of their lines present in the audio return an error.
@@ -347,33 +376,47 @@ func SSTVImage(samples []float64, rate int) ([]byte, error) {
 // SSTVImageContext is SSTVImage with cancellation honoured in the
 // detection, demodulation, sync-search and line-decode stages.
 func SSTVImageContext(ctx context.Context, samples []float64, rate int) ([]byte, error) {
+	pngBytes, _, err := SSTVImageDetailedContext(ctx, samples, rate)
+	return pngBytes, err
+}
+
+// SSTVImageDetailed decodes the first complete SSTV frame like
+// SSTVImage and also returns the decode evidence report.
+func SSTVImageDetailed(samples []float64, rate int) ([]byte, SSTVReport, error) {
+	return SSTVImageDetailedContext(context.Background(), samples, rate)
+}
+
+// SSTVImageDetailedContext is SSTVImageDetailed with cancellation
+// honoured in every decode stage.
+func SSTVImageDetailedContext(ctx context.Context, samples []float64, rate int) ([]byte, SSTVReport, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, SSTVReport{}, err
 	}
 	if rate < 8000 {
-		return nil, fmt.Errorf("SSTV sample rate %d is too low", rate)
+		return nil, SSTVReport{}, fmt.Errorf("SSTV sample rate %d is too low", rate)
 	}
 	vis, err := sstvDetectContext(ctx, samples, rate)
 	if err != nil {
-		return nil, err
+		return nil, SSTVReport{}, err
 	}
 	if len(vis) == 0 {
-		return nil, fmt.Errorf("no SSTV VIS header found")
+		return nil, SSTVReport{}, fmt.Errorf("no SSTV VIS header found")
 	}
 	spec, ok := sstvModeSpecs[vis[0].VIS]
 	if !ok {
-		return nil, fmt.Errorf("unsupported SSTV mode %s (VIS 0x%02X)", vis[0].Mode, vis[0].VIS)
+		return nil, SSTVReport{}, fmt.Errorf("unsupported SSTV mode %s (VIS 0x%02X)", vis[0].Mode, vis[0].VIS)
 	}
+	report := SSTVReport{VIS: vis[0].VIS, Mode: spec.name, Width: spec.width, Height: spec.height}
 	// StartSec names the 1200 Hz break inside the header; image data
 	// follows the break, the second leader and ten 30 ms VIS bits.
 	imageStart := vis[0].StartSec + 0.010 + 0.300 + 10*sstvBitLen
 	freq, err := fmDemodContext(ctx, samples, rate)
 	if err != nil {
-		return nil, err
+		return nil, report, err
 	}
-	syncs, err := findSyncsContext(ctx, samples, rate, spec, imageStart)
+	syncs, found, err := findSyncsContext(ctx, samples, rate, spec, imageStart)
 	if err != nil {
-		return nil, err
+		return nil, report, err
 	}
 
 	img := image.NewNRGBA(image.Rect(0, 0, spec.width, spec.height))
@@ -387,17 +430,23 @@ func SSTVImageContext(ctx context.Context, samples []float64, rate int) ([]byte,
 		decoded, err = decodeRobot36(ctx, freq, rate, spec, syncs, img)
 	}
 	if err != nil {
-		return nil, err
+		return nil, report, err
 	}
 	if float64(decoded) < 0.8*float64(spec.height) {
-		return nil, fmt.Errorf("truncated %s frame: %d of %d lines present (need 80%%)",
+		return nil, report, fmt.Errorf("truncated %s frame: %d of %d lines present (need 80%%)",
 			spec.name, decoded, spec.height)
+	}
+	report.DecodedLines = decoded
+	for _, f := range found {
+		if !f {
+			report.CoastedLines++
+		}
 	}
 	var out bytes.Buffer
 	if err := png.Encode(&out, img); err != nil {
-		return nil, err
+		return nil, report, err
 	}
-	return out.Bytes(), nil
+	return out.Bytes(), report, nil
 }
 
 func decodeMartin(ctx context.Context, freq []float64, rate int, m sstvModeSpec, syncs []float64, img *image.NRGBA) (int, error) {
