@@ -300,6 +300,17 @@ func ParseWhisperJSON(data []byte) (text, lang string, confidence float64, err e
 
 // runWhisper transcribes one 16 kHz WAV with one model.
 func runWhisper(ctx context.Context, binary, model, wav string, o Options) (text, lang string, conf float64, err error) {
+	// The quality pipeline shares the one local whisper slot with
+	// Transcribe: each chunk forks the same multi-GB process, and an
+	// unbounded caller multiplied the resident model per concurrent run.
+	// Acquired before the run timeout so queueing callers do not burn
+	// their inference budget while waiting.
+	select {
+	case transcribeSlot <- struct{}{}:
+		defer func() { <-transcribeSlot }()
+	case <-ctx.Done():
+		return "", "", 0, ctx.Err()
+	}
 	base := strings.TrimSuffix(wav, ".wav")
 	args := append(whisperArgs(model, wav, o), "-ojf", "-of", base)
 	runCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)

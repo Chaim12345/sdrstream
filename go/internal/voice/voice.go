@@ -203,7 +203,11 @@ func Available(options Options) bool {
 
 // transcribeSlot serialises local whisper.cpp runs. A large-v3 model is
 // ~3 GB resident, and a fleet scan can hear voice on dozens of receivers at
-// once; one stream is the design's hard limit.
+// once; one stream is the design's hard limit. Both entry points honour
+// it: Transcribe acquires it directly, and the chunked quality pipeline
+// (TranscribeASR) acquires it per runWhisper call - per-chunk, never held
+// across chunks, and the two paths never nest, so no caller can deadlock
+// on its own slot.
 var transcribeSlot = make(chan struct{}, 1)
 
 // Transcribe recognises speech in the samples.
