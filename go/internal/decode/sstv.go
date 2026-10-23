@@ -261,19 +261,57 @@ func hasSyncCadence(p1200 []float64, hopSec, fromSec float64) bool {
 		}
 		i = j + 1
 	}
-	if len(runs) < 3 {
+	if len(runs) < 5 {
 		return false
 	}
-	consistent := 0
-	for k := 1; k+1 < len(runs); k++ {
-		d1 := float64(runs[k]-runs[k-1]) * hopSec
-		d2 := float64(runs[k+1]-runs[k]) * hopSec
-		if d1 < 0.03 || d1 > 1.1 {
+	// Sharp image edges splatter energy across the spectrum at every
+	// transition, so a real frame's run list interleaves short spurious
+	// runs between the true sync runs; consecutive-triple consensus
+	// fails on exactly the images SSTV carries (text, test cards, bar
+	// patterns). Vote on a grid instead: an anchor run plus a candidate
+	// period from a consecutive spacing predicts where later syncs
+	// land; random audio cannot align five runs on any grid, while a
+	// real cadence aligns one per line no matter how many spurious runs
+	// sit between them.
+	center := make([]float64, len(runs))
+	for idx, r := range runs {
+		j := r
+		for j < len(p1200) && p1200[j] >= 0.45 {
+			j++
+		}
+		center[idx] = float64(r+j-1) / 2 * hopSec
+	}
+	periods := map[int]bool{}
+	var candidates []float64
+	for k := 1; k < len(center); k++ {
+		d := center[k] - center[k-1]
+		if d < 0.03 || d > 1.1 {
 			continue
 		}
-		if r := d2 / d1; r > 0.85 && r < 1.15 {
-			consistent++
-			if consistent >= 2 {
+		key := int(d * 1000)
+		if !periods[key] {
+			periods[key] = true
+			candidates = append(candidates, d)
+		}
+	}
+	for _, d := range candidates {
+		tol := d * 0.12
+		if tol < 0.012 {
+			tol = 0.012
+		}
+		for a, anchor := range center {
+			aligned := 1
+			for b := a + 1; b < len(center); b++ {
+				k := (center[b] - anchor) / d
+				nearest := float64(int(k + 0.5))
+				if nearest < 1 {
+					continue
+				}
+				if diff := center[b] - anchor - nearest*d; diff < tol && diff > -tol {
+					aligned++
+				}
+			}
+			if aligned >= 5 {
 				return true
 			}
 		}

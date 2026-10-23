@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/monitor"
+	"github.com/chaim12345/sdrstream/go/internal/testutil/sstvfixture"
 	"github.com/chaim12345/sdrstream/go/internal/testutil/wefaxfixture"
 	"github.com/chaim12345/sdrstream/go/internal/voice"
 )
@@ -130,6 +131,37 @@ func TestSimulatedFeedUIServer(t *testing.T) {
 		if err := WriteCaptureMetadata(s.capturesDir, extra.name, CaptureMetadata{Mode: "wefax", Receiver: "simulated", FrequencyHz: 13900000, Started: now.Add(-40 * time.Minute), Source: extra.source}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// A decodable SSTV capture exercises the same re-decode path for the
+	// image mode whose live classification now ships: a synthesized
+	// Martin M1 frame (color bars over a gradient), decoded for real and
+	// gated for real, with honest test-fixture provenance. The click
+	// proof shows the decoded frame, the gate's own reason, and the
+	// fixture tab - what the user sees, not a code-level claim.
+	sstvSamples := sstvfixture.EncodeMartinM1(func(x, y int) (uint8, uint8, uint8) {
+		if y < sstvfixture.Height/2 {
+			switch x * 6 / sstvfixture.Width {
+			case 0:
+				return 255, 0, 0
+			case 1:
+				return 255, 255, 0
+			case 2:
+				return 0, 255, 0
+			case 3:
+				return 0, 255, 255
+			case 4:
+				return 0, 0, 255
+			default:
+				return 255, 0, 255
+			}
+		}
+		return uint8(x * 255 / (sstvfixture.Width - 1)), uint8(y * 255 / (sstvfixture.Height - 1)), 128
+	})
+	if err := voice.WriteWAV(filepath.Join(s.capturesDir, "CAP_simsstv.wav"), sstvSamples, sstvfixture.Rate); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCaptureMetadata(s.capturesDir, "CAP_simsstv.wav", CaptureMetadata{Mode: "sstv", Receiver: "simulated", FrequencyHz: 14230000, Started: now.Add(-25 * time.Minute), Source: "test-fixture"}); err != nil {
+		t.Fatal(err)
 	}
 	s.liveGallery = []LiveGalleryItem{
 		// Tall WEFAX-style chart for the lightbox zoom check. Kept on

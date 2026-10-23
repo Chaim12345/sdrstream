@@ -2,6 +2,7 @@ package decode
 
 import (
 	"bytes"
+	"github.com/chaim12345/sdrstream/go/internal/testutil/sstvfixture"
 	"image"
 	"image/png"
 	"strings"
@@ -221,5 +222,35 @@ func TestSSTVImageRejectsShortClip(t *testing.T) {
 	short := make([]float64, 22050)
 	if _, err := SSTVImage(short, 22050); err == nil {
 		t.Fatal("short clip without SSTV header accepted")
+	}
+}
+
+// Sharp image edges splatter broadband energy at every transition, so
+// the sync-cadence check must tolerate spurious short runs interleaved
+// between the true syncs. A hard-edged bar pattern (the worst case:
+// step transitions in every channel on every line) must still detect.
+func TestSSTVDetectToleratesHardEdges(t *testing.T) {
+	samples := sstvfixture.EncodeMartinM1(func(x, y int) (uint8, uint8, uint8) {
+		if y < sstvfixture.Height/2 {
+			switch x * 6 / sstvfixture.Width {
+			case 0:
+				return 255, 0, 0
+			case 1:
+				return 255, 255, 0
+			case 2:
+				return 0, 255, 0
+			case 3:
+				return 0, 255, 255
+			case 4:
+				return 0, 0, 255
+			default:
+				return 255, 0, 255
+			}
+		}
+		return uint8(x * 255 / (sstvfixture.Width - 1)), uint8(y * 255 / (sstvfixture.Height - 1)), 128
+	})
+	hits := SSTVDetect(samples, sstvfixture.Rate)
+	if len(hits) != 1 || hits[0].VIS != 0x2C {
+		t.Fatalf("hard-edged frame: %+v, want one Martin M1 hit", hits)
 	}
 }
