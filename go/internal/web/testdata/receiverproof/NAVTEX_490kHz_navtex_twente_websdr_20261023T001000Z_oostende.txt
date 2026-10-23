@@ -1,0 +1,10 @@
+frequency_hz=490000
+mode=navtex
+receiver=websdr.ewi.utwente.nl:8901
+decode=station=B subject=A serial=31 222232 UTC OCT OOSTENDERADIO MSI 395/26 EEZ F/V YE44 DENNIS HEEFT EEN SPRINGTUIG OVERBOORD GEGOOID IN POSITIE 5123.44N 00312.99E SCHEEPVAART WORDT VERZOCHT NOCH TE VISSEN NOCH TE ANKEREN IN DE NABIJHEID.
+kind=data
+target=NAVTEX 490 kHz Oostende
+gate=english-only live gate: no English NAVTEX vocabulary
+started=2026-10-23T00:10:00Z
+duration_sec=540.000
+verified=false

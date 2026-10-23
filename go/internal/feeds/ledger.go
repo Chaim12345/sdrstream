@@ -14,6 +14,12 @@ import (
 const (
 	DecodedByProvider = "provider" // the upstream service decoded it; we relay it
 	DecodedByUs       = "sdrstream"
+
+	// Evidence classes for entries decoded by sdrstream itself. Feed
+	// entries leave Evidence empty: their honesty label is DecodedBy,
+	// because the provider vouches for the decode, not us.
+	EvidenceVerified   = "verified"   // our decode passed the live quality gate
+	EvidenceUnverified = "unverified" // archived, but the live gate rejected it (see Gate)
 )
 
 // LedgerEntry is one proof record: where an item came from, when the
@@ -30,6 +36,8 @@ type LedgerEntry struct {
 	DecodedBy string    `json:"decoded_by"`
 	Ref       string    `json:"ref,omitempty"`
 	Receiver  string    `json:"receiver,omitempty"` // receiver ID for source="receiver" captures
+	Evidence  string    `json:"evidence,omitempty"` // EvidenceVerified / EvidenceUnverified for own decodes
+	Gate      string    `json:"gate,omitempty"`     // quality-gate reason when Evidence is unverified
 	Lat       float64   `json:"lat,omitempty"`
 	Lon       float64   `json:"lon,omitempty"`
 }

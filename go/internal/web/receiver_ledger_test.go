@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -109,6 +110,24 @@ func TestReceiverCaptureLedgerMatchesMetrics(t *testing.T) {
 	if !strings.HasPrefix(ft8.Ref, "/audio/") || !strings.HasSuffix(ft8.Ref, ".wav") {
 		t.Fatalf("audio link = %q", ft8.Ref)
 	}
+	if ft8.Evidence != feeds.EvidenceVerified || ft8.Gate != "" {
+		t.Fatalf("verified clip evidence/gate = %q/%q", ft8.Evidence, ft8.Gate)
+	}
+
+	// The gate-rejected clip must keep its honest verdict in the ledger:
+	// unverified, with the gate reason, never silently upgraded.
+	var noise *feeds.LedgerEntry
+	for i := range entries {
+		if strings.Contains(entries[i].ID, "10136") {
+			noise = &entries[i]
+		}
+	}
+	if noise == nil {
+		t.Fatalf("no ledger entry for the rejected clip: %+v", entries)
+	}
+	if noise.Evidence != feeds.EvidenceUnverified || noise.Gate != "no decodable content" {
+		t.Fatalf("rejected clip evidence/gate = %q/%q", noise.Evidence, noise.Gate)
+	}
 
 	// The audio link must resolve against the archive.
 	rr = httptest.NewRecorder()
@@ -169,9 +188,74 @@ func TestReceiverCaptureLedgerServedOverAPI(t *testing.T) {
 		t.Fatalf("ledger.json = %d", rr.Code)
 	}
 	body := rr.Body.String()
-	for _, want := range []string{`"source": "receiver"`, `"decoded_by": "sdrstream"`, `"receiver": "kiwi.test:8073"`, "/audio/", "ZCZC FA01"} {
+	for _, want := range []string{`"source": "receiver"`, `"decoded_by": "sdrstream"`, `"receiver": "kiwi.test:8073"`, "/audio/", "ZCZC FA01", `"evidence": "verified"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("ledger.json missing %q: %s", want, body)
 		}
+	}
+}
+
+// Real preserved proofs as fixtures: the two NAVTEX 490 kHz decodes
+// recovered from the failed expansion run (docs/recovery/navtex-ext-490-4209
+// on feat/navtex-ext-490-4209-recovery; the decode text in these sidecars is
+// verbatim from proof-490-oostende-20261023T0010Z.txt and
+// proof-490-portpatrick-20261023T0020Z.txt). Neither passed the live gate -
+// one was rejected by the then English-only vocabulary, one ran past the
+// window - so the ledger must show them as unverified with the gate reason,
+// while keeping the genuine decoded content visible.
+func TestReceiverLedgerRealPreservedProofs(t *testing.T) {
+	fixtures, err := filepath.Glob(filepath.Join("testdata", "receiverproof", "*.txt"))
+	if err != nil || len(fixtures) != 2 {
+		t.Fatalf("fixtures: %v (n=%d)", err, len(fixtures))
+	}
+	capturesDir := t.TempDir()
+	ledgerPath := filepath.Join(t.TempDir(), "sdrstream-ledger.jsonl")
+	for _, fx := range fixtures {
+		base := strings.TrimSuffix(filepath.Base(fx), ".txt")
+		data, err := os.ReadFile(fx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := common.WriteWAVFile(filepath.Join(capturesDir, base+".wav"), []int16{1, 2, 3}, 7119); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(capturesDir, base+".txt"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s, l := receiverLedgerServer(t, capturesDir, ledgerPath)
+	got := s.scanCaptures()
+	l.Close()
+	if len(got) != 2 {
+		t.Fatalf("scanCaptures = %d, want 2", len(got))
+	}
+	entries := l.Query(ReceiverLedgerSource, 5000)
+	if len(entries) != 2 {
+		t.Fatalf("receiver ledger entries = %d, want 2", len(entries))
+	}
+	var oostende, portpatrick *feeds.LedgerEntry
+	for i := range entries {
+		switch {
+		case strings.Contains(entries[i].ID, "oostende"):
+			oostende = &entries[i]
+		case strings.Contains(entries[i].ID, "portpatrick"):
+			portpatrick = &entries[i]
+		}
+	}
+	if oostende == nil || portpatrick == nil {
+		t.Fatalf("missing fixture entries: %+v", entries)
+	}
+	if !strings.Contains(oostende.Detail, "OOSTENDERADIO MSI 395/26") {
+		t.Fatalf("oostende decode text = %q", oostende.Detail)
+	}
+	if oostende.Evidence != feeds.EvidenceUnverified || !strings.Contains(oostende.Gate, "english-only live gate") {
+		t.Fatalf("oostende evidence/gate = %q/%q", oostende.Evidence, oostende.Gate)
+	}
+	if !strings.Contains(portpatrick.Detail, "MET OFFICE") {
+		t.Fatalf("portpatrick decode text = %q", portpatrick.Detail)
+	}
+	if portpatrick.Evidence != feeds.EvidenceUnverified || !strings.Contains(portpatrick.Gate, "gate-incomplete") {
+		t.Fatalf("portpatrick evidence/gate = %q/%q", portpatrick.Evidence, portpatrick.Gate)
 	}
 }

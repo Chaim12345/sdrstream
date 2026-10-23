@@ -20,7 +20,7 @@ const link = (href, text) => {
   a.textContent = text;
   return a;
 };
-const shortURL = u => { try { return new URL(u).host; } catch { return u; } };
+const shortURL = u => { try { return new URL(u).host || u; } catch { return u; } };
 const relTime = iso => {
   const s = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
   if (s < 60) return s + 's ago';
@@ -329,6 +329,8 @@ function renderHealth() {
   const feedsLink = document.createElement('button');
   feedsLink.className = 'linklike'; feedsLink.textContent = 'open live data'; feedsLink.onclick = () => showView('feeds');
   el('health-ledger').appendChild(feedsLink);
+
+  renderReceiverProof(entries);
 }
 
 function renderCaptures(status) {
@@ -1763,3 +1765,71 @@ setInterval(refreshLive, 1000);
 setInterval(refreshGallery, 60000);
 setInterval(refreshStations, 300000);
 setInterval(refreshBandCond, 900000);
+
+/* ---------- receiver proof ledger (own captures, honest verdicts) ---------- */
+/* Every archived receiver capture lands one proof-ledger entry
+   (source="receiver"). Each entry keeps the live quality gate's verdict as
+   an explicit evidence class - "verified live" only when the gate passed,
+   otherwise "unverified" with the gate reason - plus the playable clip and
+   the raw decode, so the archive can never show a rejected clip as more
+   than it is. */
+function renderReceiverProof(entries) {
+  const box = el('rxproof-list');
+  if (!box) return;
+  const mine = (entries || []).filter(e => e.source === 'receiver')
+    .slice().sort((a, b) => String(b.provider_time).localeCompare(String(a.provider_time)));
+  box.textContent = '';
+  if (!mine.length) {
+    box.innerHTML = '<div class="empty">no receiver captures archived yet - scheduled captures land here with their audio, decode and verdict</div>';
+    return;
+  }
+  mine.slice(0, 8).forEach(e => {
+    const card = document.createElement('div'); card.className = 'card rxproof-card';
+    const title = document.createElement('div'); title.className = 'card-title';
+    const b = document.createElement('b'); b.textContent = e.label || 'capture';
+    const when = document.createElement('span'); when.className = 'muted';
+    when.textContent = ' ' + fmtDate(e.provider_time);
+    title.append(b, when); card.appendChild(title);
+    const badges = document.createElement('div'); badges.className = 'badge-row';
+    const ev = document.createElement('span');
+    if (e.evidence === 'verified') {
+      ev.className = 'badge verified'; ev.textContent = 'verified live';
+    } else {
+      ev.className = 'badge unverified';
+      ev.textContent = e.evidence === 'unverified' ? 'unverified' : 'not gated';
+      if (e.gate) ev.title = 'quality gate: ' + e.gate;
+    }
+    badges.appendChild(ev);
+    const src = document.createElement('span');
+    src.className = 'badge scheduled'; src.textContent = 'decoded by sdrstream';
+    badges.appendChild(src);
+    if (e.receiver) {
+      const rx = document.createElement('span'); rx.className = 'badge blind'; rx.textContent = shortURL(e.receiver);
+      badges.appendChild(rx);
+    }
+    card.appendChild(badges);
+    if (e.gate) {
+      const g = document.createElement('div'); g.className = 'card-meta';
+      g.textContent = 'quality gate: ' + e.gate;
+      card.appendChild(g);
+    }
+    if (e.detail) {
+      const d = document.createElement('pre'); d.className = 'proof-decode'; d.textContent = e.detail;
+      card.appendChild(d);
+    }
+    if (e.ref && e.ref.indexOf('/audio/') === 0) {
+      const au = document.createElement('audio');
+      au.className = 'proof-audio'; au.controls = true; au.preload = 'none'; au.src = e.ref;
+      au.setAttribute('aria-label', 'listen to ' + (e.label || 'capture'));
+      card.appendChild(au);
+      card.appendChild(recordButtonFor(au));
+    }
+    card.appendChild(Object.assign(document.createElement('div'), { className: 'card-meta', textContent: 'archived ' + e.id }));
+    box.appendChild(card);
+  });
+  if (mine.length > 8) {
+    const more = document.createElement('div'); more.className = 'muted';
+    more.textContent = '+ ' + (mine.length - 8) + ' older receiver entries in the full proof ledger (live data view)';
+    box.appendChild(more);
+  }
+}
