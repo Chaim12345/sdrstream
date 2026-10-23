@@ -19,7 +19,7 @@
     const node = document.createElement('article'); node.className = 'card-activity history-result';
     const heading = document.createElement('div'); heading.className = 'row';
     const badge = document.createElement('span'); badge.className = 'badge';
-    badge.textContent = labels[item.source_class] || labels.unknown;
+    badge.textContent = item.rejected ? 'recorded gate rejection: ' + item.rejected : labels[item.source_class] || labels.unknown;
     heading.appendChild(badge); node.appendChild(heading);
     const meta = document.createElement('div'); meta.className = 'muted';
     meta.textContent = item.store + ' · ' + (item.mode || 'mode unknown') + ' · ' + fmtDate(item.started);

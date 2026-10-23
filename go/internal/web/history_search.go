@@ -189,12 +189,26 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	values := r.URL.Query()
+	allowed := map[string]bool{"q": true, "source-class": true, "source_class": true, "mode": true, "redecode": true, "limit": true, "offset": true}
+	for key, vals := range values {
+		if !allowed[key] || len(vals) != 1 {
+			http.Error(w, "unknown or repeated query parameter: "+key, http.StatusBadRequest)
+			return
+		}
+	}
+	if values.Has("source-class") && values.Has("source_class") && values.Get("source-class") != values.Get("source_class") {
+		http.Error(w, "conflicting source class aliases", http.StatusBadRequest)
+		return
+	}
 	q := strings.TrimSpace(values.Get("q"))
 	if len(q) > 1024 {
 		http.Error(w, "q is limited to 1024 bytes", http.StatusBadRequest)
 		return
 	}
 	class := values.Get("source-class")
+	if class == "" {
+		class = values.Get("source_class")
+	}
 	switch class {
 	case "", historySynthetic, historyForeign, historyUnknown, historyLiveVerified, historyLiveUnverified, historyLiveRedecode:
 	default:

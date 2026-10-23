@@ -291,3 +291,21 @@ func TestShellWiresHistorySearch(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHistorySourceAliasAndUnknownParameterRejection(t *testing.T) {
+	s := newTestServer(t)
+	s.captures = []Capture{{Path: "fixture.wav", Source: "test-fixture"}, {Path: "own.wav", Source: "live", Verified: true}}
+	for _, query := range []string{"?source_class=synthetic", "?source-class=synthetic", "?source_class=synthetic&source-class=synthetic"} {
+		p := historyRequest(t, s, query)
+		if p.Total != 1 || p.Items[0].SourceClass != historySynthetic {
+			t.Fatal(query, p)
+		}
+	}
+	for _, query := range []string{"?source_clas=synthetic", "?unknown=synthetic", "?source_class=synthetic&source-class=foreign", "?q=a&q=b", "?source_class=synthetic&source_class=foreign"} {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/api/history/search"+query, nil))
+		if rec.Code != 400 {
+			t.Fatalf("%s status%d", query, rec.Code)
+		}
+	}
+}

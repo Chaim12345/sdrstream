@@ -38,3 +38,8 @@ test('no history differs from no matching filter',async()=>{
  $('history-form').fire('submit');pending[1].resolve({...page([]),available:0});await flush();
  assert.match($('history-results').textContent,/No capture, decode or gallery metadata/);
 });
+test('recorded rejection wins history card badge even with live source',async()=>{
+ const {$,pending}=harness();$('history-form').fire('submit');
+ pending[0].resolve(page([{store:'capture',source_class:'live-unverified',rejected:'specific failure'}]));await flush();
+ assert.equal($('history-results').children[0].children[0].children[0].textContent,'recorded gate rejection: specific failure');
+});

@@ -1327,7 +1327,7 @@ func TestShellWiresMsglog(t *testing.T) {
 	if !strings.Contains(string(sw), "'/static/msglog.js'") {
 		t.Fatal("service worker shell missing /static/msglog.js")
 	}
-	if strings.Contains(string(sw), "sdrstream-shell-v1'") || strings.Contains(string(sw), "sdrstream-shell-v2'") {
+	if !strings.Contains(string(sw), "const CACHE = 'sdrstream-shell-v4';") {
 		t.Fatal("service worker CACHE not bumped for the msglog shell change")
 	}
 	if _, err := staticFS.ReadFile("static/msglog.js"); err != nil {
