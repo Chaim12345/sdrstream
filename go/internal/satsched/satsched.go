@@ -147,31 +147,48 @@ type candidate struct {
 	event    string // dated event that overrode the catalogue downlink, "" if none
 }
 
+// applyEventOverride retargets a catalogue entry to a dated transmission
+// event (e.g. an ARISS SSTV series on 70cm) covering [now, windowEnd]: the
+// event frequency and mode become the chase target and the catalogue beacon
+// list is dropped, because the beacon preference belongs to the normal
+// operating plan and must not win the frequency back during an event.
+// Returns the event name, or "" and the unchanged entry when no event
+// applies.
+func applyEventOverride(sat satellites.Sat, now, windowEnd time.Time) (satellites.Sat, string) {
+	ev := satellites.EventCovering(sat.Name, now, windowEnd)
+	if ev == nil {
+		return sat, ""
+	}
+	sat.DownlinkHz = ev.DownlinkHz
+	sat.Mode = ev.Mode
+	sat.Beacons = nil
+	return sat, ev.Name
+}
+
 // plan finds the best next pass: earliest rise wins; when two passes overlap,
 // the satellite earlier in the priority list wins.
 func (s *Service) plan() (*candidate, time.Duration) {
 	var candidates []candidate
 	for priority, name := range s.opts.Priority {
 		sat, err := satByName(name)
-		if err != nil || sat.Status != "active" {
+		if err != nil {
+			continue
+		}
+		if sat.Status != "active" {
+			// Intentional refusal, not an oversight: retired birds (NOAA
+			// 15/18/19, decommissioned per NOAA OSPO 2025; APT
+			// unvalidated) are never scheduled, even on explicit
+			// request. See README "Satellite scheduling".
+			s.say(fmt.Sprintf("%s skipped: status %q - retired satellites are not scheduled (intentional; see README)", name, sat.Status))
 			continue
 		}
 		// A dated transmission event (e.g. an ARISS SSTV series on 70cm)
 		// overrides the catalogue downlink for the whole lookahead window:
 		// tune the event frequency and vet receiver coverage against it,
 		// never silently against the legacy default.
-		eventName := ""
 		now := time.Now()
 		windowEnd := now.Add(time.Duration(s.opts.LookaheadH * float64(time.Hour)))
-		if ev := satellites.EventCovering(sat.Name, now, windowEnd); ev != nil {
-			sat.DownlinkHz = ev.DownlinkHz
-			sat.Mode = ev.Mode
-			// The catalogue beacon list belongs to the normal operating
-			// plan; during an event the event downlink is the target, so
-			// the beacon preference must not win it back.
-			sat.Beacons = nil
-			eventName = ev.Name
-		}
+		sat, eventName := applyEventOverride(sat, now, windowEnd)
 		receivers := catalogue.ForFrequency(float64(sat.DownlinkHz))
 		if len(receivers) == 0 {
 			continue

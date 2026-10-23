@@ -30,19 +30,24 @@ EVENTS = [
     Event(
         satellite="ISS",
         name="ARISS SSTV Series 34 (ARISS Hardware)",
-        start_utc="2026-10-22T15:10:00Z",
+        start_utc="2026-10-22T15:30:00Z",
         end_utc="2026-10-26T17:45:00Z",
         downlink_hz=437_550_000,
         mode="FM",
         image_mode="Robot36",
         callsign="RS0ISS",
-        # Sources disagree on the end: AMSAT (2026-10-18) says "concludes
-        # Oct 25 TBD"; DARC-E39 (2026-10-21) says Oct 26 17:45 UTC. The
-        # later bound is kept deliberately as the conservative choice for
-        # capture planning; not a silent reconciliation.
+        # End resolved from the owning source 2026-10-23: the ARISS
+        # announcement (@arissintl.bsky.social, 2026-10-14, verbatim
+        # republication via sbarc.co.uk) states Start 15:30 UTC 22/10,
+        # End 17:45 UTC 26/10; its 2026-10-21 update EXTENDED the end.
+        # Secondary "Oct 22-25" renderings are lossy summaries, not a
+        # disagreement. Dates remain subject to ISS operational changes.
         source=(
-            "https://www.amsat.org/?page_id=fulsovcs (2026-10-18); corroborated by "
-            "DARC darc.de 2026-10-20, darc-e39.org 2026-10-21, w5pro.com 2026-10-20. Re-verified 2026-10-23: primary announcements (ARISS via sbarc.co.uk 2026-10-14, slowscantv.com) say Oct 22-25; no source extends beyond Oct 26 17:45 UTC."
+            "Owning source: ARISS @arissintl.bsky.social 2026-10-14 post, verbatim republication "
+            "https://www.sbarc.co.uk/news/expedition-75-series-34-sstv-from-the-iss/ "
+            "(updates 2026-10-20 confirmed, 2026-10-21 end extended to Oct 26 17:45 UTC). "
+            "Corroborated by darc.de 2026-10-20, darc-e39.org 2026-10-21, f6kmf.fr 2026-10-15. "
+            "Verified 2026-10-23."
         ),
         notes=(
             "36 s on, 2 min off; allow +/-10 kHz Doppler. After the event the Service Module "

@@ -123,6 +123,18 @@ python -m sdrstream catalogue --refresh
 python -m sdrstream schedule --add ISS --run
 ```
 
+### Satellite scheduling
+
+Behavior change (2026-10-23): the scheduler no longer records NOAA 15/18/19,
+and requesting them explicitly is refused with a logged reason. All three
+were decommissioned in 2025 (NOAA OSPO: 18 on 2025-06-06, 19 on 2025-08-13,
+15 on 2025-08-19) and this project has no validated APT reception from any of
+them - 2026-10-23 reception attempts decoded noise only. Pass predictions for
+them remain visible in the UI as orbital facts, labelled decommissioned, not
+transmission promises. The default chase priority is ISS-only, which carries
+current validated traffic (SSTV event series on 437.550 MHz, APRS). This is
+an intentional change, not a regression in receiver coverage.
+
 ## Web UI
 
 `go run ./cmd/sdrstream web` serves a single page over the same modules the
