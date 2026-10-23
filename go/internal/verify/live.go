@@ -115,6 +115,31 @@ func Image(kind string, data []byte) Result {
 	return Result{true, "image ok"}
 }
 
+// SSTVReport carries the decode evidence for one SSTV frame. VIS and
+// parity prove a header was heard; they say nothing about frame
+// geometry. Geometry evidence is the sync-lock count: a coasted line
+// kept its expected position because no 1200 Hz sync pulse was found,
+// so its pixels sit wherever the constant-clock assumption puts them.
+// The type lives here so the publication gate can consume the actual
+// report, not caller-extracted counts; decode aliases it.
+type SSTVReport struct {
+	VIS          int    // VIS code that selected the mode; never 0 from a real detect
+	Mode         string // mode name, e.g. "Martin M1"
+	Width        int
+	Height       int
+	DecodedLines int // lines whose channels sampled inside the audio
+	CoastedLines int // lines with no sync lock; geometry unverified
+}
+
+// CoastFraction is the share of lines whose geometry rests on the
+// constant-clock assumption rather than a locked sync pulse.
+func (r SSTVReport) CoastFraction() float64 {
+	if r.Height == 0 {
+		return 0
+	}
+	return float64(r.CoastedLines) / float64(r.Height)
+}
+
 // sstvMaxCoastFraction bounds the share of frame lines whose sync
 // pulse was never locked (the decoder coasted them on a constant-clock
 // assumption). Provisional fixture-derived decision, not a physical
@@ -125,28 +150,48 @@ func Image(kind string, data []byte) Result {
 // 0.05 tolerates isolated fade losses while flagging systematic loss.
 const sstvMaxCoastFraction = 0.05
 
-// SSTVImage gates a decoded SSTV frame on the decoder's own evidence,
-// not on PNG variance alone. A parity-valid VIS header proves a header
-// was heard; it says nothing about frame geometry. The only geometry
-// evidence is the per-line sync-lock count from the decode report, so
-// the report is mandatory: without it the frame cannot be verified.
-// Passing means coasting is bounded by the fixture-derived ceiling -
-// it is bounded evidence, never certified geometry. Failing or absent
-// evidence means the geometry is unverified, not necessarily bad.
-func SSTVImage(kind string, data []byte, coastedLines, lineCount int) Result {
+// SSTVImage gates a decoded SSTV frame on the decoder's own report,
+// not on PNG variance alone and not on caller-extracted counts: the
+// VIS claim in a passing reason comes from the report itself. A
+// parity-valid VIS header proves a header was heard; it says nothing
+// about frame geometry. The only geometry evidence is the per-line
+// sync-lock count, so the report is mandatory and must be internally
+// consistent: a nil report, a zero VIS, impossible counts, or
+// dimensions that do not match the decoded image all fail. Passing
+// means coasting is bounded by the fixture-derived ceiling - bounded
+// evidence, never certified geometry. Failing or absent evidence
+// means the geometry is unverified, not necessarily bad.
+func SSTVImage(kind string, data []byte, rep *SSTVReport) Result {
 	if v := Image(kind, data); !v.Live {
 		return v
 	}
-	if lineCount <= 0 {
+	if rep == nil {
 		return Result{false, "sstv geometry unverified: no decode report (a VIS header is not geometry evidence)"}
 	}
-	coast := float64(coastedLines) / float64(lineCount)
+	if rep.VIS == 0 || rep.Mode == "" {
+		return Result{false, "sstv geometry unverified: report has no source VIS/mode (a real detect always names both)"}
+	}
+	if rep.Width <= 0 || rep.Height <= 0 {
+		return Result{false, fmt.Sprintf("sstv geometry unverified: report dimensions %dx%d impossible", rep.Width, rep.Height)}
+	}
+	if rep.CoastedLines < 0 || rep.CoastedLines > rep.Height {
+		return Result{false, fmt.Sprintf("sstv geometry unverified: report coasted count %d of %d impossible", rep.CoastedLines, rep.Height)}
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return Result{false, "invalid PNG"}
+	}
+	if cfg.Width != rep.Width || cfg.Height != rep.Height {
+		return Result{false, fmt.Sprintf("sstv geometry unverified: report %s %dx%d does not match decoded image %dx%d",
+			rep.Mode, rep.Width, rep.Height, cfg.Width, cfg.Height)}
+	}
+	coast := rep.CoastFraction()
 	if coast > sstvMaxCoastFraction {
 		return Result{false, fmt.Sprintf("sstv geometry unverified: %d/%d lines coasted without sync lock (ceiling %.2f, fixture-derived)",
-			coastedLines, lineCount, sstvMaxCoastFraction)}
+			rep.CoastedLines, rep.Height, sstvMaxCoastFraction)}
 	}
-	return Result{true, fmt.Sprintf("sstv reception verified (parity-checked VIS); sync coasting bounded %d/%d - evidence, not geometry certification",
-		coastedLines, lineCount)}
+	return Result{true, fmt.Sprintf("sstv reception verified: %s VIS 0x%02X (parity-checked); sync coasting bounded %d/%d - evidence, not geometry certification",
+		rep.Mode, rep.VIS, rep.CoastedLines, rep.Height)}
 }
 
 // WEFAXImage gates a decoded WEFAX chart on the decoder's own sync

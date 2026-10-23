@@ -55,7 +55,7 @@ func TestSSTVReportGoodCorpusNoCoast(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if v := verify.SSTVImage("sstv", pngBytes, rep.CoastedLines, rep.Height); !v.Live {
+		if v := verify.SSTVImage("sstv", pngBytes, &rep); !v.Live {
 			t.Errorf("%s: good frame failed publication gate: %s", name, v.Reason)
 		}
 	}
@@ -81,7 +81,7 @@ func TestSSTVReportSynclossDriftNegative(t *testing.T) {
 		t.Error("no PNG produced")
 	}
 	// The gate catches what the decoder alone does not.
-	if v := verify.SSTVImage("sstv", pngBytes, rep.CoastedLines, rep.Height); v.Live {
+	if v := verify.SSTVImage("sstv", pngBytes, &rep); v.Live {
 		t.Error("torn-geometry frame passed the publication gate")
 	}
 	if os.Getenv("SSTV_WRITE_DEBUG_PNG") != "" {

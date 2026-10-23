@@ -39,23 +39,22 @@ type Source interface {
 
 // Activity is one detected transmission.
 type Activity struct {
-	ID                 int        `json:"id"`
-	Started            time.Time  `json:"started"`
-	Ended              *time.Time `json:"ended,omitempty"` // nil when the transmission was not recorded
-	FrequencyHz        float64    `json:"frequency_hz"`
-	BandwidthHz        float64    `json:"bandwidth_hz"`
-	LevelDB            float64    `json:"level_db"`
-	Kind               string     `json:"kind"`             // voice, data, cw, carrier, noise, unknown
-	Mode               string     `json:"mode,omitempty"`   // decoder or modulation that produced the detail
-	Detail             string     `json:"detail,omitempty"` // decoded payload or transcript
-	VerificationAnchor string     `json:"-"`                // expected callsign/phrase for the live quality gate
-	SSTVCoastedLines   int        `json:"-"`                // SSTV decode report: lines coasted without sync lock
-	SSTVLineCount      int        `json:"-"`                // SSTV decode report: mode spec line count; 0 = no report (evidence unknown)
-	Label              string     `json:"label,omitempty"`
-	Target             string     `json:"target,omitempty"` // named service a scheduled target was aimed at
-	Source             string     `json:"source"`
-	DurationSec        float64    `json:"duration_sec"`
-	AudioPath          string     `json:"audio_path,omitempty"`
+	ID                 int                `json:"id"`
+	Started            time.Time          `json:"started"`
+	Ended              *time.Time         `json:"ended,omitempty"` // nil when the transmission was not recorded
+	FrequencyHz        float64            `json:"frequency_hz"`
+	BandwidthHz        float64            `json:"bandwidth_hz"`
+	LevelDB            float64            `json:"level_db"`
+	Kind               string             `json:"kind"`             // voice, data, cw, carrier, noise, unknown
+	Mode               string             `json:"mode,omitempty"`   // decoder or modulation that produced the detail
+	Detail             string             `json:"detail,omitempty"` // decoded payload or transcript
+	VerificationAnchor string             `json:"-"`                // expected callsign/phrase for the live quality gate
+	SSTVReport         *verify.SSTVReport `json:"-"`                // decode evidence for an SSTV image; nil = no report = unknown. Dropped on any JSON round-trip: re-verification must treat a missing report as unknown (conservative), never as clean.
+	Label              string             `json:"label,omitempty"`
+	Target             string             `json:"target,omitempty"` // named service a scheduled target was aimed at
+	Source             string             `json:"source"`
+	DurationSec        float64            `json:"duration_sec"`
+	AudioPath          string             `json:"audio_path,omitempty"`
 	// FrequencyRefined marks a coarse-panorama detection whose frequency
 	// was confirmed by a zoomed refinement window. Without it the
 	// frequency is a bin centre with FrequencyUncertaintyHz of error,
@@ -1211,13 +1210,16 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 		}
 		kind, modeName, detail, asr := m.classify(ctx, samples, rate, work.bandwidth)
 		var imageData []byte
-		var sstvRep decode.SSTVReport
+		var sstvRep *verify.SSTVReport
 		if kind == "sstv" && bestImage == nil {
-			imageData, sstvRep, _ = decode.SSTVImageDetailed(samples, rate)
-			if len(imageData) > 0 {
-				if v := verify.SSTVImage("sstv", imageData, sstvRep.CoastedLines, sstvRep.Height); !v.Live {
+			data, rep, err := decode.SSTVImageDetailed(samples, rate)
+			if err == nil && len(data) > 0 {
+				rep := rep
+				if v := verify.SSTVImage("sstv", data, &rep); !v.Live {
 					log.Printf("monitor: SSTV image withheld: %s", v.Reason)
-					imageData = nil
+				} else {
+					imageData = data
+					sstvRep = &rep
 				}
 			}
 		}
@@ -1233,7 +1235,7 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 			Kind: kind, Mode: modeName, Detail: detail, Source: m.opts.Name, Label: m.opts.Label,
 			DurationSec: float64(len(samples)) / float64(rate),
 			Confidence:  asr.Confidence, Language: asr.Language, ASRModel: asr.Model, ASRFallback: asr.Fallback, ASRBackend: asr.Backend, VerificationAnchor: activity.VerificationAnchor,
-			SSTVCoastedLines: sstvRep.CoastedLines, SSTVLineCount: sstvRep.Height,
+			SSTVReport: sstvRep,
 		}
 		if m.opts.OutDir != "" && (m.opts.SaveAudio == nil || m.opts.SaveAudio(kind)) {
 			// Archive before the noise/unknown filter. The detector already
@@ -1285,7 +1287,7 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 	if best.Kind != "noise" && best.Kind != "silence" && best.Kind != "unknown" {
 		m.publish(best)
 		if best.Kind == "sstv" && len(bestImage) > 0 && m.opts.OnImage != nil &&
-			verify.SSTVImage(best.Kind, bestImage, best.SSTVCoastedLines, best.SSTVLineCount).Live {
+			verify.SSTVImage(best.Kind, bestImage, best.SSTVReport).Live {
 			m.opts.OnImage(best, bestImage)
 		}
 	}

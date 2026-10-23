@@ -593,7 +593,7 @@ func DecodeFramesContext(ctx context.Context, saved []Item, dir string) []Item {
 			// Same honesty bar as the live monitor path: a VIS header
 			// is reception evidence, not geometry; withhold frames
 			// whose sync-lock evidence fails or is absent.
-			if v := verify.SSTVImage("sstv", png, sstvRep.CoastedLines, sstvRep.Height); !v.Live {
+			if v := verify.SSTVImage("sstv", png, &sstvRep); !v.Live {
 				item.DecodeStatus = "frame decode withheld: " + v.Reason
 				continue
 			}

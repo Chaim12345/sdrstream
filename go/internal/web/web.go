@@ -155,6 +155,11 @@ type LiveGalleryItem struct {
 	AudioURL       string    `json:"audio_url,omitempty"`
 	Size           int64     `json:"size,omitempty"`
 	Text           string    `json:"text,omitempty"`
+	// Verification is the gate reason recorded when the item was
+	// verified, so the claim stays auditable after the manifest
+	// round-trips through disk. Empty on items written before the
+	// field existed: unknown provenance, never re-labeled.
+	Verification string `json:"verification,omitempty"`
 }
 
 // obsCacheEntry is one cached SatNOGS observations lookup.
@@ -1084,13 +1089,16 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 
 // AddLiveArtifact saves a verified decoder result with source metadata.
 func (s *Server) AddLiveArtifact(activity monitor.Activity, pngData []byte) error {
+	verification := ""
 	if len(pngData) > 0 && activity.Kind == "sstv" {
 		// SSTV frames verify on the decode report's sync-lock
 		// evidence carried by the activity; without a report the
 		// frame cannot be verified (no generic PNG bypass).
-		if v := verify.SSTVImage(activity.Kind, pngData, activity.SSTVCoastedLines, activity.SSTVLineCount); !v.Live {
+		v := verify.SSTVImage(activity.Kind, pngData, activity.SSTVReport)
+		if !v.Live {
 			return fmt.Errorf("live verification rejected content: %s", v.Reason)
 		}
+		verification = v.Reason
 	} else if err := verify.Live(activity.Kind, activity.Mode, activity.Detail, pngData, activity.VerificationAnchor); err != nil {
 		return fmt.Errorf("live verification rejected content: %w", err)
 	}
@@ -1113,7 +1121,7 @@ func (s *Server) AddLiveArtifact(activity monitor.Activity, pngData []byte) erro
 	if station == "" {
 		station = activity.Source
 	}
-	item := LiveGalleryItem{Source: "live", ObservationID: 0, Satellite: "Live reception", Station: station, Start: activity.Started, Mode: activity.Mode, FrequencyHz: int64(activity.FrequencyHz), Kind: kind, Name: name, URL: "/gallery/" + url.PathEscape(name), Size: int64(len(data)), Text: activity.Detail}
+	item := LiveGalleryItem{Source: "live", ObservationID: 0, Satellite: "Live reception", Station: station, Start: activity.Started, Mode: activity.Mode, FrequencyHz: int64(activity.FrequencyHz), Kind: kind, Name: name, URL: "/gallery/" + url.PathEscape(name), Size: int64(len(data)), Text: activity.Detail, Verification: verification}
 	if activity.AudioPath != "" {
 		audioName := name + ".wav"
 		src, err := os.ReadFile(activity.AudioPath)

@@ -8,6 +8,8 @@ import (
 	"image/color"
 	"image/png"
 	"math"
+
+	"github.com/chaim12345/sdrstream/go/internal/verify"
 )
 
 // SSTV image decoding. The signal is FM: 1500 Hz is black, 2300 Hz is
@@ -343,28 +345,11 @@ func sampleChannel(freq []float64, rate int, startSec, scanSec float64, width in
 	return complete
 }
 
-// SSTVReport carries the decode evidence for one SSTV frame. VIS and
-// parity prove a header was heard; they say nothing about frame
-// geometry. Geometry evidence is the sync-lock count: a coasted line
-// kept its expected position because no 1200 Hz sync pulse was found,
-// so its pixels sit wherever the constant-clock assumption puts them.
-type SSTVReport struct {
-	VIS          int    // VIS code that selected the mode
-	Mode         string // mode name, e.g. "Martin M1"
-	Width        int
-	Height       int
-	DecodedLines int // lines whose channels sampled inside the audio
-	CoastedLines int // lines with no sync lock; geometry unverified
-}
-
-// CoastFraction is the share of lines whose geometry rests on the
-// constant-clock assumption rather than a locked sync pulse.
-func (r SSTVReport) CoastFraction() float64 {
-	if r.Height == 0 {
-		return 0
-	}
-	return float64(r.CoastedLines) / float64(r.Height)
-}
+// SSTVReport is the decode evidence for one SSTV frame, defined in
+// the verify package so the publication gate consumes the actual
+// report rather than caller-extracted counts. The alias keeps the
+// decode API unchanged.
+type SSTVReport = verify.SSTVReport
 
 // SSTVImage decodes the first complete SSTV frame in samples into a PNG
 // image. The VIS header picks the mode; unsupported modes and frames

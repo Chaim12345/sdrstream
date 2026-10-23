@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"strings"
 	"testing"
 )
 
@@ -57,28 +58,63 @@ func TestLiveRejectsGenericSSTVImagePath(t *testing.T) {
 // measurements: the good corpus coasted 0/240-256 lines, the
 // constructed sync-loss + drift negative coasted 81/256 (0.316).
 func TestSSTVImageReportGate(t *testing.T) {
-	pngBytes := sstvTestPNG(t)
-	if v := SSTVImage("sstv", pngBytes, 0, 256); !v.Live {
+	pngBytes := sstvTestPNG(t) // 320x256
+	good := &SSTVReport{VIS: 0x2C, Mode: "Martin M1", Width: 320, Height: 256, DecodedLines: 256}
+	if v := SSTVImage("sstv", pngBytes, good); !v.Live {
 		t.Errorf("good frame rejected: %s", v.Reason)
+	} else if !strings.Contains(v.Reason, "Martin M1") || !strings.Contains(v.Reason, "0x2C") {
+		t.Errorf("passing reason must name the report's own VIS/mode, got: %s", v.Reason)
 	}
 	// Boundary: 12/256 = 0.047 passes, 13/256 = 0.051 fails.
-	if v := SSTVImage("sstv", pngBytes, 12, 256); !v.Live {
+	b12 := *good
+	b12.CoastedLines = 12
+	if v := SSTVImage("sstv", pngBytes, &b12); !v.Live {
 		t.Errorf("12/256 coasted (0.047) rejected, want live: %s", v.Reason)
 	}
-	if v := SSTVImage("sstv", pngBytes, 13, 256); v.Live {
+	b13 := *good
+	b13.CoastedLines = 13
+	if v := SSTVImage("sstv", pngBytes, &b13); v.Live {
 		t.Error("13/256 coasted (0.051) accepted, want unverified")
 	}
 	// The measured negative side.
-	if v := SSTVImage("sstv", pngBytes, 81, 256); v.Live {
+	neg := *good
+	neg.CoastedLines = 81
+	if v := SSTVImage("sstv", pngBytes, &neg); v.Live {
 		t.Error("syncloss-drift evidence (0.316) accepted, want unverified")
 	}
 	// Unknown report cannot verify, however clean the PNG.
-	if v := SSTVImage("sstv", pngBytes, 0, 0); v.Live {
+	if v := SSTVImage("sstv", pngBytes, nil); v.Live {
 		t.Error("frame without decode report accepted, want unverified")
 	}
 	// Corrupt PNG fails structurally before evidence is consulted.
-	if v := SSTVImage("sstv", []byte("not png"), 0, 256); v.Live {
+	if v := SSTVImage("sstv", []byte("not png"), good); v.Live {
 		t.Error("corrupt PNG accepted")
+	}
+}
+
+// The gate consumes the actual report, so invalid or mismatched
+// reports must fail even when the counts would otherwise pass.
+func TestSSTVImageRejectsInconsistentReports(t *testing.T) {
+	pngBytes := sstvTestPNG(t) // 320x256
+	cases := map[string]SSTVReport{
+		"no VIS":             {VIS: 0, Mode: "Martin M1", Width: 320, Height: 256},
+		"no mode":            {VIS: 0x2C, Mode: "", Width: 320, Height: 256},
+		"zero height":        {VIS: 0x2C, Mode: "Martin M1", Width: 320, Height: 0},
+		"negative coasted":   {VIS: 0x2C, Mode: "Martin M1", Width: 320, Height: 256, CoastedLines: -1},
+		"coasted over total": {VIS: 0x2C, Mode: "Martin M1", Width: 320, Height: 256, CoastedLines: 300},
+		"dimension mismatch": {VIS: 0x2C, Mode: "Martin M1", Width: 320, Height: 240},
+	}
+	for name, rep := range cases {
+		if v := SSTVImage("sstv", pngBytes, &rep); v.Live {
+			t.Errorf("%s: inconsistent report accepted", name)
+		}
+	}
+	// A report authored by the decoder for a DIFFERENT frame must not
+	// verify this image: VIS/mode/counts are source-authored, and the
+	// dimensions must match the decoded pixels.
+	robot := SSTVReport{VIS: 0x08, Mode: "Robot 36", Width: 320, Height: 240, DecodedLines: 240}
+	if v := SSTVImage("sstv", pngBytes, &robot); v.Live {
+		t.Error("Robot 36 report verified a 256-line image")
 	}
 }
 
