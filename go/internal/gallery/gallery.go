@@ -16,6 +16,7 @@ import (
 	"os/exec"
 
 	"github.com/chaim12345/sdrstream/go/internal/decode"
+	"github.com/chaim12345/sdrstream/go/internal/verify"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -554,8 +555,9 @@ func DecodeFramesContext(ctx context.Context, saved []Item, dir string) []Item {
 			continue
 		}
 		var png []byte
+		var sstvRep decode.SSTVReport
 		if wantSSTV {
-			png, err = decode.SSTVImageContext(dctx, samples, rate)
+			png, sstvRep, err = decode.SSTVImageDetailedContext(dctx, samples, rate)
 		} else {
 			// APT pictures ship only when the sync-lock gate verifies the
 			// decode, same honesty bar as the decode command.
@@ -586,6 +588,15 @@ func DecodeFramesContext(ctx context.Context, saved []Item, dir string) []Item {
 				item.DecodeStatus = "frame decode skipped: " + err.Error()
 			}
 			continue
+		}
+		if wantSSTV {
+			// Same honesty bar as the live monitor path: a VIS header
+			// is reception evidence, not geometry; withhold frames
+			// whose sync-lock evidence fails or is absent.
+			if v := verify.SSTVImage("sstv", png, sstvRep.CoastedLines, sstvRep.Height); !v.Live {
+				item.DecodeStatus = "frame decode withheld: " + v.Reason
+				continue
+			}
 		}
 		ext := filepath.Ext(item.Name)
 		name := strings.TrimSuffix(item.Name, ext) + "-sdrstream-decoded.png"

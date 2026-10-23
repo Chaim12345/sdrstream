@@ -3,6 +3,8 @@ package decode
 import (
 	"os"
 	"testing"
+
+	"github.com/chaim12345/sdrstream/go/internal/verify"
 )
 
 // SSTV decode evidence: VIS + parity prove a header was heard, not
@@ -47,6 +49,15 @@ func TestSSTVReportGoodCorpusNoCoast(t *testing.T) {
 		if rep.Mode == "" || rep.Height == 0 {
 			t.Errorf("%s: incomplete report %+v", name, rep)
 		}
+		// Publication gate, all three families: bounded coasting
+		// evidence must pass.
+		pngBytes, _, err := SSTVImageDetailed(samples, rate)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if v := verify.SSTVImage("sstv", pngBytes, rep.CoastedLines, rep.Height); !v.Live {
+			t.Errorf("%s: good frame failed publication gate: %s", name, v.Reason)
+		}
 	}
 }
 
@@ -68,6 +79,10 @@ func TestSSTVReportSynclossDriftNegative(t *testing.T) {
 	}
 	if len(pngBytes) == 0 {
 		t.Error("no PNG produced")
+	}
+	// The gate catches what the decoder alone does not.
+	if v := verify.SSTVImage("sstv", pngBytes, rep.CoastedLines, rep.Height); v.Live {
+		t.Error("torn-geometry frame passed the publication gate")
 	}
 	if os.Getenv("SSTV_WRITE_DEBUG_PNG") != "" {
 		os.WriteFile("/tmp/sstv_negative.png", pngBytes, 0o644)

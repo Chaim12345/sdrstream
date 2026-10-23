@@ -28,7 +28,8 @@ func TestLiveAcceptsStructuredAX25AndReadableSpeech(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-func TestLiveRequiresSSTVImageGeometry(t *testing.T) {
+func sstvTestPNG(t *testing.T) []byte {
+	t.Helper()
 	var b bytes.Buffer
 	img := image.NewRGBA(image.Rect(0, 0, 320, 256))
 	for y := 0; y < 256; y++ {
@@ -41,8 +42,50 @@ func TestLiveRequiresSSTVImageGeometry(t *testing.T) {
 	if err := png.Encode(&b, img); err != nil {
 		t.Fatal(err)
 	}
-	if err := Live("sstv", "sstv", "", b.Bytes()); err != nil {
-		t.Fatal(err)
+	return b.Bytes()
+}
+
+// The generic Live gate must not verify SSTV images from PNG bytes:
+// geometry evidence lives in the decode report, not the pixels.
+func TestLiveRejectsGenericSSTVImagePath(t *testing.T) {
+	if err := Live("sstv", "sstv", "", sstvTestPNG(t)); err == nil {
+		t.Fatal("sstv image accepted without decode-report evidence")
+	}
+}
+
+// SSTVImage gate decisions. Evidence sides are the 2026-10-23 fixture
+// measurements: the good corpus coasted 0/240-256 lines, the
+// constructed sync-loss + drift negative coasted 81/256 (0.316).
+func TestSSTVImageReportGate(t *testing.T) {
+	pngBytes := sstvTestPNG(t)
+	if v := SSTVImage("sstv", pngBytes, 0, 256); !v.Live {
+		t.Errorf("good frame rejected: %s", v.Reason)
+	}
+	// Boundary: 12/256 = 0.047 passes, 13/256 = 0.051 fails.
+	if v := SSTVImage("sstv", pngBytes, 12, 256); !v.Live {
+		t.Errorf("12/256 coasted (0.047) rejected, want live: %s", v.Reason)
+	}
+	if v := SSTVImage("sstv", pngBytes, 13, 256); v.Live {
+		t.Error("13/256 coasted (0.051) accepted, want unverified")
+	}
+	// The measured negative side.
+	if v := SSTVImage("sstv", pngBytes, 81, 256); v.Live {
+		t.Error("syncloss-drift evidence (0.316) accepted, want unverified")
+	}
+	// Unknown report cannot verify, however clean the PNG.
+	if v := SSTVImage("sstv", pngBytes, 0, 0); v.Live {
+		t.Error("frame without decode report accepted, want unverified")
+	}
+	// Corrupt PNG fails structurally before evidence is consulted.
+	if v := SSTVImage("sstv", []byte("not png"), 0, 256); v.Live {
+		t.Error("corrupt PNG accepted")
+	}
+}
+
+func TestLiveRequiresSSTVImageGeometry(t *testing.T) {
+	b := sstvTestPNG(t)
+	if err := Live("sstv", "sstv", "", b); err == nil {
+		t.Fatal("generic path must reject sstv images")
 	}
 	if err := Live("", "sstv", "", []byte("not png")); err == nil {
 		t.Fatal("invalid image accepted")

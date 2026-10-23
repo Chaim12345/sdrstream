@@ -49,6 +49,8 @@ type Activity struct {
 	Mode               string     `json:"mode,omitempty"`   // decoder or modulation that produced the detail
 	Detail             string     `json:"detail,omitempty"` // decoded payload or transcript
 	VerificationAnchor string     `json:"-"`                // expected callsign/phrase for the live quality gate
+	SSTVCoastedLines   int        `json:"-"`                // SSTV decode report: lines coasted without sync lock
+	SSTVLineCount      int        `json:"-"`                // SSTV decode report: mode spec line count; 0 = no report (evidence unknown)
 	Label              string     `json:"label,omitempty"`
 	Target             string     `json:"target,omitempty"` // named service a scheduled target was aimed at
 	Source             string     `json:"source"`
@@ -1209,10 +1211,14 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 		}
 		kind, modeName, detail, asr := m.classify(ctx, samples, rate, work.bandwidth)
 		var imageData []byte
+		var sstvRep decode.SSTVReport
 		if kind == "sstv" && bestImage == nil {
-			imageData, _ = decode.SSTVImage(samples, rate)
-			if len(imageData) > 0 && verify.Live("sstv", "sstv", "", imageData) != nil {
-				imageData = nil
+			imageData, sstvRep, _ = decode.SSTVImageDetailed(samples, rate)
+			if len(imageData) > 0 {
+				if v := verify.SSTVImage("sstv", imageData, sstvRep.CoastedLines, sstvRep.Height); !v.Live {
+					log.Printf("monitor: SSTV image withheld: %s", v.Reason)
+					imageData = nil
+				}
 			}
 		}
 		// Mode is the modulation or decoder, never a verdict; when no
@@ -1227,6 +1233,7 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 			Kind: kind, Mode: modeName, Detail: detail, Source: m.opts.Name, Label: m.opts.Label,
 			DurationSec: float64(len(samples)) / float64(rate),
 			Confidence:  asr.Confidence, Language: asr.Language, ASRModel: asr.Model, ASRFallback: asr.Fallback, ASRBackend: asr.Backend, VerificationAnchor: activity.VerificationAnchor,
+			SSTVCoastedLines: sstvRep.CoastedLines, SSTVLineCount: sstvRep.Height,
 		}
 		if m.opts.OutDir != "" && (m.opts.SaveAudio == nil || m.opts.SaveAudio(kind)) {
 			// Archive before the noise/unknown filter. The detector already
@@ -1277,7 +1284,8 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 	m.mu.Unlock()
 	if best.Kind != "noise" && best.Kind != "silence" && best.Kind != "unknown" {
 		m.publish(best)
-		if best.Kind == "sstv" && len(bestImage) > 0 && m.opts.OnImage != nil && verify.Live(best.Kind, best.Mode, "", bestImage) == nil {
+		if best.Kind == "sstv" && len(bestImage) > 0 && m.opts.OnImage != nil &&
+			verify.SSTVImage(best.Kind, bestImage, best.SSTVCoastedLines, best.SSTVLineCount).Live {
 			m.opts.OnImage(best, bestImage)
 		}
 	}

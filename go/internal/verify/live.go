@@ -115,6 +115,40 @@ func Image(kind string, data []byte) Result {
 	return Result{true, "image ok"}
 }
 
+// sstvMaxCoastFraction bounds the share of frame lines whose sync
+// pulse was never locked (the decoder coasted them on a constant-clock
+// assumption). Provisional fixture-derived decision, not a physical
+// fact: measured 2026-10-23, the good corpus (6 modes across the
+// Martin, Scottie and Robot 36 families, clean and ~15 dB SNR
+// impaired) locked every sync (0.000) while the constructed
+// sync-loss + clock-drift negative coasted 0.316 with a torn render.
+// 0.05 tolerates isolated fade losses while flagging systematic loss.
+const sstvMaxCoastFraction = 0.05
+
+// SSTVImage gates a decoded SSTV frame on the decoder's own evidence,
+// not on PNG variance alone. A parity-valid VIS header proves a header
+// was heard; it says nothing about frame geometry. The only geometry
+// evidence is the per-line sync-lock count from the decode report, so
+// the report is mandatory: without it the frame cannot be verified.
+// Passing means coasting is bounded by the fixture-derived ceiling -
+// it is bounded evidence, never certified geometry. Failing or absent
+// evidence means the geometry is unverified, not necessarily bad.
+func SSTVImage(kind string, data []byte, coastedLines, lineCount int) Result {
+	if v := Image(kind, data); !v.Live {
+		return v
+	}
+	if lineCount <= 0 {
+		return Result{false, "sstv geometry unverified: no decode report (a VIS header is not geometry evidence)"}
+	}
+	coast := float64(coastedLines) / float64(lineCount)
+	if coast > sstvMaxCoastFraction {
+		return Result{false, fmt.Sprintf("sstv geometry unverified: %d/%d lines coasted without sync lock (ceiling %.2f, fixture-derived)",
+			coastedLines, lineCount, sstvMaxCoastFraction)}
+	}
+	return Result{true, fmt.Sprintf("sstv reception verified (parity-checked VIS); sync coasting bounded %d/%d - evidence, not geometry certification",
+		coastedLines, lineCount)}
+}
+
 // WEFAXImage gates a decoded WEFAX chart on the decoder's own sync
 // evidence, not on PNG variance alone: a confidently wrong sync (false
 // phasing wedge, biased period fit) still renders a large, high-variance
@@ -191,7 +225,13 @@ func Live(kindValue, modeValue, detail string, imageData []byte, anchors ...stri
 			}
 			return nil
 		}
-		if modeValue != "sstv" && modeValue != "wefax" {
+		if modeValue == "sstv" {
+			// No generic bypass: an SSTV frame cannot be verified
+			// from PNG bytes alone. The publication caller must run
+			// SSTVImage with the decode report's sync-lock evidence.
+			return errors.New("sstv images require the decode-report gate (SSTVImage); PNG checks are not geometry evidence")
+		}
+		if modeValue != "wefax" {
 			return errors.New("image mode is not SSTV/WEFAX")
 		}
 		// WEFAX charts are gated by the decoder's own sync-evidence

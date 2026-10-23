@@ -1084,7 +1084,14 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 
 // AddLiveArtifact saves a verified decoder result with source metadata.
 func (s *Server) AddLiveArtifact(activity monitor.Activity, pngData []byte) error {
-	if err := verify.Live(activity.Kind, activity.Mode, activity.Detail, pngData, activity.VerificationAnchor); err != nil {
+	if len(pngData) > 0 && activity.Kind == "sstv" {
+		// SSTV frames verify on the decode report's sync-lock
+		// evidence carried by the activity; without a report the
+		// frame cannot be verified (no generic PNG bypass).
+		if v := verify.SSTVImage(activity.Kind, pngData, activity.SSTVCoastedLines, activity.SSTVLineCount); !v.Live {
+			return fmt.Errorf("live verification rejected content: %s", v.Reason)
+		}
+	} else if err := verify.Live(activity.Kind, activity.Mode, activity.Detail, pngData, activity.VerificationAnchor); err != nil {
 		return fmt.Errorf("live verification rejected content: %w", err)
 	}
 	name := fmt.Sprintf("live-%s-%d", activity.Started.UTC().Format("20060102T150405Z"), activity.ID)
