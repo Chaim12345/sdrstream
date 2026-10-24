@@ -290,15 +290,26 @@ list.
 ## 9. Next session restart instructions
 
 1. Clone fresh: `git clone https://github.com/Chaim12345/sdrstream.git`,
-   `git checkout feat/ledger-on-pr5` (or branch from it). Read this file
-   top to bottom. The `/root/sdrstream` and `/tmp/opencode` paths quoted
-   in older revisions belonged to a previous sandbox and are gone.
-2. Check `gh pr list`: PR #5 (current base) and PR #4 (fully contained in
-   PR #5) are open; merging stays with the owner. Draft PR #3 duplicates
-   `enhancements` - one of the two should be closed.
-3. Work queue: section 6 "Still open", R2 transport remainder first; each
-   fix gets a test, `gofmt`, `go vet ./...`, `go test -race` on the
-   touched package, then a tight commit on a branch.
-4. Live-verify against `kiwisdr.johnnorton.co.uk:8073` (VOLMET 5505 USB,
-   25 s listen reproduces reliably); never claim verification without real
+   `git checkout integration/nonphone-decoders` (the active integration
+   branch, also PR #4's head lineage). Read this file top to bottom.
+   The `/root/sdrstream` and `/tmp/opencode` paths quoted in older
+   revisions belonged to a previous sandbox and are gone.
+2. Branch topology as of 2026-10-24: PR #7 and PR #8 are CLOSED as
+   superseded-by-integration (both fully contained here, verified by
+   merge-base). The receiver health pool (`--scan-pool health`, the
+   default) and beacon quiet window are live on this branch. Section 6
+   is fully closed. Lane branches merge here only after independent QA
+   signoff; master is never touched by the lanes.
+3. Merged 2026-10-24 (tips: 0be18ce): feat/ui-history-search (history
+   search API + UI + activity source-class labels), feat/asr-eval-harness
+   (hash-pinned WER corpus, skip-gated), feat/decoder-fixtures (SSTV +
+   WEFAX fixture corpus; WEFAX fixtures are same-project synthetic round
+   trips - regression pins, not independent proof), plus the SSTV
+   sync-cadence hardening (45aeb98, grid vote restricted to near-header
+   anchors + 70% occupancy over the densest 30-line window).
+4. Work queue: ask the integrator lane for the current roadmap; each fix
+   gets a test, `gofmt`, `go vet ./...`, `go test -race` on the touched
+   package, then a tight commit on a feat/* branch.
+5. Live-verify against real receivers only when the current task's
+   owner approves the poll; never claim verification without real
    receivers or real feeds.
