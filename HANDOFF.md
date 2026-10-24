@@ -271,9 +271,22 @@ Code-owned follow-ups for a future lane; none block the current tip.
    Fix: drop threshold is a startDropServer parameter (2 = after the
    profile-restart dspcontrol for the resume test, 1 = immediate for the
    exhaustion test). 1000/1000 stress green, race green.
-2. **jt9 real-binary leg UNVERIFIED.** The corpus-driven jt9 gate has never
-   run with an actual jt9 binary; run it once in an environment with
-   wsjt-x installed before anyone claims 'jt9 reproduces the corpus'.
+2. ~~jt9 real-binary leg UNVERIFIED~~ RUN 2026-10-24 with three CLI jt9
+   builds (2.2.2, 2.5.4, 2.7.0, all at `jt9 -8 -d 3`). Finding, not a
+   clean pass: 3 of the 175 WSJT-X GUI decode-list lines are not
+   reproduced by the CLI (test_01 "CQ RX3ASQ KO95" -24 dB, test_04
+   "OK2BJ JG1SRO -15" -24 dB, test_05 "R8JA CT3IQ RR73" -10 dB). Cause
+   unconfirmed: GUI a-priori/KVASD-class decodes are a hypothesis, not
+   proven - kvasd is not shipped in any deb and its binary download
+   refused 403, so no KVASD-assisted run was possible. Per QA spec the
+   misses are pinned as a per-line allowlist keyed by (fixture, message),
+   each entry carrying the exact reference line + SNR, the versions tried
+   with the exact command/depth, per-version observed misses, the cause
+   label and the date (manifest `ref_known_misses` + `jt9_leg` block,
+   feat/jt9-corpus-known-misses). Every other line stays strict, stale
+   exemptions fail, and an allowlisted line that starts reproducing is
+   logged. Version-sensitivity at the margins: 2.7.0 reproduces RX3ASQ
+   but misses 6 other, mostly stronger-signal lines.
 3. **test_01..06 upstream-revision claim unproven.** The pinned files match
    an EARLIER upstream revision of the same MIT project; verify against
    upstream history or drop the revision claim from PROVENANCE.md.
