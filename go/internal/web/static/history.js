@@ -19,12 +19,9 @@
     const node = document.createElement('article'); node.className = 'card-activity history-result';
     const heading = document.createElement('div'); heading.className = 'row';
     const badge = document.createElement('span'); badge.className = 'badge';
-    badge.textContent = labels[item.source_class] || labels.unknown;
-    if (item.rejected) {
-      const rejection = document.createElement('span'); rejection.className = 'badge';
-      rejection.textContent = 'recorded gate rejection: ' + item.rejected;
-      heading.appendChild(rejection);
-    }
+    // One rejection element retains both the verdict and provenance facts.
+    badge.textContent = (item.rejected ? 'recorded gate rejection: ' + item.rejected + ' · ' : '') +
+      (labels[item.source_class] || labels.unknown);
     heading.appendChild(badge); node.appendChild(heading);
     const meta = document.createElement('div'); meta.className = 'muted';
     meta.textContent = item.store + ' · ' + (item.mode || 'mode unknown') + ' · ' + fmtDate(item.started);
@@ -32,8 +29,8 @@
     if (item.receiver) { const via = document.createElement('div'); via.className = 'muted'; via.textContent = 'via ' + item.receiver; node.appendChild(via); }
     if (item.name) { const name = document.createElement('div'); name.className = 'history-name'; name.textContent = item.name; node.appendChild(name); }
     if (item.text) {const text = document.createElement('pre');text.className = 'history-text';text.textContent = item.text;node.appendChild(text);}
-    if (item.verification || item.rejected) { const gate = document.createElement('div'); gate.className = 'muted';
-      gate.textContent = item.rejected ? 'recorded gate rejection: ' + item.rejected : 'recorded decoder verdict: ' + item.verification;
+    if (item.verification && !item.rejected) { const gate = document.createElement('div'); gate.className = 'muted';
+      gate.textContent = 'recorded decoder verdict: ' + item.verification;
       node.appendChild(gate);
     }
     if (item.redecode) { const from = document.createElement('div');from.className='muted';from.textContent='re-decoded from '+item.decoded_from;node.appendChild(from); }
@@ -60,6 +57,14 @@
       $('history-state').textContent = (page.items.length ? 'Showing ' + (offset + 1) + '-' + (offset + page.items.length) : '0') + ' of ' + page.total + ' matching records · ' + page.available + ' available';
       $('history-scope').textContent = page.scope + ' Paging reads a fresh snapshot; use Search again to refresh.';
       $('history-prev').hidden = !offset; $('history-next').hidden = next === null;
+      // Paging can shrink a long list, leaving the viewport stranded at its
+      // bottom. Land on the page count and first result, below the sticky header.
+      const state = $('history-state');
+      state.setAttribute('tabindex','-1');
+      state.focus({preventScroll:true});
+      const header = document.querySelector('header');
+      const inset = header ? header.getBoundingClientRect().height + 12 : 12;
+      window.scrollTo({top: Math.max(0, window.scrollY + state.getBoundingClientRect().top - inset), behavior:'auto'});
     } catch (err) {
       if (id !== request) return;
       $('history-results').textContent = '';
