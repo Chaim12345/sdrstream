@@ -120,6 +120,17 @@ final class Diag {
                 + ", abis " + String.join(",", Build.SUPPORTED_ABIS);
     }
 
+    /** Redacts every line of a log excerpt; null passes through. */
+    private static String redactBlock(String text) {
+        if (text == null) return null;
+        StringBuilder sb = new StringBuilder(text.length());
+        for (String line : text.split("\n", -1)) {
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(DiagRedact.redact(line));
+        }
+        return sb.toString();
+    }
+
     /** Reads the last GENERIC_TAIL_BYTES of a log file, or null when absent. */
     static String tail(File f) {
         return tail(f, GENERIC_TAIL_BYTES);
@@ -185,20 +196,22 @@ final class Diag {
         sb.append("--- process exit history ---\n");
         sb.append(exitHistory(ctx));
 
-        String engineLog = tail(new File(files, ENGINE_LOG), ENGINE_TAIL_BYTES);
+        // Tails are redacted on inclusion too: diag.txt must never rely on
+        // the file contents already being clean (QA review).
+        String engineLog = redactBlock(tail(new File(files, ENGINE_LOG), ENGINE_TAIL_BYTES));
         sb.append("--- engine.log (tail) ---\n");
         sb.append(engineLog == null ? "(no engine.log yet)\n" : engineLog + "\n");
-        String engineLogOld = tail(new File(files, ENGINE_LOG_OLD), GENERIC_TAIL_BYTES);
+        String engineLogOld = redactBlock(tail(new File(files, ENGINE_LOG_OLD), GENERIC_TAIL_BYTES));
         if (engineLogOld != null) {
             sb.append("--- engine.log.1 (previous rotation, tail) ---\n");
             sb.append(engineLogOld).append("\n");
         }
-        String javaLog = tail(new File(files, JAVA_LOG), JAVA_TAIL_BYTES);
+        String javaLog = redactBlock(tail(new File(files, JAVA_LOG), JAVA_TAIL_BYTES));
         sb.append("--- javalog.txt (tail) ---\n");
         sb.append(javaLog == null ? "(no javalog.txt yet)\n" : javaLog + "\n");
         sb.append("--- engine ring (/api/logs/tail, redacted) ---\n");
         sb.append(ringTail == null ? "(engine not reachable - ring unavailable)\n" : ringTail + "\n");
-        String crashLog = tail(new File(files, CRASH_LOG));
+        String crashLog = redactBlock(tail(new File(files, CRASH_LOG)));
         sb.append("--- crash.log ---\n");
         sb.append(crashLog == null ? "(no crashes recorded)\n" : crashLog + "\n");
         return sb.toString();
