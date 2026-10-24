@@ -216,10 +216,9 @@ public class EngineService extends Service {
                         new InputStreamReader(proc.getInputStream()));
                 String line;
                 while ((line = r.readLine()) != null) {
-                    if (line.length() > 8192) {
-                        line = line.substring(0, 8192) + "...[truncated]";
-                    }
-                    writer.writeLine(line);
+                    // Redact again in Java: direct fmt.Fprint output and
+                    // panics bypass the Go log package's RedactingWriter.
+                    writer.writeLine(LogDrain.clean(line));
                 }
             } catch (Throwable t) {
                 Diag.writeCrash(this, "engine log drain", t);
