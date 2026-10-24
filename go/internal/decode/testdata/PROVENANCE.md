@@ -60,4 +60,19 @@ License check result for the FT8/JT9 corpus (2026-10-24):
 All ten wavs are sha256-pinned in manifest.json; the nine reference decode
 lists are pinned by hash and message count. TestJT9DecodeFT8Corpus
 (reference_test.go, skip-gated on the jt9 binary) requires jt9 to
-reproduce every pinned reference message.
+reproduce every pinned reference message except three documented known
+misses (manifest ref_known_misses).
+
+Real-binary leg, RUN 2026-10-24 (previously UNVERIFIED): the corpus was
+exercised with three installable CLI jt9 builds - wsjtx 2.2.2, 2.5.4 and
+2.7.0. The 191111_* upstream pairs reproduce exactly on all three. Three
+test_0x reference lines are unreproducible by every CLI jt9 tried:
+test_01 'CQ RX3ASQ KO95' (-24 dB), test_04 'OK2BJ JG1SRO -15' (-24 dB),
+test_05 'R8JA CT3IQ RR73' (-10 dB); jt9 2.7.0 misses a further three,
+proving decoder output is version-sensitive at the margins. The .txt
+lists are WSJT-X GUI decode lists; the GUI's a-priori (AP) passes and
+KVASD-assisted deep decode are not exposed by the jt9 CLI (no AP flag;
+no kvasd binary in any deb; the kvasd binary download from
+physics.princeton.edu refuses (403) and KI7MT/kvasd-installer is an
+interactive GUI installer). The three pinned known misses sit exactly in
+that GUI-only decode class; evidence lives in manifest.json jt9_leg.

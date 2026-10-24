@@ -37,6 +37,28 @@
    "CarrierAmp": 0
   }
  },
+ "jt9_leg": {
+  "status": "real-binary leg RUN 2026-10-24 with three CLI jt9 builds; NOT a clean reproduction",
+  "versions_tried": [
+   {
+    "version": "wsjtx 2.2.2",
+    "source": "SourceForge deb + libgfortran4 shim",
+    "command": "jt9 -8 -d 3 <fixture.wav> (deepest search level)"
+   },
+   {
+    "version": "wsjtx 2.5.4",
+    "source": "Ubuntu jammy deb",
+    "command": "jt9 -8 -d 3 <fixture.wav> (deepest search level)"
+   },
+   {
+    "version": "wsjtx 2.7.0",
+    "source": "SourceForge deb",
+    "command": "jt9 -8 -d 3 <fixture.wav> (deepest search level)"
+   }
+  ],
+  "kvasd": "not shipped in any deb; binary download from physics.princeton.edu refused (HTTP 403); KI7MT/kvasd-installer is an interactive GUI installer - no KVASD-assisted run was possible in-sandbox",
+  "note": "2.2.2 and 2.5.4 share one miss set (the 3 allowlisted lines); 2.7.0 misses a different, larger set (6 lines incl. strong-signal lines) and DOES reproduce test_01 'CQ RX3ASQ KO95' - decoder output is version-sensitive at the margins. The allowlist is exact: any OTHER missed reference line still fails the corpus test, and a allowlisted line that starts reproducing is logged."
+ },
  "fixtures": [
   {
    "name": "sstv_martin_m1",
@@ -44,7 +66,8 @@
    "sha256": "d172182ac87f3ea4ef2f79cbc1c2b230dc81951abdef4f80e2d1724a8a3f739d",
    "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
    "width": 320,
-   "height": 256
+   "height": 256,
+   "ref_known_misses": []
   },
   {
    "name": "sstv_martin_m1_syncloss_drift",
@@ -177,7 +200,20 @@
    "provenance": "ft8_lib websdr test recordings (repo commit 8428a81; not byte-identical to current upstream websdr_test*.wav, likely an earlier revision), MIT license (see ft8_lib.LICENSE); .txt is the WSJT-X decode list shipped with the recording",
    "ref_file": "ft8/test_01.txt",
    "ref_sha256": "30d0eac485d5b59b68c00d56e05eb7e9cdb3588f893d9856aafacd1d4522e0fe",
-   "ref_messages": 24
+   "ref_messages": 24,
+   "ref_known_misses": [
+    {
+     "message": "CQ RX3ASQ KO95",
+     "reference_snr": "-24 dB",
+     "observed_missing": {
+      "wsjtx 2.2.2": true,
+      "wsjtx 2.5.4": true,
+      "wsjtx 2.7.0": false
+     },
+     "cause": "not reproduced by CLI jt9 2.2.2-2.7.0; cause unconfirmed (hypothesis: WSJT-X GUI a-priori/KVASD-class decode not exposed by the CLI - unproven)",
+     "recorded": "2026-10-24"
+    }
+   ]
   },
   {
    "name": "ft8/test_02",
@@ -204,7 +240,20 @@
    "provenance": "ft8_lib websdr test recordings (repo commit 8428a81; not byte-identical to current upstream websdr_test*.wav, likely an earlier revision), MIT license (see ft8_lib.LICENSE); .txt is the WSJT-X decode list shipped with the recording",
    "ref_file": "ft8/test_04.txt",
    "ref_sha256": "814d4c56e30d1b05a86f3c32e257cbd2da452eb7fee069ef0c6c23532aeba2f7",
-   "ref_messages": 20
+   "ref_messages": 20,
+   "ref_known_misses": [
+    {
+     "message": "OK2BJ JG1SRO -15",
+     "reference_snr": "-24 dB",
+     "observed_missing": {
+      "wsjtx 2.2.2": true,
+      "wsjtx 2.5.4": true,
+      "wsjtx 2.7.0": true
+     },
+     "cause": "not reproduced by CLI jt9 2.2.2-2.7.0; cause unconfirmed (hypothesis: WSJT-X GUI a-priori/KVASD-class decode not exposed by the CLI - unproven)",
+     "recorded": "2026-10-24"
+    }
+   ]
   },
   {
    "name": "ft8/test_05",
@@ -213,7 +262,20 @@
    "provenance": "ft8_lib websdr test recordings (repo commit 8428a81; not byte-identical to current upstream websdr_test*.wav, likely an earlier revision), MIT license (see ft8_lib.LICENSE); .txt is the WSJT-X decode list shipped with the recording",
    "ref_file": "ft8/test_05.txt",
    "ref_sha256": "9f47e74f8e8a69ece436537254c68610303190c073b73ad698c9187fc1c176ea",
-   "ref_messages": 32
+   "ref_messages": 32,
+   "ref_known_misses": [
+    {
+     "message": "R8JA CT3IQ RR73",
+     "reference_snr": "-10 dB",
+     "observed_missing": {
+      "wsjtx 2.2.2": true,
+      "wsjtx 2.5.4": true,
+      "wsjtx 2.7.0": true
+     },
+     "cause": "not reproduced by CLI jt9 2.2.2-2.7.0; cause unconfirmed (hypothesis: WSJT-X GUI a-priori/KVASD-class decode not exposed by the CLI - unproven)",
+     "recorded": "2026-10-24"
+    }
+   ]
   },
   {
    "name": "ft8/test_06",

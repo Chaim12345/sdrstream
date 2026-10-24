@@ -40,10 +40,28 @@ type decoderFixture struct {
 	DriftTolPPM float64 `json:"drift_tol_ppm,omitempty"`
 	// FT8 corpus entries: RefFile is the WSJT-X decode list shipped next to
 	// the wav (ft8_lib corpus), pinned by hash and message count. The jt9
-	// reference-decoder corpus test asserts jt9 reproduces every message.
-	RefFile     string `json:"ref_file,omitempty"`
-	RefSHA256   string `json:"ref_sha256,omitempty"`
-	RefMessages int    `json:"ref_messages,omitempty"`
+	// reference-decoder corpus test asserts jt9 reproduces every message
+	// except RefKnownMisses: a per-line allowlist keyed by (fixture,
+	// message), each entry carrying the exact reference line with SNR, the
+	// jt9 versions tried with the exact command, the per-version observed
+	// misses, a cause label and the date (see the manifest's jt9_leg block).
+	// A known miss is only tolerated when pinned here; any other miss fails
+	// the test, and an allowlisted line that starts reproducing is logged.
+	RefFile        string      `json:"ref_file,omitempty"`
+	RefSHA256      string      `json:"ref_sha256,omitempty"`
+	RefMessages    int         `json:"ref_messages,omitempty"`
+	RefKnownMisses []knownMiss `json:"ref_known_misses,omitempty"`
+}
+
+// knownMiss is one allowlisted reference-decode line: evidence that no
+// installable CLI jt9 reproduced this GUI decode-list line, not a
+// tolerance percentage.
+type knownMiss struct {
+	Message         string          `json:"message"`
+	ReferenceSNR    string          `json:"reference_snr"`
+	ObservedMissing map[string]bool `json:"observed_missing"`
+	Cause           string          `json:"cause"`
+	Recorded        string          `json:"recorded"`
 }
 
 type decoderManifest struct {
