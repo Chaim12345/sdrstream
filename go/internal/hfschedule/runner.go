@@ -348,10 +348,14 @@ func (r *Runner) RunOnce(ctx context.Context, entries []Entry) (*Audit, error) {
 				// never got to fail. Status mirrors a crash interruption.
 				a.Status = "interrupted"
 				a.FailureClass = "local_cancel"
-			case errors.Is(err, context.DeadlineExceeded):
-				// The capture ran to its planned deadline (slot end): the
-				// receiver delivered for the whole window, the schedule
-				// cut it. Not a receiver fault.
+			case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
+				// The capture ran to its planned deadline (slot end), or
+				// the wall-clock watchdog cut it after a host suspend: the
+				// receiver delivered for the whole window, our own timer
+				// cut it. Not a receiver fault. (The outer-ctx case above
+				// already claimed our shutdown; captureCtx cancellation
+				// with a live outer context can only come from the
+				// watchdog.)
 				a.FailureClass = "slot_end"
 			default:
 				a.FailureClass = "receiver_io"

@@ -252,3 +252,30 @@ func TestReceiverIOFaultStillBenches(t *testing.T) {
 		t.Fatalf("io fault must count: %+v", m)
 	}
 }
+
+func TestWatchdogCancelDoesNotBenchReceiver(t *testing.T) {
+	// After a host suspend the wall-clock watchdog cancels the capture
+	// context, so Record returns context.Canceled while the outer
+	// service context stays alive. That is our own wall-cap acting,
+	// not receiver evidence: class slot_end, no bench, no metrics.
+	dir := t.TempDir()
+	r := Runner{
+		Dir:       dir,
+		Receivers: []Receiver{{URL: "a", Type: "kiwi", MaxKHz: 30000}},
+		Now:       func() time.Time { return utc("2026-10-22T06:00:00Z") },
+		Record: func(ctx context.Context, _ Receiver, _ decode.HFTarget, _ time.Duration) (decode.HFResult, error) {
+			return decode.HFResult{}, context.Canceled
+		},
+	}
+	a, err := r.RunOnce(context.Background(), []Entry{daylongEntry("w1")})
+	if err != nil || a == nil {
+		t.Fatal(a, err)
+	}
+	if a.Status != "failed" || a.FailureClass != "slot_end" {
+		t.Fatalf("watchdog cancel must classify as slot_end, got %s/%s", a.Status, a.FailureClass)
+	}
+	m := readState(t, dir).Metrics["a"]
+	if m.Attempts != 0 {
+		t.Fatalf("watchdog cancel must not touch receiver metrics: %+v", m)
+	}
+}
