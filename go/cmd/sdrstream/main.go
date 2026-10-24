@@ -1770,7 +1770,11 @@ func cmdWeb(args []string) error {
 		Direwolf:      *monitorDirewolf,
 	}
 	logRing := web.NewLogRing(500)
-	log.SetOutput(io.MultiWriter(os.Stderr, logRing))
+	// stderr is captured verbatim into a shareable engine.log on Android,
+	// so it goes through the same line redaction as the ring: feed
+	// credentials, cookies and receiver coordinates must never reach a
+	// file the user can share.
+	log.SetOutput(io.MultiWriter(web.NewRedactingWriter(os.Stderr), logRing))
 	server.SetLogRing(logRing)
 
 	go runStartupNetworkCheck(ctx, server)
