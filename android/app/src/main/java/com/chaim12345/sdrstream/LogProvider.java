@@ -33,7 +33,9 @@ public class LogProvider extends ContentProvider {
     private File resolve(Uri uri) throws FileNotFoundException {
         String path = uri.getPath();
         String name = (path != null && path.startsWith("/")) ? path.substring(1) : path;
-        if (!Diag.ENGINE_LOG.equals(name) && !Diag.CRASH_LOG.equals(name) && !Diag.DIAG_TXT.equals(name)) {
+        if (!Diag.ENGINE_LOG.equals(name) && !Diag.ENGINE_LOG_OLD.equals(name)
+                && !Diag.JAVA_LOG.equals(name) && !Diag.CRASH_LOG.equals(name)
+                && !Diag.DIAG_TXT.equals(name)) {
             throw new FileNotFoundException("not shared: " + name);
         }
         File f = new File(getContext().getFilesDir(), name);

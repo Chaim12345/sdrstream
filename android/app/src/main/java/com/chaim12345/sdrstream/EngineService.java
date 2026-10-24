@@ -18,7 +18,9 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.InputStreamReader;
 import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.InetAddress;
@@ -160,7 +162,6 @@ public class EngineService extends Service {
             env.put("SDRSTREAM_UI_PASSWORD", password);
         }
         pb.redirectErrorStream(true);
-        pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(files, Diag.ENGINE_LOG)));
         try {
             process = pb.start();
         } catch (IOException | SecurityException e) {
@@ -175,6 +176,7 @@ public class EngineService extends Service {
             return;
         }
         Diag.clearEngineError(this);
+        startLogDrain(process, new File(files, Diag.ENGINE_LOG));
         try {
             PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sdrstream:engine");
@@ -197,6 +199,34 @@ public class EngineService extends Service {
             Diag.recordEngineError(EngineService.this, msg);
             updateNotification("engine stopped (code " + code + ") - reopen the app");
         }, "engine-watchdog").start();
+    }
+
+    /**
+     * Drains the engine's stdout into engine.log through a bounded rotating
+     * writer (~2MB cap, one rollover to engine.log.1). Replaces the former
+     * unbounded Redirect.appendTo. The drain must never stop early: a full
+     * pipe would block the engine's logging. Engine stderr is redacted at
+     * the source (web.RedactingWriter), so this file is safe to share.
+     */
+    private void startLogDrain(final Process proc, final File logFile) {
+        new Thread(() -> {
+            RotatingLogWriter writer = new RotatingLogWriter(logFile, 2 * 1024 * 1024);
+            try {
+                BufferedReader r = new BufferedReader(
+                        new InputStreamReader(proc.getInputStream()));
+                String line;
+                while ((line = r.readLine()) != null) {
+                    if (line.length() > 8192) {
+                        line = line.substring(0, 8192) + "...[truncated]";
+                    }
+                    writer.writeLine(line);
+                }
+            } catch (Throwable t) {
+                Diag.writeCrash(this, "engine log drain", t);
+            } finally {
+                writer.close();
+            }
+        }, "engine-log-drain").start();
     }
 
     private void stopEngine() {

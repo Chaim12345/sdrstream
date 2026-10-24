@@ -84,7 +84,17 @@ public class MainActivity extends Activity {
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
         webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
-        webView.setWebViewClient(new WebViewClient());
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                // One-tap "Send diagnostics" rendered on the error screen.
+                if (url != null && url.startsWith("sdrstream-diag://share")) {
+                    shareLogs();
+                    return true;
+                }
+                return false;
+            }
+        });
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -226,40 +236,76 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Renders the diagnostics report inside the WebView. */
+    /**
+     * Renders the diagnostics report inside the WebView with a one-tap
+     * "Send diagnostics" button. The engine-ring fetch and javalog refresh
+     * are network/exec work, so they run on a worker thread; only the
+     * WebView render hops back to the main thread.
+     */
     private void showDiagnostics(String headline) {
-        String report = Diag.report(this);
-        String escaped = Html.escapeHtml(report);
-        String html = "<html><body style='background:#070a12;color:#eee;font-family:sans-serif;padding:2em'>"
-                + "<h3>" + Html.escapeHtml(headline) + "</h3>"
-                + "<p>Use the menu &rarr; <b>Share logs</b> to send this report.</p>"
-                + "<pre style='white-space:pre-wrap;color:#9fd'>" + escaped + "</pre>"
-                + "</body></html>";
-        webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
+        new Thread(() -> {
+            JavaLog.capture(this, new File(getFilesDir(), Diag.JAVA_LOG));
+            String ring = Diag.fetchRingTail(this);
+            String report = Diag.report(this, ring);
+            webView.post(() -> {
+                if (isFinishing()) return;
+                String escaped = Html.escapeHtml(report);
+                String html = "<html><body style='background:#070a12;color:#eee;font-family:sans-serif;padding:2em'>"
+                        + "<h3>" + Html.escapeHtml(headline) + "</h3>"
+                        + "<p><a href='sdrstream-diag://share' style='display:inline-block;"
+                        + "padding:0.8em 1.4em;background:#5cc8ff;color:#04121f;border-radius:8px;"
+                        + "text-decoration:none;font-weight:700'>Send diagnostics</a></p>"
+                        + "<p>or use the menu &rarr; <b>Share logs</b>.</p>"
+                        + "<pre style='white-space:pre-wrap;color:#9fd'>" + escaped + "</pre>"
+                        + "</body></html>";
+                webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
+            });
+        }, "diag-render").start();
     }
 
-    /** Shares diag.txt plus whatever logs exist through the system sheet. */
+    /**
+     * Shares diag.txt plus whatever logs exist through the system sheet.
+     * javalog.txt is refreshed and the engine ring fetched first so the
+     * share is current; that exec/network work runs on a worker thread and
+     * only the intent fires on the main thread.
+     */
     private void shareLogs() {
-        try {
-            Diag.writeReportFile(this);
-            ArrayList<Uri> uris = new ArrayList<>();
-            uris.add(LogProvider.uriFor(this, Diag.DIAG_TXT));
-            if (new File(getFilesDir(), Diag.ENGINE_LOG).exists()) {
-                uris.add(LogProvider.uriFor(this, Diag.ENGINE_LOG));
+        new Thread(() -> {
+            try {
+                JavaLog.capture(this, new File(getFilesDir(), Diag.JAVA_LOG));
+                String ring = Diag.fetchRingTail(this);
+                Diag.writeReportFile(this, ring);
+                ArrayList<Uri> uris = new ArrayList<>();
+                uris.add(LogProvider.uriFor(this, Diag.DIAG_TXT));
+                if (new File(getFilesDir(), Diag.ENGINE_LOG).exists()) {
+                    uris.add(LogProvider.uriFor(this, Diag.ENGINE_LOG));
+                }
+                if (new File(getFilesDir(), Diag.ENGINE_LOG_OLD).exists()) {
+                    uris.add(LogProvider.uriFor(this, Diag.ENGINE_LOG_OLD));
+                }
+                if (new File(getFilesDir(), Diag.JAVA_LOG).exists()) {
+                    uris.add(LogProvider.uriFor(this, Diag.JAVA_LOG));
+                }
+                if (new File(getFilesDir(), Diag.CRASH_LOG).exists()) {
+                    uris.add(LogProvider.uriFor(this, Diag.CRASH_LOG));
+                }
+                Intent send = new Intent(Intent.ACTION_SEND_MULTIPLE);
+                send.setType("text/plain");
+                send.putExtra(Intent.EXTRA_SUBJECT, "sdrstream diagnostics");
+                send.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+                send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                runOnUiThread(() -> {
+                    try {
+                        startActivity(Intent.createChooser(send, "Share sdrstream logs"));
+                    } catch (Throwable t) {
+                        Diag.writeCrash(this, "share logs (launch)", t);
+                    }
+                });
+            } catch (Throwable t) {
+                Diag.writeCrash(this, "share logs", t);
+                runOnUiThread(() -> Toast.makeText(this, "Could not share logs: " + t, Toast.LENGTH_LONG).show());
             }
-            if (new File(getFilesDir(), Diag.CRASH_LOG).exists()) {
-                uris.add(LogProvider.uriFor(this, Diag.CRASH_LOG));
-            }
-            Intent send = new Intent(Intent.ACTION_SEND_MULTIPLE);
-            send.setType("text/plain");
-            send.putExtra(Intent.EXTRA_SUBJECT, "sdrstream diagnostics");
-            send.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
-            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(Intent.createChooser(send, "Share sdrstream logs"));
-        } catch (Throwable t) {
-            Diag.writeCrash(this, "share logs", t);
-            Toast.makeText(this, "Could not share logs: " + t, Toast.LENGTH_LONG).show();
-        }
+        }, "share-logs").start();
     }
 
     /** On-demand battery exemption route from the menu. */

@@ -260,6 +260,20 @@ These need the owner's call; nothing here is blocked on code.
 
 ## 7a. Lane backlog (2026-10-24)
 
+**App diagnostics (QA spec a-e, feat/app-diagnostics):** engine.log now
+rotates at ~2MB with one rollover (engine.log.1) via a bounded drain
+thread instead of unbounded Redirect.appendTo; javalog.txt captures
+logcat for the app's own PID at startup and on Share (redacted, 512KB
+cap); diag.txt carries a 64KB engine.log tail, the javalog tail, an
+ApplicationExitInfo section (Android 11+ silent-kill/OOM/native-crash
+history) and the engine log ring fetched over the authenticated loopback
+UI when reachable; the error screen has a one-tap "Send diagnostics"
+button; engine stderr is redacted at the Go source (web.RedactingWriter)
+and javalog on capture (DiagRedact port) so shared logs can never carry
+credentials, cookies, URL queries or keyed coordinates. JVM unit tests:
+DiagRedactTest, BoundedTailTest, RotatingLogWriterTest (7 tests).
+
+
 Code-owned follow-ups for a future lane; none block the current tip.
 
 1. ~~Flake: openwebrx TestReconnectResumesStream~~ FIXED on
