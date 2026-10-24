@@ -348,12 +348,13 @@ type dropServer struct {
 	conns    int
 	messages []map[string]interface{} // dspcontrol/selectprofile payloads in arrival order
 	audioOn  int                      // connection number that receives audio (0 = none)
+	dropDSP  int                      // drop a non-audio connection after this many dspcontrol messages
 	dropped  chan int                 // connection numbers that were dropped
 }
 
-func startDropServer(t *testing.T, audioOn int) *dropServer {
+func startDropServer(t *testing.T, audioOn, dropDSP int) *dropServer {
 	t.Helper()
-	d := &dropServer{audioOn: audioOn, dropped: make(chan int, 8)}
+	d := &dropServer{audioOn: audioOn, dropDSP: dropDSP, dropped: make(chan int, 8)}
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	d.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -365,6 +366,7 @@ func startDropServer(t *testing.T, audioOn int) *dropServer {
 		num := d.conns
 		d.mu.Unlock()
 		conn.WriteMessage(websocket.TextMessage, []byte("CLIENT DE SERVER client=test type=receiver"))
+		dspSeen := 0
 		for {
 			_, data, err := conn.ReadMessage()
 			if err != nil {
@@ -387,6 +389,7 @@ func startDropServer(t *testing.T, audioOn int) *dropServer {
 			if message["type"] != "dspcontrol" {
 				continue
 			}
+			dspSeen++
 			if num == d.audioOn {
 				// One uncompressed audio frame: opcode + int16 LE samples.
 				frame := []byte{OpcodeAudio, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00}
@@ -397,6 +400,17 @@ func startDropServer(t *testing.T, audioOn int) *dropServer {
 						return
 					}
 				}
+			}
+			if dspSeen < d.dropDSP {
+				// The handshake itself starts the DSP (openwebrx.go
+				// handshake sends dspcontrol start). TestReconnect-
+				// ResumesStream's drop belongs after the PROFILE
+				// RESTART's dsp start - the second one on the
+				// connection: dropping on the first races the client's
+				// SelectProfile write against the server's close and
+				// flakes 'write: broken pipe'. The exhaustion test
+				// passes dropDSP=1 to kill every connection at once.
+				continue
 			}
 			// Drop without a close frame, the way a network failure does.
 			conn.UnderlyingConn().Close()
@@ -431,7 +445,7 @@ func (d *dropServer) sawSelectProfile(key string) bool {
 // A dropped connection must be re-dialed, re-handshaken, and resumed with
 // the caller's profile replayed, and audio must flow again.
 func TestReconnectResumesStream(t *testing.T) {
-	d := startDropServer(t, 2)
+	d := startDropServer(t, 2, 2)
 	client, err := New(d.server.URL, testOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -472,7 +486,7 @@ func TestReconnectResumesStream(t *testing.T) {
 // state after the bounded retries: error on the audio channel and a
 // closed events channel.
 func TestReconnectExhaustedIsTerminal(t *testing.T) {
-	d := startDropServer(t, 0)
+	d := startDropServer(t, 0, 1)
 	client, err := New(d.server.URL, testOptions())
 	if err != nil {
 		t.Fatal(err)
