@@ -36,3 +36,28 @@ for reuse with attribution.
 
 License obligations satisfied by this file + the manifest entry: attribution
 (klankbeeld), source URL, license URL, and indication of changes.
+
+## ft8/ corpus (FT8/JT9 reference fixtures)
+
+License check result for the FT8/JT9 corpus (2026-10-24):
+
+- **wsjt-x sample files (candidate, not used)**: WSJT-X is GPLv3
+  (https://wsjt.sourceforge.io/); its sample wavs inherit that license.
+  Not needed: the repo already carries the ft8_lib corpus, which is MIT.
+- **ft8_lib test corpus (used)**: https://github.com/kgoba/ft8_lib,
+  repo-wide MIT license (see ft8_lib.LICENSE). The 191111_* wavs and their
+  .txt WSJT-X decode lists are byte-identical to upstream test/wav/
+  (sha256-verified against raw.githubusercontent.com/kgoba/ft8_lib/master
+  on 2026-10-24). The test_01..06 wavs are the ft8_lib websdr test
+  recordings as committed in repo commit 8428a81 ("Licenses: ft8_lib
+  recordings MIT"); they are not byte-identical to the current upstream
+  websdr_test*.wav files, so they are likely an earlier upstream revision -
+  same source project, same MIT license.
+- **live_websdr_utwente_7074kHz_20261022T052841Z.wav**: recorded by the
+  sdrstream team from the public Twente WebSDR; own recording, no
+  reference list (LDPC+CRC-14 validity gates it in ft8_test.go).
+
+All ten wavs are sha256-pinned in manifest.json; the nine reference decode
+lists are pinned by hash and message count. TestJT9DecodeFT8Corpus
+(reference_test.go, skip-gated on the jt9 binary) requires jt9 to
+reproduce every pinned reference message.
