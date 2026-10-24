@@ -1,136 +1,234 @@
 {
-  "version": 1,
-  "purpose": "Standing decoder-fixture corpus. Every top-level wav in testdata is sha256-pinned here with provenance and the decode facts the current decoders produce. Facts measured at creation (integration 49a5d31); a failing gate is REPORTED, never fixed by tuning.",
-  "wefax_regen": {
-    "wefax_clean_120lpm": {
-      "Rate": 8000,
-      "PhasingLines": 40,
-      "ImageLines": 60,
-      "StartToneSec": 3,
-      "BlackHz": 0,
-      "WhiteHz": 0,
-      "LineSec": 0,
-      "NoiseAmp": 0,
-      "Bars": false,
-      "Gradient": false,
-      "GradBands": 0,
-      "FlatGradient": false,
-      "BarGradient": false,
-      "CarrierHz": 0,
-      "CarrierAmp": 0
-    },
-    "wefax_drift_noise_120lpm": {
-      "Rate": 8000,
-      "PhasingLines": 40,
-      "ImageLines": 60,
-      "StartToneSec": 3,
-      "BlackHz": 0,
-      "WhiteHz": 0,
-      "LineSec": 0.5005,
-      "NoiseAmp": 0.02,
-      "Bars": false,
-      "Gradient": false,
-      "GradBands": 0,
-      "FlatGradient": false,
-      "BarGradient": false,
-      "CarrierHz": 0,
-      "CarrierAmp": 0
-    }
+ "version": 1,
+ "purpose": "Standing decoder-fixture corpus. Every top-level wav in testdata is sha256-pinned here with provenance and the decode facts the current decoders produce. Facts measured at creation (integration 49a5d31); a failing gate is REPORTED, never fixed by tuning; ft8/ subdir wavs and their WSJT-X reference lists are pinned the same way (hashes + reference message counts).",
+ "wefax_regen": {
+  "wefax_clean_120lpm": {
+   "Rate": 8000,
+   "PhasingLines": 40,
+   "ImageLines": 60,
+   "StartToneSec": 3,
+   "BlackHz": 0,
+   "WhiteHz": 0,
+   "LineSec": 0,
+   "NoiseAmp": 0,
+   "Bars": false,
+   "Gradient": false,
+   "GradBands": 0,
+   "FlatGradient": false,
+   "BarGradient": false,
+   "CarrierHz": 0,
+   "CarrierAmp": 0
   },
-  "fixtures": [
-    {
-      "name": "sstv_martin_m1",
-      "kind": "sstv",
-      "sha256": "d172182ac87f3ea4ef2f79cbc1c2b230dc81951abdef4f80e2d1724a8a3f739d",
-      "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
-      "width": 320,
-      "height": 256
-    },
-    {
-      "name": "sstv_martin_m1_syncloss_drift",
-      "kind": "sstv",
-      "sha256": "f0173d579ecc504681925eb3dde7da048329a2741c3f873d650e368ed9a6c7d8",
-      "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
-      "width": 320,
-      "height": 256
-    },
-    {
-      "name": "sstv_martin_m2",
-      "kind": "sstv",
-      "sha256": "021451b739b25d786a6663094f1f836b4181c85fabc4e322ebc4cf8a2d016142",
-      "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
-      "width": 320,
-      "height": 256
-    },
-    {
-      "name": "sstv_martin_m2_impaired",
-      "kind": "sstv",
-      "sha256": "bd00ecffeecb857afcfe46d274d9f914501b9f2742d232c7574825164b1cd8f1",
-      "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
-      "width": 320,
-      "height": 256
-    },
-    {
-      "name": "sstv_robot36",
-      "kind": "sstv",
-      "sha256": "8545dd871528d671c24f870e33dce036693cc4381e077142c7b7329a9d273769",
-      "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
-      "width": 320,
-      "height": 240
-    },
-    {
-      "name": "sstv_robot36_impaired",
-      "kind": "sstv",
-      "sha256": "d4c7ef442999e90cb6675d2bb4ed8b0d06123be99acf53fa95939c18312e8d8c",
-      "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
-      "width": 320,
-      "height": 240
-    },
-    {
-      "name": "sstv_scottie_dx",
-      "kind": "sstv",
-      "sha256": "63e7fe76170454f25c6ace147698328ba9eba714aeb5960d04cc5129624e0b8f",
-      "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
-      "width": 320,
-      "height": 256
-    },
-    {
-      "name": "sstv_scottie_s1",
-      "kind": "sstv",
-      "sha256": "9e9e2721978a2208787bcb9253da0eaf404316cdbda24acb5244ceb7ef3852e5",
-      "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
-      "width": 320,
-      "height": 256
-    },
-    {
-      "name": "sstv_scottie_s2",
-      "kind": "sstv",
-      "sha256": "f80bafbad6680a89c25963f214f1131c3323146c52d850aacba7d5cbf31ca669",
-      "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
-      "width": 320,
-      "height": 256
-    },
-    {
-      "name": "wefax_clean_120lpm",
-      "kind": "wefax",
-      "sha256": "00bdb73c814291b4a49293ad88e0adc0f432d8e81729b979375196ca1a3d8a56",
-      "provenance": "synthetic: go/internal/testutil/wefaxfixture.Encode with the exact parameters in wefax_regen (deterministic; regenerate with SDRSTREAM_REGEN_FIXTURES=1)",
-      "width": 1810,
-      "height": 98,
-      "sync_source": "phasing-wedge",
-      "drift_ppm": -215,
-      "drift_tol_ppm": 250
-    },
-    {
-      "name": "wefax_drift_noise_120lpm",
-      "kind": "wefax",
-      "sha256": "a1c808b9ffc376a1cb74bddf2ef4b15eb1ba8a200e865257d7d89f58261e117f",
-      "provenance": "synthetic: go/internal/testutil/wefaxfixture.Encode with the exact parameters in wefax_regen (deterministic; regenerate with SDRSTREAM_REGEN_FIXTURES=1)",
-      "width": 1810,
-      "height": 99,
-      "sync_source": "phasing-wedge",
-      "drift_ppm": 737,
-      "drift_tol_ppm": 250
-    }
-  ]
+  "wefax_drift_noise_120lpm": {
+   "Rate": 8000,
+   "PhasingLines": 40,
+   "ImageLines": 60,
+   "StartToneSec": 3,
+   "BlackHz": 0,
+   "WhiteHz": 0,
+   "LineSec": 0.5005,
+   "NoiseAmp": 0.02,
+   "Bars": false,
+   "Gradient": false,
+   "GradBands": 0,
+   "FlatGradient": false,
+   "BarGradient": false,
+   "CarrierHz": 0,
+   "CarrierAmp": 0
+  }
+ },
+ "fixtures": [
+  {
+   "name": "sstv_martin_m1",
+   "kind": "sstv",
+   "sha256": "d172182ac87f3ea4ef2f79cbc1c2b230dc81951abdef4f80e2d1724a8a3f739d",
+   "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
+   "width": 320,
+   "height": 256
+  },
+  {
+   "name": "sstv_martin_m1_syncloss_drift",
+   "kind": "sstv",
+   "sha256": "f0173d579ecc504681925eb3dde7da048329a2741c3f873d650e368ed9a6c7d8",
+   "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
+   "width": 320,
+   "height": 256
+  },
+  {
+   "name": "sstv_martin_m2",
+   "kind": "sstv",
+   "sha256": "021451b739b25d786a6663094f1f836b4181c85fabc4e322ebc4cf8a2d016142",
+   "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
+   "width": 320,
+   "height": 256
+  },
+  {
+   "name": "sstv_martin_m2_impaired",
+   "kind": "sstv",
+   "sha256": "bd00ecffeecb857afcfe46d274d9f914501b9f2742d232c7574825164b1cd8f1",
+   "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
+   "width": 320,
+   "height": 256
+  },
+  {
+   "name": "sstv_robot36",
+   "kind": "sstv",
+   "sha256": "8545dd871528d671c24f870e33dce036693cc4381e077142c7b7329a9d273769",
+   "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
+   "width": 320,
+   "height": 240
+  },
+  {
+   "name": "sstv_robot36_impaired",
+   "kind": "sstv",
+   "sha256": "d4c7ef442999e90cb6675d2bb4ed8b0d06123be99acf53fa95939c18312e8d8c",
+   "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
+   "width": 320,
+   "height": 240
+  },
+  {
+   "name": "sstv_scottie_dx",
+   "kind": "sstv",
+   "sha256": "63e7fe76170454f25c6ace147698328ba9eba714aeb5960d04cc5129624e0b8f",
+   "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
+   "width": 320,
+   "height": 256
+  },
+  {
+   "name": "sstv_scottie_s1",
+   "kind": "sstv",
+   "sha256": "9e9e2721978a2208787bcb9253da0eaf404316cdbda24acb5244ceb7ef3852e5",
+   "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
+   "width": 320,
+   "height": 256
+  },
+  {
+   "name": "sstv_scottie_s2",
+   "kind": "sstv",
+   "sha256": "f80bafbad6680a89c25963f214f1131c3323146c52d850aacba7d5cbf31ca669",
+   "provenance": "synthetic: tools/gen_sstv_fixtures.py (independent pysstv encoder; numpy clock-offset/AWGN impairments on *_impaired/syncloss variants)",
+   "width": 320,
+   "height": 256
+  },
+  {
+   "name": "wefax_clean_120lpm",
+   "kind": "wefax",
+   "sha256": "00bdb73c814291b4a49293ad88e0adc0f432d8e81729b979375196ca1a3d8a56",
+   "provenance": "synthetic: go/internal/testutil/wefaxfixture.Encode with the exact parameters in wefax_regen (deterministic; regenerate with SDRSTREAM_REGEN_FIXTURES=1)",
+   "width": 1810,
+   "height": 98,
+   "sync_source": "phasing-wedge",
+   "drift_ppm": -215,
+   "drift_tol_ppm": 250
+  },
+  {
+   "name": "wefax_drift_noise_120lpm",
+   "kind": "wefax",
+   "sha256": "a1c808b9ffc376a1cb74bddf2ef4b15eb1ba8a200e865257d7d89f58261e117f",
+   "provenance": "synthetic: go/internal/testutil/wefaxfixture.Encode with the exact parameters in wefax_regen (deterministic; regenerate with SDRSTREAM_REGEN_FIXTURES=1)",
+   "width": 1810,
+   "height": 99,
+   "sync_source": "phasing-wedge",
+   "drift_ppm": 737,
+   "drift_tol_ppm": 250
+  },
+  {
+   "name": "wefax_offair_klankbeeld_733401",
+   "kind": "wefax",
+   "sha256": "9f82e37c4310e16d486ff84bb8376ce1c142a00a227c2c33b60d4deac20fd564",
+   "provenance": "independent off-air recording: GYA Northwood 8038 kHz, recorded 2024-04-24 14:24 UTC by klankbeeld, https://freesound.org/people/klankbeeld/sounds/733401/, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/); derived from the public HQ preview MP3 (original wav auth-gated), trimmed 280-430s, resampled 8kHz mono - see PROVENANCE.md",
+   "width": 1810,
+   "height": 298,
+   "sync_source": "line-correlation",
+   "drift_ppm": 69,
+   "drift_tol_ppm": 250
+  },
+  {
+   "name": "ft8/191111_110115",
+   "kind": "ft8",
+   "sha256": "aea482f19500a91cd85ef5441ae3b05dba949d7f51da4ed35efc1ccf3081f482",
+   "provenance": "ft8_lib test corpus, byte-identical to upstream test/wav (sha256-verified 2026-10-24), MIT license (see ft8_lib.LICENSE); .txt is the WSJT-X decode list shipped with the recording",
+   "ref_file": "ft8/191111_110115.txt",
+   "ref_sha256": "7c862749ade2f433dc44ee3437e6e11d42f41f54d8c48a0a5b3380e4f627936e",
+   "ref_messages": 1
+  },
+  {
+   "name": "ft8/191111_110130",
+   "kind": "ft8",
+   "sha256": "f6bb1989793fd8f03e926845da7a91eb0ef43b75648f4362f9d0c24789285fd9",
+   "provenance": "ft8_lib test corpus, byte-identical to upstream test/wav (sha256-verified 2026-10-24), MIT license (see ft8_lib.LICENSE); .txt is the WSJT-X decode list shipped with the recording",
+   "ref_file": "ft8/191111_110130.txt",
+   "ref_sha256": "b81b8d02e038df68a404b8aa7ba981ad13b921db816c9b898af9b65669887fc5",
+   "ref_messages": 5
+  },
+  {
+   "name": "ft8/191111_110145",
+   "kind": "ft8",
+   "sha256": "c97d335bdc2b4ad8cca3f06a7cd8f923e62163cb2bc72499e2bee6a9ade1d312",
+   "provenance": "ft8_lib test corpus, byte-identical to upstream test/wav (sha256-verified 2026-10-24), MIT license (see ft8_lib.LICENSE); .txt is the WSJT-X decode list shipped with the recording",
+   "ref_file": "ft8/191111_110145.txt",
+   "ref_sha256": "292d4d515b1beed2d8aa34a301de682bad0f2eb4746a99899cc711d25c39b133",
+   "ref_messages": 2
+  },
+  {
+   "name": "ft8/test_01",
+   "kind": "ft8",
+   "sha256": "30071bb378b4f54e4ffdaf91920ed3074aa08afd2331ae918e636b5cec142776",
+   "provenance": "ft8_lib websdr test recordings (repo commit 8428a81; not byte-identical to current upstream websdr_test*.wav, likely an earlier revision), MIT license (see ft8_lib.LICENSE); .txt is the WSJT-X decode list shipped with the recording",
+   "ref_file": "ft8/test_01.txt",
+   "ref_sha256": "30d0eac485d5b59b68c00d56e05eb7e9cdb3588f893d9856aafacd1d4522e0fe",
+   "ref_messages": 24
+  },
+  {
+   "name": "ft8/test_02",
+   "kind": "ft8",
+   "sha256": "bfb0821c8b51ff93601273d5e4f9dd2310f25499b95ed8d4864a5219b65fb526",
+   "provenance": "ft8_lib websdr test recordings (repo commit 8428a81; not byte-identical to current upstream websdr_test*.wav, likely an earlier revision), MIT license (see ft8_lib.LICENSE); .txt is the WSJT-X decode list shipped with the recording",
+   "ref_file": "ft8/test_02.txt",
+   "ref_sha256": "c675d27e2a4532b352d8965d255814ba85686704bcf3ab1011509765385f423a",
+   "ref_messages": 24
+  },
+  {
+   "name": "ft8/test_03",
+   "kind": "ft8",
+   "sha256": "f992c2e613fa264f1cebe96346c18cdf728fa9c30f5c2f8678f5692be85ef561",
+   "provenance": "ft8_lib websdr test recordings (repo commit 8428a81; not byte-identical to current upstream websdr_test*.wav, likely an earlier revision), MIT license (see ft8_lib.LICENSE); .txt is the WSJT-X decode list shipped with the recording",
+   "ref_file": "ft8/test_03.txt",
+   "ref_sha256": "4b6efe06fcc9883f0e1c495fcb81ccc515e196f79c9c523dd09834444aacbdf2",
+   "ref_messages": 19
+  },
+  {
+   "name": "ft8/test_04",
+   "kind": "ft8",
+   "sha256": "71c21039b53a8a29389640a0a6e7e60a1a170df0b5c175a9570d2ffa5150627e",
+   "provenance": "ft8_lib websdr test recordings (repo commit 8428a81; not byte-identical to current upstream websdr_test*.wav, likely an earlier revision), MIT license (see ft8_lib.LICENSE); .txt is the WSJT-X decode list shipped with the recording",
+   "ref_file": "ft8/test_04.txt",
+   "ref_sha256": "814d4c56e30d1b05a86f3c32e257cbd2da452eb7fee069ef0c6c23532aeba2f7",
+   "ref_messages": 20
+  },
+  {
+   "name": "ft8/test_05",
+   "kind": "ft8",
+   "sha256": "8fbc4e70e4778573d0768d63f1fb271df82da2836d644b91fd62346a8244ea97",
+   "provenance": "ft8_lib websdr test recordings (repo commit 8428a81; not byte-identical to current upstream websdr_test*.wav, likely an earlier revision), MIT license (see ft8_lib.LICENSE); .txt is the WSJT-X decode list shipped with the recording",
+   "ref_file": "ft8/test_05.txt",
+   "ref_sha256": "9f47e74f8e8a69ece436537254c68610303190c073b73ad698c9187fc1c176ea",
+   "ref_messages": 32
+  },
+  {
+   "name": "ft8/test_06",
+   "kind": "ft8",
+   "sha256": "e7abefe4206f86a074501c3c4037adde8102a4cd0f34b747ca6f6f0baf16493b",
+   "provenance": "ft8_lib websdr test recordings (repo commit 8428a81; not byte-identical to current upstream websdr_test*.wav, likely an earlier revision), MIT license (see ft8_lib.LICENSE); .txt is the WSJT-X decode list shipped with the recording",
+   "ref_file": "ft8/test_06.txt",
+   "ref_sha256": "a4e6a920d8108e1ef30d2ce44dace9d69e2d948aff0bd6a6bd0a92674b26eed0",
+   "ref_messages": 27
+  },
+  {
+   "name": "ft8/live_websdr_utwente_7074kHz_20261022T052841Z",
+   "kind": "ft8",
+   "sha256": "7458b37a31559b20e7d09dade3b7057dd8970d5d84ffbc33ce0bec129bdbc0e1",
+   "provenance": "live capture by the sdrstream team from the public Twente WebSDR (websdr.ewi.utwente.nl:8901), 7074 kHz USB, 2026-10-22 05:28:41 UTC; own recording, no reference list"
+  }
+ ]
 }

@@ -38,6 +38,12 @@ type decoderFixture struct {
 	SyncSource  string  `json:"sync_source,omitempty"`
 	DriftPPM    float64 `json:"drift_ppm,omitempty"`
 	DriftTolPPM float64 `json:"drift_tol_ppm,omitempty"`
+	// FT8 corpus entries: RefFile is the WSJT-X decode list shipped next to
+	// the wav (ft8_lib corpus), pinned by hash and message count. The jt9
+	// reference-decoder corpus test asserts jt9 reproduces every message.
+	RefFile     string `json:"ref_file,omitempty"`
+	RefSHA256   string `json:"ref_sha256,omitempty"`
+	RefMessages int    `json:"ref_messages,omitempty"`
 }
 
 type decoderManifest struct {
@@ -86,13 +92,27 @@ func TestDecoderFixtureHashes(t *testing.T) {
 			t.Errorf("%s.wav sha256 = %.16s, manifest pins %.16s (fixture drift or corruption)", f.Name, got, f.SHA256)
 		}
 	}
-	wavs, err := filepath.Glob(filepath.Join("testdata", "*.wav"))
-	if err != nil {
-		t.Fatal(err)
+	for _, f := range m.Fixtures {
+		if f.RefFile == "" {
+			continue
+		}
+		if got := fixtureSHA256(t, filepath.Join("testdata", f.RefFile)); got != f.RefSHA256 {
+			t.Errorf("%s sha256 = %.16s, manifest pins %.16s (reference-list drift)", f.RefFile, got, f.RefSHA256)
+		}
 	}
-	for _, w := range wavs {
-		if !seen[filepath.Base(w)] {
-			t.Errorf("%s is not in testdata/manifest.json - pin it or remove it", filepath.Base(w))
+	for _, pattern := range []string{filepath.Join("testdata", "*.wav"), filepath.Join("testdata", "ft8", "*.wav")} {
+		wavs, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range wavs {
+			rel, err := filepath.Rel("testdata", w)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !seen[rel] {
+				t.Errorf("%s is not in testdata/manifest.json - pin it or remove it", w)
+			}
 		}
 	}
 }
@@ -130,6 +150,16 @@ func measureFixture(t *testing.T, f decoderFixture) (facts decoderFixture, err e
 		facts.Width, facts.Height = img.Bounds().Dx(), img.Bounds().Dy()
 		facts.SyncSource = rep.SyncSource
 		facts.DriftPPM = rep.DriftPPM
+	case "ft8":
+		// FT8 corpus entries pin the wav by hash (TestDecoderFixtureHashes)
+		// and the WSJT-X reference decode list by hash + message count; the
+		// Go decoder's coverage of this corpus is gated separately in
+		// ft8_test.go (TestFT8RealRecordings), and the jt9 reference corpus
+		// gate lives in reference_test.go (TestJT9DecodeFT8Corpus).
+		if f.RefFile != "" {
+			facts.RefFile = f.RefFile
+			facts.RefMessages = len(wsjtMessages(t, filepath.Join("testdata", f.RefFile)))
+		}
 	default:
 		return facts, fmt.Errorf("unknown kind %q", f.Kind)
 	}
@@ -150,10 +180,14 @@ func TestDecoderFixtureGates(t *testing.T) {
 				t.Fatalf("measure: %v", err)
 			}
 			if measure {
-				t.Logf("MEASURED %s kind=%s sha256=%s err=%q %dx%d sync=%q drift=%.0fppm",
+				t.Logf("MEASURED %s kind=%s sha256=%s err=%q %dx%d sync=%q drift=%.0fppm ref=%s:%d",
 					facts.Name, facts.Kind, fixtureSHA256(t, filepath.Join("testdata", facts.Name+".wav"))[:16],
-					facts.ExpectError, facts.Width, facts.Height, facts.SyncSource, facts.DriftPPM)
+					facts.ExpectError, facts.Width, facts.Height, facts.SyncSource, facts.DriftPPM,
+					facts.RefFile, facts.RefMessages)
 				return
+			}
+			if f.RefFile != "" && facts.RefMessages != f.RefMessages {
+				t.Errorf("%s parses to %d messages, manifest pins %d", f.RefFile, facts.RefMessages, f.RefMessages)
 			}
 			if f.ExpectError != "" {
 				if !strings.Contains(facts.ExpectError, f.ExpectError) {

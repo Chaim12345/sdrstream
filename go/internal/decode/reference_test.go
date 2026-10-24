@@ -6,6 +6,8 @@ package decode
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -53,14 +55,53 @@ func TestWSPRDDecodeLiveCapture(t *testing.T) {
 	}
 }
 
+// TestJT9DecodeFT8Corpus runs the WSJT-X jt9 reference decoder over the
+// pinned FT8 corpus (manifest ft8 entries with a reference decode list) and
+// requires jt9 to reproduce every reference message. The lists are WSJT-X's
+// own decodes of these recordings, and the wrapper runs jt9 at its deepest
+// search level, so a miss means the reference tool changed - per project
+// rule that is REPORTED, never tuned away. A reference line may carry a
+// trailing annotation ("CQ TA6CQ KN70      AS Turkey"); jt9 never prints
+// annotations, so a message matches when it equals the reference text or
+// extends it after a space. Skips when jt9 is not installed.
 func TestJT9DecodeFT8Corpus(t *testing.T) {
 	d := JT9("")
 	if d.Binary() == "" {
 		t.Skip("jt9 not installed")
 	}
-	wav := "../../../tests/data/real_aprs_wa8lmf_30s.wav" // smoke: runs, may decode nothing
-	if _, err := d.DecodeWAV(refTestCtx(t), wav, "ft8"); err != nil {
-		t.Fatal(err)
+	m := loadDecoderManifest(t)
+	ran := 0
+	for _, f := range m.Fixtures {
+		if f.Kind != "ft8" || f.RefFile == "" {
+			continue
+		}
+		t.Run(f.Name, func(t *testing.T) {
+			ref := wsjtMessages(t, filepath.Join("testdata", f.RefFile))
+			msgs, err := d.DecodeWAV(refTestCtx(t), filepath.Join("testdata", f.Name+".wav"), "ft8")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make([]string, 0, len(msgs))
+			for _, msg := range msgs {
+				got = append(got, msg.Text)
+			}
+			for want := range ref {
+				ok := false
+				for _, g := range got {
+					if g == want || strings.HasPrefix(g, want+" ") {
+						ok = true
+						break
+					}
+				}
+				if !ok {
+					t.Errorf("jt9 missed reference decode %q (got %d messages)", want, len(got))
+				}
+			}
+			ran++
+		})
+	}
+	if ran == 0 {
+		t.Fatal("manifest pins no ft8 corpus entries with reference lists")
 	}
 }
 
