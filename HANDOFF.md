@@ -258,6 +258,22 @@ These need the owner's call; nothing here is blocked on code.
    `avmarine` command; it is deliberately not wired into the web feeds
    manager. Left as is unless the owner wants it in the UI feed set.
 
+## 7a. Lane backlog (2026-10-24)
+
+Code-owned follow-ups for a future lane; none block the current tip.
+
+1. **Flake: openwebrx TestReconnectResumesStream.** QA hit one failure in
+   20 isolated runs on the pre-merge base ('write: broken pipe'), unrelated
+   to any merged diff that session. Pre-existing in the reconnect harness
+   shipped in a9e606d. Reproduce with a stress loop (-count=50, isolated),
+   pin the timing assumption, fix with a failing-then-passing test.
+2. **jt9 real-binary leg UNVERIFIED.** The corpus-driven jt9 gate has never
+   run with an actual jt9 binary; run it once in an environment with
+   wsjt-x installed before anyone claims 'jt9 reproduces the corpus'.
+3. **test_01..06 upstream-revision claim unproven.** The pinned files match
+   an EARLIER upstream revision of the same MIT project; verify against
+   upstream history or drop the revision claim from PROVENANCE.md.
+
 ## 8. Running it
 
 ```bash
