@@ -64,7 +64,10 @@ func TestWSPRDDecodeLiveCapture(t *testing.T) {
 // jt9 -8 -d 3, 2026-10-24 - see manifest.json jt9_leg); the cause is
 // unconfirmed (GUI a-priori / KVASD-class decodes is a hypothesis, not
 // proven), and one line IS reproduced by 2.7.0 - the allowlist entries
-// carry the per-version truth. Every other miss means the reference tool
+// carry the per-version truth. The gate is calibrated and valid for CLI
+// jt9 2.2.2-2.5.4 behaviour: jt9 2.7.0 misses four further
+// non-allowlisted lines, so this test fails under 2.7.0 by design until
+// the allowlist is re-validated for a newer jt9. Every other miss means the reference tool
 // or the corpus changed - per project rule that is REPORTED, never tuned
 // away. A pinned known miss must still exist in the reference list, so
 // list drift cannot hide behind the exemption. A reference line may carry a

@@ -65,14 +65,23 @@ misses (manifest ref_known_misses).
 
 Real-binary leg, RUN 2026-10-24 (previously UNVERIFIED): the corpus was
 exercised with three installable CLI jt9 builds - wsjtx 2.2.2, 2.5.4 and
-2.7.0. The 191111_* upstream pairs reproduce exactly on all three. Three
-test_0x reference lines are unreproducible by every CLI jt9 tried:
-test_01 'CQ RX3ASQ KO95' (-24 dB), test_04 'OK2BJ JG1SRO -15' (-24 dB),
-test_05 'R8JA CT3IQ RR73' (-10 dB); jt9 2.7.0 misses a further three,
-proving decoder output is version-sensitive at the margins. The .txt
-lists are WSJT-X GUI decode lists; the GUI's a-priori (AP) passes and
-KVASD-assisted deep decode are not exposed by the jt9 CLI (no AP flag;
-no kvasd binary in any deb; the kvasd binary download from
-physics.princeton.edu refuses (403) and KI7MT/kvasd-installer is an
-interactive GUI installer). The three pinned known misses sit exactly in
-that GUI-only decode class; evidence lives in manifest.json jt9_leg.
+2.7.0, all at `jt9 -8 -d 3`. The 191111_* upstream pairs reproduce
+exactly on all three. Three test_0x reference lines are not reproduced
+by CLI jt9 2.2.2 or 2.5.4: test_01 'CQ RX3ASQ KO95' (-24 dB), test_04
+'OK2BJ JG1SRO -15' (-24 dB), test_05 'R8JA CT3IQ RR73' (-10 dB). The
+cause is unconfirmed: these are WSJT-X GUI decode lists, and the GUI's
+a-priori (AP) passes and KVASD-assisted deep decode are not exposed by
+the jt9 CLI (no AP flag; no kvasd binary in any deb; the kvasd download
+from physics.princeton.edu refuses 403; KI7MT/kvasd-installer is an
+interactive GUI installer), so a GUI-only decode class is the working
+hypothesis - not proven, and weakened by two facts: test_02 carries the
+identical text 'OK2BJ JG1SRO -15' at the same -24 dB and every CLI jt9
+reproduces it there, and jt9 2.7.0 misses four further lines including
+stronger-signal ones (test_01 'JA1FWS HA7CH JN97', test_05
+'<9A9A> F6DEO/QRP' and 'CQ HA1BF JN86', test_06 'R7NO EA2DIC R-11')
+while reproducing RX3ASQ - decoder output is version-sensitive at the
+margins. The gate is therefore calibrated and valid for CLI jt9
+2.2.2-2.5.4 behaviour; running it under 2.7.0 fails on those four
+non-allowlisted lines (a known incompatibility, evidence in
+manifest.json jt9_leg), and any jt9 upgrade must re-validate the
+allowlist before adoption.

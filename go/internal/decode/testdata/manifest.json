@@ -57,7 +57,8 @@
    }
   ],
   "kvasd": "not shipped in any deb; binary download from physics.princeton.edu refused (HTTP 403); KI7MT/kvasd-installer is an interactive GUI installer - no KVASD-assisted run was possible in-sandbox",
-  "note": "2.2.2 and 2.5.4 share one miss set (the 3 allowlisted lines); 2.7.0 misses a different, larger set (6 lines incl. strong-signal lines) and DOES reproduce test_01 'CQ RX3ASQ KO95' - decoder output is version-sensitive at the margins. The allowlist is exact: any OTHER missed reference line still fails the corpus test, and a allowlisted line that starts reproducing is logged."
+  "note": "2.2.2 and 2.5.4 share one miss set (the 3 allowlisted lines); 2.7.0 misses a different 6-line set and DOES reproduce test_01 'CQ RX3ASQ KO95' - decoder output is version-sensitive at the margins. The allowlist is exact: any OTHER missed reference line still fails the corpus test, and an allowlisted line that starts reproducing is logged.",
+  "gate_validity": "calibrated and valid for CLI jt9 2.2.2-2.5.4 behaviour. jt9 2.7.0 diverges: it reproduces the allowlisted test_01 'CQ RX3ASQ KO95' but misses four further non-allowlisted lines - test_01 'JA1FWS HA7CH JN97', test_05 '<9A9A> F6DEO/QRP' and 'CQ HA1BF JN86', test_06 'R7NO EA2DIC R-11' - so the corpus test FAILS under 2.7.0. Known incompatibility; any jt9 upgrade must re-validate the allowlist before adoption."
  },
  "fixtures": [
   {
