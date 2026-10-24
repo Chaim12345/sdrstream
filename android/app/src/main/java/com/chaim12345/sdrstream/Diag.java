@@ -63,7 +63,9 @@ final class Diag {
             FileWriter out = new FileWriter(new File(ctx.getFilesDir(), CRASH_LOG), true);
             out.write("=== " + isoNow() + " - " + where + " ===\n");
             out.write(deviceInfo(ctx) + "\n");
-            out.write(android.util.Log.getStackTraceString(error));
+            // Stack traces embed exception messages, which can carry full
+            // URLs with query strings: crash.log is shareable, so redact.
+            out.write(redactBlock(android.util.Log.getStackTraceString(error)));
             out.write("\n");
             out.close();
         } catch (Throwable ignored) {
@@ -79,15 +81,15 @@ final class Diag {
      */
     static synchronized void purgePreRedactionLogs(Context ctx) {
         SharedPreferences p = prefs(ctx);
-        if (p.getBoolean("purged_pre_redaction_logs", false)) return;
+        if (p.getBoolean("purged_pre_redaction_logs_v2", false)) return;
         File files = ctx.getFilesDir();
-        for (String name : new String[]{ENGINE_LOG, ENGINE_LOG_OLD}) {
+        for (String name : new String[]{ENGINE_LOG, ENGINE_LOG_OLD, CRASH_LOG}) {
             File f = new File(files, name);
             if (f.exists() && !f.delete()) {
                 return; // retry next launch rather than marking clean early
             }
         }
-        p.edit().putBoolean("purged_pre_redaction_logs", true).apply();
+        p.edit().putBoolean("purged_pre_redaction_logs_v2", true).apply();
     }
 
     /** One-line status the UI can surface; overwritten on each new error. */
