@@ -262,11 +262,15 @@ These need the owner's call; nothing here is blocked on code.
 
 Code-owned follow-ups for a future lane; none block the current tip.
 
-1. **Flake: openwebrx TestReconnectResumesStream.** QA hit one failure in
-   20 isolated runs on the pre-merge base ('write: broken pipe'), unrelated
-   to any merged diff that session. Pre-existing in the reconnect harness
-   shipped in a9e606d. Reproduce with a stress loop (-count=50, isolated),
-   pin the timing assumption, fix with a failing-then-passing test.
+1. ~~Flake: openwebrx TestReconnectResumesStream~~ FIXED on
+   fix/openwebrx-reconnect-flake. Root cause: the drop-server harness
+   dropped connection 1 on the FIRST dspcontrol, which is the handshake's
+   own DSP start (openwebrx.go:315) - earlier than the test's intent
+   ('drops after the profile selection's demod restart'). The RST then
+   raced the test's SelectProfile write: 'write: broken pipe' ~4/300.
+   Fix: drop threshold is a startDropServer parameter (2 = after the
+   profile-restart dspcontrol for the resume test, 1 = immediate for the
+   exhaustion test). 1000/1000 stress green, race green.
 2. **jt9 real-binary leg UNVERIFIED.** The corpus-driven jt9 gate has never
    run with an actual jt9 binary; run it once in an environment with
    wsjt-x installed before anyone claims 'jt9 reproduces the corpus'.
