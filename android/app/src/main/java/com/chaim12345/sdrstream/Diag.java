@@ -70,6 +70,26 @@ final class Diag {
         }
     }
 
+    /**
+     * One-time migration: engine.log files written before redaction existed
+     * may already hold credentials. On first launch of a redacting build,
+     * delete them so the first Share after upgrade cannot leak old lines.
+     * Called from App.onCreate and before each engine start (marker-guarded
+     * no-op after the first run).
+     */
+    static synchronized void purgePreRedactionLogs(Context ctx) {
+        SharedPreferences p = prefs(ctx);
+        if (p.getBoolean("purged_pre_redaction_logs", false)) return;
+        File files = ctx.getFilesDir();
+        for (String name : new String[]{ENGINE_LOG, ENGINE_LOG_OLD}) {
+            File f = new File(files, name);
+            if (f.exists() && !f.delete()) {
+                return; // retry next launch rather than marking clean early
+            }
+        }
+        p.edit().putBoolean("purged_pre_redaction_logs", true).apply();
+    }
+
     /** One-line status the UI can surface; overwritten on each new error. */
     static void recordEngineError(Context ctx, String message) {
         prefs(ctx).edit().putString(KEY_LAST_ERROR, isoNow() + "  " + message).apply();

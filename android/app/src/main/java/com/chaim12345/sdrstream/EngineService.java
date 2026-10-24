@@ -162,6 +162,9 @@ public class EngineService extends Service {
             env.put("SDRSTREAM_UI_PASSWORD", password);
         }
         pb.redirectErrorStream(true);
+        // Last chance before any new lines land: pre-redaction logs from an
+        // older build must not survive into a share (no-op once done).
+        Diag.purgePreRedactionLogs(this);
         try {
             process = pb.start();
         } catch (IOException | SecurityException e) {

@@ -8,6 +8,7 @@ public class App extends Application {
     public void onCreate() {
         super.onCreate();
         Diag.installCrashHandler(this);
+        Diag.purgePreRedactionLogs(this);
         // Snapshot this app's own logcat so a later diagnostics share has
         // the Java side without ADB; refreshed again on every Share.
         JavaLog.captureAsync(this);
