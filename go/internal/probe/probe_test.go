@@ -264,3 +264,86 @@ func TestCatalogJSONShape(t *testing.T) {
 type proberFunc func(ctx context.Context, rec *Record)
 
 func (f proberFunc) Probe(ctx context.Context, rec *Record) { f(ctx, rec) }
+
+func TestBackoffDoublesAndCaps(t *testing.T) {
+	base := time.Hour
+	cases := []struct {
+		failures int
+		want     time.Duration
+	}{
+		{0, base}, {1, base}, {2, 2 * base}, {3, 4 * base}, {4, 8 * base},
+		{5, 16 * base}, {6, 24 * time.Hour}, {10, 24 * time.Hour},
+	}
+	for _, tc := range cases {
+		if got := Backoff(base, tc.failures); got != tc.want {
+			t.Fatalf("Backoff(1h, %d) = %v, want %v", tc.failures, got, tc.want)
+		}
+	}
+}
+
+func TestSweepSkipsStationsNotYetDue(t *testing.T) {
+	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	c := NewCatalog()
+	// Station "dead" was checked an hour ago and is not due for another hour;
+	// station "fresh" has never been seen (zero NextCheckAt = due now).
+	c.Update(Record{Key: "dead", Kind: KindKiwi, Reachable: false, Verdict: VerdictTimeout,
+		CheckedAt: now.Add(-time.Hour), NextCheckAt: now.Add(time.Hour)})
+	var probedMu sync.Mutex
+	probed := map[string]int{}
+	s := &Scheduler{
+		Source: Source{Manual: []Record{{Key: "dead", Kind: KindKiwi}, {Key: "fresh", Kind: KindKiwi}}},
+		Prober: proberFunc(func(ctx context.Context, rec *Record) {
+			probedMu.Lock()
+			probed[rec.Key]++
+			probedMu.Unlock()
+			rec.Reachable, rec.Verdict, rec.CheckedAt = true, VerdictOK, now
+		}),
+		Now: func() time.Time { return now },
+	}
+	if err := s.Sweep(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	probedMu.Lock()
+	defer probedMu.Unlock()
+	if probed["dead"] != 0 {
+		t.Fatalf("not-due station was probed %d times", probed["dead"])
+	}
+	if probed["fresh"] != 1 {
+		t.Fatalf("fresh station probed %d times, want 1", probed["fresh"])
+	}
+	// The skipped station's catalog record must be untouched.
+	if got := c.Records["dead"].CheckedAt; !got.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("skipped station record mutated: CheckedAt %v", got)
+	}
+}
+
+func TestSweepSetsNextCheckBackoff(t *testing.T) {
+	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	c := NewCatalog()
+	// "flaky" already failed twice in a row; "good" is healthy.
+	c.Update(Record{Key: "flaky", Kind: KindKiwi, Reachable: false, ConsecFailures: 2, CheckedAt: now.Add(-4 * time.Hour)})
+	s := &Scheduler{
+		Source: Source{Manual: []Record{{Key: "flaky", Kind: KindKiwi}, {Key: "good", Kind: KindKiwi}}},
+		Prober: proberFunc(func(ctx context.Context, rec *Record) {
+			rec.CheckedAt = now
+			if rec.Key == "good" {
+				rec.Reachable, rec.Verdict = true, VerdictOK
+			} else {
+				rec.Reachable, rec.Verdict = false, VerdictTimeout
+			}
+		}),
+		Interval: time.Hour,
+		Now:      func() time.Time { return now },
+	}
+	if err := s.Sweep(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	// Third consecutive failure: backoff 4h (2^(3-1) * base).
+	if got, want := c.Records["flaky"].NextCheckAt, now.Add(4*time.Hour); !got.Equal(want) {
+		t.Fatalf("flaky NextCheckAt = %v, want %v", got, want)
+	}
+	// Healthy station: plain interval.
+	if got, want := c.Records["good"].NextCheckAt, now.Add(time.Hour); !got.Equal(want) {
+		t.Fatalf("good NextCheckAt = %v, want %v", got, want)
+	}
+}

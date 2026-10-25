@@ -18,6 +18,7 @@ type stationView struct {
 	Reachable      bool             `json:"reachable"`
 	Verdict        string           `json:"verdict"`
 	CheckedAt      string           `json:"checked_at,omitempty"`
+	NextCheckAt    string           `json:"next_check_at,omitempty"`
 	ConsecFailures int              `json:"consec_failures,omitempty"`
 	Capability     probe.Capability `json:"capability,omitempty"`
 }
@@ -53,6 +54,9 @@ func (s *Server) handleProbeStations(w http.ResponseWriter, r *http.Request) {
 		}
 		if !rec.CheckedAt.IsZero() {
 			v.CheckedAt = rec.CheckedAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		if !rec.NextCheckAt.IsZero() {
+			v.NextCheckAt = rec.NextCheckAt.UTC().Format("2006-01-02T15:04:05Z")
 		}
 		out = append(out, v)
 	}

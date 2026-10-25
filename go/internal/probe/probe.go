@@ -74,6 +74,12 @@ type Record struct {
 	ConsecFailures int           `json:"consec_failures,omitempty"`
 	LastError      string        `json:"last_error,omitempty"`
 
+	// NextCheckAt is when the monitor should probe this station again:
+	// base interval for healthy stations, doubling backoff (capped at 24h)
+	// for consecutive failures so dead receivers are not hammered.
+	// Zero means due immediately (new stations).
+	NextCheckAt time.Time `json:"next_check_at,omitempty"`
+
 	// Capability: last KNOWN answer. A failed probe never erases it -
 	// Reachable=false is what marks the station down, so a transient
 	// outage cannot blank the catalog the UI shows.
@@ -190,6 +196,36 @@ func (c *Catalog) Update(rec Record) {
 	}
 	r := rec
 	c.Records[rec.Key] = &r
+}
+
+// Get returns a copy of one record, for the scheduler's backoff decision.
+func (c *Catalog) Get(key string) (Record, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	r, ok := c.Records[key]
+	if !ok {
+		return Record{}, false
+	}
+	return *r, true
+}
+
+// Backoff returns how long to wait before re-checking a station after
+// consecFailures consecutive failed probes: the base interval after the
+// first failure, doubling with each further failure, capped at 24h.
+// Healthy stations are scheduled with the base interval directly.
+func Backoff(base time.Duration, consecFailures int) time.Duration {
+	const cap = 24 * time.Hour
+	if consecFailures <= 1 {
+		return base
+	}
+	d := base
+	for i := 1; i < consecFailures; i++ {
+		d *= 2
+		if d >= cap {
+			return cap
+		}
+	}
+	return d
 }
 
 // Reachable returns the records that answered their last probe, oldest

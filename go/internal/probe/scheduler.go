@@ -40,9 +40,13 @@ func (s *Scheduler) now() time.Time {
 	return time.Now()
 }
 
-// Sweep probes every station once and merges outcomes into the catalog.
-// A failed directory fetch keeps the catalog's previous records for that
-// source: the directory being down must not blank the station list.
+// Sweep probes every DUE station once and merges outcomes into the
+// catalog. A station whose NextCheckAt is in the future is skipped
+// untouched: consecutive failures push NextCheckAt out with a doubling
+// backoff (see Backoff), so a dead receiver costs one probe per backoff
+// window, not one per sweep. A failed directory fetch keeps the catalog's
+// previous records for that source: the directory being down must not
+// blank the station list.
 func (s *Scheduler) Sweep(ctx context.Context, c *Catalog) error {
 	s.sweepMu.Lock()
 	defer s.sweepMu.Unlock()
@@ -74,11 +78,20 @@ func (s *Scheduler) Sweep(ctx context.Context, c *Catalog) error {
 		return firstErr
 	}
 
+	// Due filtering: skip stations whose backoff window has not elapsed.
+	// New stations (zero NextCheckAt) are always due.
+	sweepStart := s.now()
 	keys := make([]string, 0, len(stations))
 	for k := range stations {
+		if prev, ok := c.Get(k); ok && !prev.NextCheckAt.IsZero() && sweepStart.Before(prev.NextCheckAt) {
+			continue
+		}
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	if len(keys) == 0 {
+		return firstErr
+	}
 
 	workers := s.Workers
 	if workers <= 0 {
@@ -86,6 +99,10 @@ func (s *Scheduler) Sweep(ctx context.Context, c *Catalog) error {
 	}
 	if workers > len(keys) {
 		workers = len(keys)
+	}
+	base := s.Interval
+	if base <= 0 {
+		base = time.Hour
 	}
 	jobs := make(chan string)
 	var wg sync.WaitGroup
@@ -98,6 +115,13 @@ func (s *Scheduler) Sweep(ctx context.Context, c *Catalog) error {
 				rec := stations[key]
 				if s.Prober != nil {
 					s.Prober.Probe(ctx, &rec)
+				}
+				checked := s.now()
+				if rec.Reachable {
+					rec.NextCheckAt = checked.Add(base)
+				} else {
+					prev, _ := c.Get(key)
+					rec.NextCheckAt = checked.Add(Backoff(base, prev.ConsecFailures+1))
 				}
 				mu.Lock()
 				c.Update(rec)
