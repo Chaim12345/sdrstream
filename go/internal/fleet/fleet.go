@@ -39,6 +39,10 @@ type Assignment struct {
 
 // Plan is the result of one planning pass: every job is either assigned
 // or explicitly reported unplaced (no station matched).
+//
+// Consumers: Assigned is ordered sticky-first (pass 1), then priority
+// order (pass 2) - NOT input order. Match assignments to your jobs by
+// Assignment.Job.ID, never by index (QA review).
 type Plan struct {
 	Assigned []Assignment
 	Unplaced []Job
