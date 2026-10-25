@@ -284,7 +284,7 @@ func TestShellWiresHistorySearch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(sw), "'/static/history.js'") || !strings.Contains(string(sw), "sdrstream-shell-v4") {
+	if !strings.Contains(string(sw), "'/static/history.js'") || !strings.Contains(string(sw), "sdrstream-shell-v5") {
 		t.Fatal("history shell cache not updated")
 	}
 	if _, err := staticFS.ReadFile("static/history.js"); err != nil {

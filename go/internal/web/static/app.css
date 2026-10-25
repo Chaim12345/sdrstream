@@ -675,3 +675,7 @@ kbd {
 
 .history-result .history-file-link { display: inline-flex; align-items: center; min-height: 44px; box-sizing: border-box; margin-top: 12px; }
 #history-results { margin-bottom: 18px; }
+
+/* station board: probe catalog liveness */
+.badge.board-alive { color: var(--good); border-color: #14532d; }
+.badge.board-dead { color: var(--bad); border-color: #7f1d1d; }
