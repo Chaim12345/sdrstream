@@ -176,3 +176,20 @@ func TestCooldownEntriesPrunedAfterExpiry(t *testing.T) {
 		t.Fatalf("expired cooldown entries not pruned: %d", p.cooldownSize())
 	}
 }
+
+func TestPlanPrunesStaleStickinessMemory(t *testing.T) {
+	// Windowed campaigns mint a fresh job ID per window; the planner's
+	// stickiness map must drop IDs that left the campaign (QA review).
+	p := NewPlanner()
+	p.Plan(fixture(), []Job{ft8job}, testNow)
+	window2 := Job{ID: "ft8-20m@14:00", FreqHz: 14_074_000, Mode: "usb", Label: "FT8 20m", MaxAge: 2 * time.Hour}
+	p.Plan(fixture(), []Job{window2}, testNow.Add(time.Hour))
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, kept := p.last["ft8-20m"]; kept {
+		t.Fatalf("stale job ID kept in stickiness memory: %v", p.last)
+	}
+	if _, kept := p.last[window2.ID]; !kept {
+		t.Fatalf("current job ID pruned by mistake: %v", p.last)
+	}
+}
