@@ -1,6 +1,12 @@
 package monitor
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"math"
+	"testing"
+	"time"
+)
 
 func TestSuppressSkirtPeaks(t *testing.T) {
 	fm := peak{frequency: 100.800e6, bandwidth: 55_000, levelDB: 27.5}
@@ -55,5 +61,63 @@ func TestSuppressSkirtPeaksKeepsWideSignalItself(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("the wide signal itself was suppressed: %+v", got)
+	}
+}
+
+// fineSource is a 1024-bin fake with a 3 MHz span (~2.93 kHz/bin), fine
+// enough for a 1-bin peak to count as narrow (<=5 kHz) and a 20-bin run
+// to count as wide (>=20 kHz). Mirrors panoSource's interface.
+type fineSource struct {
+	frames [][]float64
+	idx    int
+}
+
+func (f *fineSource) Spectrum() ([]float64, float64, float64, bool) {
+	frame := f.frames[f.idx%len(f.frames)]
+	f.idx++
+	return frame, 15e6, 3e6, true
+}
+
+func (f *fineSource) RefineSpectrum(ctx context.Context, freqHz float64) ([]float64, float64, float64, bool) {
+	return nil, 0, 0, false
+}
+
+func (f *fineSource) Listen(ctx context.Context, hz float64, mode string, dur time.Duration) ([]float64, int, error) {
+	return nil, 0, errors.New("not implemented")
+}
+func (f *fineSource) Close() error { return nil }
+
+// TestStepSuppressesSkirtPeaks wires suppression into step(): a strong
+// wide signal with narrow edge spikes one step later leaves exactly one
+// active candidate - the wide signal. Without the step() call-out the
+// spikes each create their own candidate (the device-log failure mode).
+func TestStepSuppressesSkirtPeaks(t *testing.T) {
+	frame := make([]float64, 1024)
+	for i := range frame {
+		frame[i] = -105
+	}
+	for i := 600; i <= 619; i++ { // 20 bins ~ 58.6 kHz wide, strong
+		frame[i] = -65
+	}
+	frame[595] = -80 // narrow skirt spike, 15 dB below the wide signal
+	frame[625] = -80
+	m := New(Options{
+		Source:      &fineSource{frames: [][]float64{frame}},
+		ThresholdDB: 10, AverageFrames: 1, DwellTime: time.Millisecond,
+	})
+	m.step(context.Background())
+	m.mu.Lock()
+	got := len(m.active)
+	var survivor float64
+	for _, c := range m.active {
+		survivor = c.frequency
+	}
+	m.mu.Unlock()
+	if got != 1 {
+		t.Fatalf("skirt spikes created %d candidates through step(), want 1", got)
+	}
+	// Survivor sits at the wide signal: bin ~609.5 -> +278 kHz above centre.
+	if math.Abs(survivor-15.278e6) > 50e3 {
+		t.Errorf("surviving candidate at %.0f Hz, want near the wide signal (~15.278 MHz)", survivor)
 	}
 }
