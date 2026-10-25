@@ -9,6 +9,11 @@ OUT=qa-results; mkdir -p "$OUT"; export PATH=$PATH; R="$OUT/$LABEL"
 log() { echo "[qa] $*" | tee -a "$R-steps.txt"; }
 shot() { adb exec-out screencap -p > "$R-$1.png"; if [ -s "$R-$1.png" ]; then log "screenshot $1"; else log "WARN: screenshot $1 is EMPTY (device lost?)"; fi; }
 dump() { adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; adb exec-out cat /sdcard/ui.xml > "$R-$1.xml" 2>/dev/null; }
+snap() { # bounded guest-log snapshot at a phase boundary (evidence for device-loss diagnosis)
+  adb logcat -d -t 300 -v threadtime > "$R-logcat-$1.txt" 2>&1 || true
+}
+redact_list() { { set +x; } 2>/dev/null; { [ -n "${PW:-}" ] && printf '%s\n' "$PW"; [ -n "${NEWPW:-}" ] && printf '%s\n' "$NEWPW"; } > /tmp/qa-redact.list 2>/dev/null; chmod 600 /tmp/qa-redact.list 2>/dev/null; }
+trap redact_list EXIT
 ensure_fg() { # relaunch and dismiss any battery dialog until the app owns focus
   for i in 1 2 3 4; do
     if adb shell dumpsys window 2>/dev/null | grep -E 'mCurrentFocus' | grep -q "$PKG"; then
@@ -29,7 +34,10 @@ PY
 alive() { adb shell pidof $PKG >/dev/null 2>&1 && echo alive || echo dead; }
 require_device() { # hard-fail when the emulator is gone; past this point every check is noise
   state=$(adb get-state 2>/dev/null) || true
-  if [ "$state" != "device" ]; then log "FATAL: emulator lost (adb get-state: '${state:-no answer}') - aborting; harness verdict FAIL"; exit 1; fi
+  if [ "$state" != "device" ]; then
+    adb logcat -d -t 800 -v threadtime > "$R-logcat-deviceloss.txt" 2>&1 || true
+    log "FATAL: emulator lost (adb get-state: '${state:-no answer}') - aborting; harness verdict FAIL"; exit 1
+  fi
 }
 
 adb install -r "$APK" 2>&1 | tee "$R-install.txt"
@@ -51,6 +59,7 @@ PY
 if [ -s /tmp/notnow.txt ]; then adb shell input tap $(cat /tmp/notnow.txt); log "dismissed battery dialog"; sleep 2; fi
 shot 02-login-screen; dump 02-login-screen
 log "app process after launch: $(alive)"
+snap post-boot
 
 # Reachability of password controls by touch only.
 log "--- password-control reachability ---"
@@ -80,17 +89,21 @@ if [ "$R1" = ok ]; then
   log "menu items visible: $(grep -oE 'text="(Show UI password|Set UI password|Source code[^"]*|Stop engine|Diagnostics|Share logs)"' $R-03c-menu-open.xml | tr '\n' ' ')"
   R2=$(tapnode "$R-03c-menu-open.xml" 'text="Show UI password"')
   log "tap Show UI password: $R2"
-  sleep 2; shot 03d-password-dialog; dump 03d-password-dialog
+  sleep 2; dump 03d-password-dialog  # no screenshot: the dialog shows the real password in clear
   SHOWN=$(grep -oE 'text="Log in to the UI with:[^"]*"' "$R-03d-password-dialog.xml" | sed 's/.*&#10;&#10;\([0-9a-f]\{36\}\)&#10;.*/\1/')
+  { set +x; } 2>/dev/null
   case "$SHOWN" in [0-9a-f]*) echo "::add-mask::$SHOWN"; log "dialog shows a 36-hex password (masked)";; *) log "dialog did not show a password";; esac
+  { set -x; } 2>/dev/null
   ONDEV=$(adb shell run-as $PKG cat shared_prefs/sdrstream.xml 2>/dev/null | sed -n 's/.*name="ui_password">\([^<]*\)<.*/\1/p')
   [ -n "$SHOWN" ] && [ "$SHOWN" = "$ONDEV" ] && log "dialog password MATCHES on-device stored password" || log "dialog password does NOT match stored password"
   adb shell input keyevent KEYCODE_BACK; sleep 1
 fi
 
 # Login with the generated password (read in CI; masked, never printed).
+{ set +x; } 2>/dev/null
 PW=$(adb shell run-as $PKG cat shared_prefs/sdrstream.xml 2>/dev/null | sed -n 's/.*name="ui_password">\([^<]*\)<.*/\1/p')
 echo "::add-mask::$PW"
+{ set -x; } 2>/dev/null
 [ -n "$PW" ] && log "on-device password exists (len ${#PW})" || log "NO on-device password found"
 adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 5; ensure_fg
 dump 04-pre-login
@@ -118,7 +131,13 @@ for m in re.finditer(r'<node[^>]*class="android.widget.EditText"[^>]*bounds="\[(
 print("%d %d"%best if best else "")
 PY
   ensure_fg; adb shell input tap $(cat /tmp/field.txt); sleep 1
-  adb shell input text "$PW"; adb shell input keyevent KEYCODE_ENTER; sleep 8
+  snap pre-login-enter
+  { set +x; } 2>/dev/null
+  adb shell input text "$PW"
+  { set -x; } 2>/dev/null
+  adb shell input keyevent KEYCODE_ENTER; sleep 8
+  require_device
+  snap post-login
   shot 06-after-login; dump 06-after-login
   if ! adb shell dumpsys window | grep mCurrentFocus | grep -q "$PKG"; then log "LOGIN RESULT: INVALID (app not in foreground, input went elsewhere)"; elif grep -q "Open monitor" "$R-06-after-login.xml"; then log "LOGIN RESULT: still on login form"; elif grep -qE "Overview|Settings|Scan" "$R-06-after-login.xml"; then log "LOGIN RESULT: PASS (app tabs visible)"; else log "LOGIN RESULT: unclear"; fi
   grep -oE 'text="[^"]+"' "$R-06-after-login.xml" | head -40 > "$R-06-visible-text.txt"
@@ -130,7 +149,7 @@ fi
 # visible, then prove it with pixels. An earlier run DOM-verified the chips but its
 # emulator died before scrolling - this makes the pixel proof a hard gate.
 log "--- decode-target chips: scroll into view ---"
-require_device; ensure_fg
+require_device; ensure_fg; snap pre-chips
 CHIPS_OK=0
 for i in 1 2 3 4 5 6; do
   dump 06i-try$i
@@ -174,7 +193,11 @@ S1=$(tapnode "$R-06b.xml" 'content-desc="Menu"|text="Menu"|text="⋮"'); log "se
 if [ "$S1" = ok ]; then
   sleep 2; dump 06c; S2=$(tapnode "$R-06c.xml" 'text="Set UI password"'); log "set-pw: tap Set UI password: $S2"
   sleep 2; dump 06d; shot 06d-set-dialog
-  adb shell input tap $(edit_center "$R-06d.xml"); sleep 1; adb shell input text "$NEWPW"; sleep 1; shot 06e-typed
+  adb shell input tap $(edit_center "$R-06d.xml"); sleep 1
+  { set +x; } 2>/dev/null
+  adb shell input text "$NEWPW"
+  { set -x; } 2>/dev/null
+  sleep 1; shot 06e-typed
   dump 06e; S3=$(tapnode "$R-06e.xml" 'text="SAVE"|text="Save"'); log "set-pw: tap Save: $S3"
   sleep 25; shot 06f-after-save; dump 06f
   log "after save: engine process $(alive); toast/page text: $(grep -oE 'text="[^"]+"' $R-06f.xml | head -8 | tr '\n' ' ')"
@@ -182,7 +205,11 @@ if [ "$S1" = ok ]; then
     [ $TRY = old ] && CAND="$OLDPW" || CAND="$NEWPW"
     dump 06g-$TRY; C=$(edit_center "$R-06g-$TRY.xml")
     if [ -n "$C" ]; then
-      adb shell input tap $C; sleep 1; adb shell input text "$CAND"; adb shell input keyevent KEYCODE_ENTER; sleep 6
+      adb shell input tap $C; sleep 1
+      { set +x; } 2>/dev/null
+      adb shell input text "$CAND"
+      { set -x; } 2>/dev/null
+      adb shell input keyevent KEYCODE_ENTER; sleep 6
       shot 06h-$TRY; dump 06h-$TRY
       if grep -q 'class="android.widget.EditText"' "$R-06h-$TRY.xml"; then log "set-pw: $TRY password -> still on login form (rejected)"; else log "set-pw: $TRY password -> ACCEPTED (left login form)"; fi
     else log "set-pw: no login field for $TRY try (maybe already logged in)"; fi
