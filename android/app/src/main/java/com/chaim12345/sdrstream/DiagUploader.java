@@ -95,7 +95,9 @@ final class DiagUploader {
     }
 
     private Result attempt(String crashText, long nowMillis, boolean bypassLimits) {
-        if (endpoint.isEmpty()) return Result.NO_ENDPOINT;
+        // Diagnostics must never travel plaintext: a non-https endpoint is
+        // treated exactly like an unconfigured one (NO_ENDPOINT, no send).
+        if (!endpoint.startsWith("https://")) return Result.NO_ENDPOINT;
         String hash = sha256Hex(crashText);
         boolean pending = !store.getString(KEY_PENDING, "").isEmpty();
         if (!bypassLimits) {

@@ -59,6 +59,10 @@ export default {
     } catch {
       return json({ error: 'bad json' }, 400);
     }
+    // JSON `null`, scalars, and arrays would TypeError on field access below.
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return json({ error: 'bad json' }, 400);
+    }
     // Honeypot: a field no real client fills. Pretend success, send nothing.
     if (typeof body.website !== 'string' || body.website !== '') {
       return json({ ok: true }, 200);

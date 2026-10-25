@@ -54,8 +54,14 @@ final class DiagUploadAndroid {
             NetworkCapabilities nc = n == null ? null : cm.getNetworkCapabilities(n);
             return nc != null && nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
         };
-        return new DiagUploader(store, DiagUploadAndroid::post,
-                () -> Diag.report(ctx), net, ENDPOINT, CLIENT_ID);
+        // Bundle parity with Share logs: refresh javalog, fetch the live
+        // engine ring, then build the same diag.txt text. Callers run this
+        // on a background thread (fetchRingTail does a localhost request).
+        DiagUploader.BundleSource bundle = () -> {
+            JavaLog.capture(ctx, new java.io.File(ctx.getFilesDir(), Diag.JAVA_LOG));
+            return Diag.report(ctx, Diag.fetchRingTail(ctx));
+        };
+        return new DiagUploader(store, DiagUploadAndroid::post, bundle, net, ENDPOINT, CLIENT_ID);
     }
 
     /** crash.log content for the dedupe hash; capped, null-safe. */
@@ -107,8 +113,15 @@ final class DiagUploadAndroid {
     }
 
     private static int post(String url, String clientId, String bodyJson) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        URL u = new URL(url);
+        if (!"https".equals(u.getProtocol())) {
+            throw new SecurityException("diag endpoint must be https: " + u.getProtocol());
+        }
+        HttpURLConnection conn = (HttpURLConnection) u.openConnection();
         try {
+            // Never follow redirects: HttpURLConnection would forward the
+            // client-id header and the bundle to the redirect target.
+            conn.setInstanceFollowRedirects(false);
             conn.setRequestMethod("POST");
             conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
             conn.setReadTimeout(READ_TIMEOUT_MS);

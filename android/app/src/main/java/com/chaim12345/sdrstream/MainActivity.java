@@ -201,10 +201,13 @@ public class MainActivity extends Activity {
                 new AlertDialog.Builder(this)
                         .setTitle("sdrstream crashed last time")
                         .setMessage("Send crash reports automatically?\n\n"
-                                + "What leaves this device: the redacted diagnostics bundle only - "
-                                + "device model, Android and app versions, and log tails with URLs, "
-                                + "passwords, tokens and locations stripped. Nothing else. "
-                                + "Preview exactly what would be sent any time via menu -> Share logs.\n\n"
+                                + "What leaves this device: the redacted diagnostics summary only - "
+                                + "device model, Android and app versions, engine state, file names "
+                                + "in the app folder, recent process exit reasons, and log tails with "
+                                + "URLs, passwords, tokens and locations stripped. Nothing else.\n\n"
+                                + "Auto-send transmits only that summary text: the same diag.txt that "
+                                + "menu -> Share logs shows (Share additionally attaches raw log files, "
+                                + "which auto-send never sends).\n\n"
                                 + "At most one automatic report per day; the same crash is never sent twice. "
                                 + "You can turn this off in the menu at any time.")
                         .setPositiveButton("Auto-send", (d, w) -> {

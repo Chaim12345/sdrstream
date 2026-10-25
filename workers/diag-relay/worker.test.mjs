@@ -52,6 +52,14 @@ test('honeypot: filled website field gets fake success, no mail', async () => {
   assert.equal(mailCalls.length, 0, 'honeypot must not send mail');
 });
 
+test('null, scalar, and array JSON bodies rejected with 400, no crash', async () => {
+  for (const raw of ['null', '42', '"text"', '[1,2]', 'true']) {
+    const r = await post(raw, { 'X-Sdrstream-Client': 'test-client', 'CF-Connecting-IP': '203.0.113.99' });
+    assert.equal(r.status, 400, raw);
+  }
+  assert.equal(mailCalls.length, 0);
+});
+
 test('oversized body rejected with 413', async () => {
   const big = 'x'.repeat(64 * 1024 + 1);
   const r = await post({ text: big, website: '' }, { 'X-Sdrstream-Client': 'test-client' });

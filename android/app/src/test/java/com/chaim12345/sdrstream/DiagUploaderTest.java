@@ -83,6 +83,16 @@ public class DiagUploaderTest {
     }
 
     @Test
+    public void nonHttpsEndpoint_neverSends() {
+        for (String bad : new String[]{"http://diag.example/diag", "ftp://x", "diag.example/diag"}) {
+            DiagUploader insecure = new DiagUploader(store, transport, () -> bundle, net, bad, "c");
+            insecure.setOptIn(true);
+            assertEquals(bad, DiagUploader.Result.NO_ENDPOINT, insecure.maybeAutoSend("crash A", T0));
+        }
+        assertEquals(0, transport.calls);
+    }
+
+    @Test
     public void sendsWhenOptedIn_andRecordsHashAndDay() {
         assertEquals(DiagUploader.Result.SENT, up.maybeAutoSend("crash A", T0));
         assertEquals(1, transport.calls);
