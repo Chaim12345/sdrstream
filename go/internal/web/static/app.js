@@ -129,6 +129,7 @@ function showView(name) {
   });
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
   if (name === 'map') initMap();
+  if (name === 'stationboard' && window.stationBoardRefresh) window.stationBoardRefresh();
   if (location.hash !== '#'+name) history.replaceState(null,'','#'+name);
 }
 views.forEach(b => { if (b.dataset.view) b.addEventListener('click', () => showView(b.dataset.view)); });

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,5 +103,42 @@ func TestProbeStationsDisabled(t *testing.T) {
 	}
 	if out.Enabled {
 		t.Fatal("no catalog wired means enabled=false")
+	}
+}
+
+// TestShellWiresStationBoard pins the station board integration: the page
+// must load stationboard.js AFTER app.js (it uses the shared fetchJSON /
+// fmtDate helpers), the view markup must exist, and the service worker
+// shell must carry the new asset under a bumped cache name.
+func TestShellWiresStationBoard(t *testing.T) {
+	page, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appIdx := strings.Index(string(page), `<script src="/static/app.js"></script>`)
+	boardIdx := strings.Index(string(page), `<script src="/static/stationboard.js"></script>`)
+	if appIdx < 0 || boardIdx < 0 {
+		t.Fatalf("index.html must load app.js and stationboard.js (app at %d, board at %d)", appIdx, boardIdx)
+	}
+	if boardIdx < appIdx {
+		t.Fatal("stationboard.js must load after app.js")
+	}
+	for _, marker := range []string{`data-view="stationboard"`, `id="view-stationboard"`, `id="board-list"`, `id="board-disabled"`, `id="board-refresh"`, `Station probing is not enabled on this server.`, `--probe-directory`} {
+		if !strings.Contains(string(page), marker) {
+			t.Fatal(marker)
+		}
+	}
+	sw, err := staticFS.ReadFile("static/sw.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sw), "'/static/stationboard.js'") {
+		t.Fatal("service worker shell missing /static/stationboard.js")
+	}
+	if !strings.Contains(string(sw), "sdrstream-shell-v5") {
+		t.Fatal("service worker CACHE not bumped for the station board shell change")
+	}
+	if _, err := staticFS.ReadFile("static/stationboard.js"); err != nil {
+		t.Fatal("static/stationboard.js not embedded")
 	}
 }
