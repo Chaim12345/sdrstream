@@ -1,0 +1,72 @@
+# Evidence: Oostende attempt c045868fde4dfc46-20261025T2010Z automated backstop kill 2026-10-25T20:42:49Z
+# Sources: /home/sandbox/navtex-ext/{supervisor.log,run.log} on lane host; extracts verbatim, line numbers noted.
+# TZ note: supervisor.log stamps are UTC ('Z'); Go service log lines in run.log use process-local time UTC+2 (e.g. '22:42:58' = 20:42:58Z). Same instant.
+
+## 1. supervisor.log (UTC) - backstop decision and recovery
+2026-10-25T20:42:49Z backstop: attempt c045868fde4dfc46-20261025T2010Z wedged >15min under live heartbeat; SIGQUIT pid 37648
+2026-10-25T20:42:52Z hfschedule-ext exited rc=2; restarting in 5s
+2026-10-25T20:42:57Z removed stale scheduler.lock
+
+## 2. run.log - last completed attempt before the kill (2000Z Malin Head, finished 20:09:36Z; shows no anomaly leading in)
+    "MaxKHz": 29160,
+    "Priority": 0
+  },
+  "Started": "2026-10-25T20:00:03.68163851Z",
+  "Finished": "2026-10-25T20:09:36.533062549Z",
+  "Status": "recorded",
+  "WAV": "/home/sandbox/navtex-ext/run1/c13489bd849daca9-20261025T2000Z.wav",
+  "SampleRate": 7119,
+  "Samples": 4057984,
+  "Peak": 32762,
+  "RMS": 2798.177537431035,
+  "DecodeLive": false,
+  "DecodeReason": "too short"
+}
+
+## 3. run.log:4000+ - SIGQUIT dump header and goroutine 1 (parked in websdr.(*Client).Record, websdr.go:413, mid-capture)
+SIGQUIT: quit
+PC=0x490241 m=0 sigcode=0
+
+goroutine 0 gp=0xb695e0 m=0 mp=0xb6a9a0 [idle]:
+runtime.futex(0xb6aaf8, 0x80, 0x0, 0x0, 0x0, 0x0)
+	/home/sandbox/toolchain/go/src/runtime/sys_linux_amd64.s:575 +0x21 fp=0x7ffeca5b5290 sp=0x7ffeca5b5288 pc=0x490241
+runtime.futexsleep(0xb695e0?, 0x455ca5?, 0x7ffeca5b5308?)
+	/home/sandbox/toolchain/go/src/runtime/os_linux.go:73 +0x30 fp=0x7ffeca5b52e0 sp=0x7ffeca5b5290 pc=0x44aad0
+runtime.notesleep(0xb6aaf8)
+	/home/sandbox/toolchain/go/src/runtime/lock_futex.go:47 +0x87 fp=0x7ffeca5b5318 sp=0x7ffeca5b52e0 pc=0x41f487
+runtime.mPark(...)
+	/home/sandbox/toolchain/go/src/runtime/proc.go:1985
+runtime.stoplockedm()
+	/home/sandbox/toolchain/go/src/runtime/proc.go:3278 +0x73 fp=0x7ffeca5b5370 sp=0x7ffeca5b5318 pc=0x455f13
+runtime.schedule()
+	/home/sandbox/toolchain/go/src/runtime/proc.go:4158 +0x3a fp=0x7ffeca5b53b0 sp=0x7ffeca5b5370 pc=0x45845a
+runtime.park_m(0x3be8fc80b40)
+	/home/sandbox/toolchain/go/src/runtime/proc.go:4319 +0x279 fp=0x7ffeca5b5410 sp=0x7ffeca5b53b0 pc=0x458959
+runtime.mcall()
+	/home/sandbox/toolchain/go/src/runtime/asm_amd64.s:463 +0x53 fp=0x7ffeca5b5428 sp=0x7ffeca5b5410 pc=0x48cbb3
+
+goroutine 1 gp=0x3be8fbc81e0 m=nil [select]:
+runtime.gopark(0x3be8fe9a430?, 0x3?, 0xa8?, 0x94?, 0x3be8fe9a37a?)
+	/home/sandbox/toolchain/go/src/runtime/proc.go:474 +0xca fp=0x3be8fe9a200 sp=0x3be8fe9a1e0 pc=0x487b2a
+runtime.selectgo(0x3be8fe9a430, 0x3be8fe9a374, 0x3be8fe5b308?, 0x0, 0x1006?, 0x1)
+	/home/sandbox/toolchain/go/src/runtime/select.go:351 +0xa97 fp=0x3be8fe9a340 sp=0x3be8fe9a200 pc=0x462fb7
+github.com/chaim12345/sdrstream/go/internal/websdr.(*Client).Record(0x3be8fcae800, {0xb05918, 0x3be8fcfe1c0}, 0x3b9aca00?)
+	/home/sandbox/sdrstream-ext/go/internal/websdr/websdr.go:413 +0x1a5 fp=0x3be8fe9a4d0 sp=0x3be8fe9a340 pc=0x7097c5
+github.com/chaim12345/sdrstream/go/internal/hfschedule.Record({_, _}, {{_, _}, {_, _}, _, _, _}, {{0x3be8fd9f540, ...}, ...}, ...)
+	/home/sandbox/sdrstream-ext/go/internal/hfschedule/runner.go:66 +0x471 fp=0x3be8fe9a930 sp=0x3be8fe9a4d0 pc=0x70b371
+github.com/chaim12345/sdrstream/go/internal/hfschedule.(*Runner).RunOnce(0x3be8fe9bd70, {0xb05a30, 0x3be8fcad200}, {0x3be8fe00008, 0x32, 0x42})
+	/home/sandbox/sdrstream-ext/go/internal/hfschedule/runner.go:330 +0x155e fp=0x3be8fe9b6e0 sp=0x3be8fe9a930 pc=0x70d51e
+github.com/chaim12345/sdrstream/go/internal/hfschedule.(*Service).Run(0x3be8fe9bd40, {0xb05a30, 0x3be8fcad200})
+	/home/sandbox/sdrstream-ext/go/internal/hfschedule/service.go:72 +0x427 fp=0x3be8fe9bc40 sp=0x3be8fe9b6e0 pc=0x711ca7
+main.main()
+	/home/sandbox/sdrstream-ext/go/cmd/hfschedule/main.go:187 +0xa3b fp=0x3be8fe9beb8 sp=0x3be8fe9bc40 pc=0x71505b
+runtime.main()
+	/home/sandbox/toolchain/go/src/runtime/proc.go:302 +0x427 fp=0x3be8fe9bfe0 sp=0x3be8fe9beb8 pc=0x450da7
+runtime.goexit({})
+	/home/sandbox/toolchain/go/src/runtime/asm_amd64.s:1264 +0x1 fp=0x3be8fe9bfe8 sp=0x3be8fe9bfe0 pc=0x48e701
+
+## 4. run.log tail - service restarted by supervisor (process-local UTC+2 stamps = 20:42:58Z)
+2026/10/25 22:42:58 NOAA Boston timetable header: valid "19 September 2018", updated "7 August 2018"; the hosted schedule is a planning source, not proof of transmission
+2026/10/25 22:42:58 hfschedule: service up, 50 schedule entries, poll 15s, reload 12h0m0s
+
+## 5. Attempt-state note: no ledger entry exists for 2010Z; run1/state.json retains its state-record only (status interrupted). Not marked successful.

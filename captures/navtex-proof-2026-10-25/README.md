@@ -77,16 +77,25 @@ decode_live=false "too short" - honest no-decode, lane-reported via its
 reconciliation output's after-cutoff section. Not part of the day's
 reconciled 40/25/15.
 
-Oostende 2010Z: fourth true wedge of the day, LANE-REPORTED (source agent
-report relayed via main, not independently inspected here). Capture
-started 20:10:03Z, suspended; after thaw, expired timers did not clear
-within guard confirmations; automated backstop SIGQUIT 20:42:49Z, restart
-20:42:58Z; run.log showed main select at websdr.go:413 (the same wedge
-signature as the three in-window wedges). No ledger entry, no metric
-inflation; service reported healthy afterward. Not part of the reconciled
-40/25/15. If confirmed by artifact transfer, this is also the first
-recorded automated-backstop recovery on a true wedge (the in-window
-wedges were killed by the guard/backstop under different conditions).
+Oostende 2010Z: fourth true wedge of the day. EVIDENCE REVIEWED at
+integration: verbatim supervisor.log/run.log extracts transferred by the
+lane and preserved in wedge-oostende-20261025T2010Z-evidence.txt. Capture
+started 20:10:03Z and suspended; the automated backstop SIGQUITed pid
+37648 at 20:42:49Z ("wedged >15min under live heartbeat"), the service
+exited rc=2 and was restarted by 20:42:58Z (run.log tail, process-local
+UTC+2 stamp = 20:42:58Z). The goroutine-1 dump parks in
+websdr.(*Client).Record at websdr.go:413 mid-capture (Record <-
+hfschedule.Record runner.go:66 <- RunOnce runner.go:330 <- Service.Run) -
+the in-window wedge signature - but with NO park duration, so the
+classification rests on the combination of the supervisor's live-heartbeat
+two-cycle evidence and the in-flight attempt state, not on the stack
+alone. The timing coheres: a healthy 570s capture from 20:10:03Z would
+finish ~20:19:36Z; the kill came ~23 min after that. No ledger entry for
+2010Z (state.json retains status=interrupted only) - no metric inflation.
+This is the first recorded automated-backstop recovery on a true wedge.
+Caveat: the transferred file is lane-selected extracts with line refs,
+not the full supervisor.log/run.log, which remain on the lane host.
+Not part of the reconciled 40/25/15.
 
 Scope honesty: the 3-of-9 decode ratio covers the held windows only. It is
 NOT an all-day reliability figure - the 15 pre-hold failures and the missed
