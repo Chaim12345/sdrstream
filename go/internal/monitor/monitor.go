@@ -818,6 +818,7 @@ func (m *Monitor) step(ctx context.Context) {
 		refresh = m.detectThreshold(detectBins, centre, span, true, m.thresholdDB())
 		start = refresh
 	}
+	start = suppressSkirtPeaks(start)
 	startKeys := make(map[string]bool, len(start))
 	for _, p := range start {
 		startKeys[peakKey(p.frequency)] = true
@@ -1130,6 +1131,52 @@ func (m *Monitor) surveyMode() string {
 		return m.listenMode()
 	}
 	return "usb"
+}
+
+// suppressSkirtPeaks drops narrow detections that sit on the spectral
+// skirt of a much stronger wide signal in the same survey window. FFT
+// edges of a strong broadcast carrier read as clusters of tiny peaks a
+// few kHz wide ~10 dB over the floor; each one used to consume a
+// decode-worker visit it could never decode and pushed real work out of
+// the queue (device evidence 2026-10-25: 29 "worker is busy, skipping"
+// lines in one FM-band survey, all narrow hits beside two wide FM
+// stations). The rule is deliberately conservative: the suppressor must
+// be at least skirtWideHz wide (only genuinely wide signals qualify -
+// an AM broadcast or SSB pileup never suppresses) and at least
+// skirtLevelDB stronger, and the victim must sit within the wide
+// signal's occupied span plus a guard band.
+const (
+	skirtWideHz   = 20_000.0
+	skirtNarrowHz = 5_000.0
+	skirtLevelDB  = 8.0
+	skirtGuardHz  = 75_000.0
+)
+
+func suppressSkirtPeaks(peaks []peak) []peak {
+	if len(peaks) < 2 {
+		return peaks
+	}
+	keep := make([]peak, 0, len(peaks))
+	for i, p := range peaks {
+		if p.bandwidth <= skirtNarrowHz {
+			skirt := false
+			for j, w := range peaks {
+				if i == j || w.bandwidth < skirtWideHz {
+					continue
+				}
+				if w.levelDB >= p.levelDB+skirtLevelDB &&
+					math.Abs(p.frequency-w.frequency) <= w.bandwidth/2+skirtGuardHz {
+					skirt = true
+					break
+				}
+			}
+			if skirt {
+				continue
+			}
+		}
+		keep = append(keep, p)
+	}
+	return keep
 }
 
 // peakKey buckets a frequency so the same transmission keeps its identity.

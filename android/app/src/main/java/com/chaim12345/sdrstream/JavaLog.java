@@ -29,6 +29,23 @@ final class JavaLog {
         new Thread(() -> capture(ctx, out), "javalog-capture").start();
     }
 
+    /**
+     * Logcat spam that buries real signal in the diag bundle (device
+     * evidence 2026-10-25: 524 KB javalog.txt was almost entirely WebView
+     * setRequestedFrameRate lines from the engine UI WebView).
+     */
+    private static final String[] NOISE = {
+        "setRequestedFrameRate",
+    };
+
+    /** Pure filter so the denylist is JVM-testable. */
+    static boolean keepLine(String line) {
+        for (String n : NOISE) {
+            if (line.contains(n)) return false;
+        }
+        return true;
+    }
+
     /** Synchronous capture; call from a worker thread only (execs logcat). */
     static void capture(Context ctx, File out) {
         List<String> cmd = new ArrayList<>();
@@ -44,7 +61,9 @@ final class JavaLog {
             BoundedTail tail = new BoundedTail(MAX_BYTES);
             String line;
             while ((line = r.readLine()) != null) {
-                tail.add(DiagRedact.redact(line));
+                if (keepLine(line)) {
+                    tail.add(DiagRedact.redact(line));
+                }
             }
             File tmp = new File(out.getPath() + ".tmp");
             FileWriter w = new FileWriter(tmp, false);

@@ -76,3 +76,50 @@ func TestDXClusterRun(t *testing.T) {
 		t.Fatalf("bad label: %+v", item)
 	}
 }
+
+// A healthy cluster that stays spotless must NOT churn reconnects: the
+// read deadline refreshes on any line, and only a fully silent peer is
+// treated as dead (device evidence 2026-10-25: ~90 s i/o-timeout loop).
+func TestDXClusterIdleDeadlineRefreshesOnAnyLine(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		fmt.Fprint(conn, "Welcome. Please enter your call:\r\n")
+		buf := make([]byte, 64)
+		conn.Read(buf)
+		// Banners/talk but no spots, at a cadence below the idle timeout,
+		// for LONGER than the pre-fix 90 s-style deadline would allow.
+		for i := 0; i < 6; i++ {
+			fmt.Fprint(conn, "Cluster node chatter line\r\n")
+			time.Sleep(60 * time.Millisecond)
+		}
+		time.Sleep(500 * time.Millisecond) // then go fully silent: must drop
+	}()
+	src := &DXCluster{Server: ln.Addr().String(), IdleTimeout: 150 * time.Millisecond}
+	done := make(chan error, 1)
+	go func() { done <- src.Run(context.Background(), func(Item) {}) }()
+	// During chatter the connection must stay up (pre-fix: spotless lines
+	// did not refresh the deadline, so it dropped at ~150 ms).
+	select {
+	case err := <-done:
+		t.Fatalf("dropped during chatter at ~150ms? err=%v (pre-fix behavior)", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	// Once the peer goes fully silent it must be dropped within the idle timeout.
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("silent peer must eventually drop the connection")
+		}
+	case <-time.After(600 * time.Millisecond):
+		t.Fatal("silent peer never dropped")
+	}
+}
