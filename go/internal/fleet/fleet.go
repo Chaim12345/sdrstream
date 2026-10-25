@@ -102,6 +102,18 @@ func (p *Planner) Plan(snap probe.Snapshot, jobs []Job, now time.Time) Plan {
 			delete(p.cooldown, pair)
 		}
 	}
+	// Prune stickiness memory for jobs no longer in the campaign: windowed
+	// schedules mint a fresh job ID per window, so without this p.last
+	// would grow by one entry per completed window forever (QA review).
+	current := make(map[string]bool, len(jobs))
+	for _, j := range jobs {
+		current[j.ID] = true
+	}
+	for id := range p.last {
+		if !current[id] {
+			delete(p.last, id)
+		}
+	}
 	plan := Plan{Assigned: []Assignment{}, Unplaced: []Job{}}
 	load := map[string]int{}
 	placed := make([]bool, len(jobs))

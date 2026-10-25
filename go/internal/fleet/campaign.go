@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -25,7 +26,7 @@ func JobsFromOccurrences(occs []hfschedule.Occurrence, conds bandcond.Conditions
 	jobs := make([]Job, 0, len(occs))
 	for _, o := range occs {
 		t := o.Entry.Target
-		freqHz := int64(t.DialKHz * 1000)
+		freqHz := int64(math.Round(t.DialKHz * 1000))
 		dedupeKey := fmt.Sprintf("%d/%s", freqHz, t.Mode)
 		if seen[dedupeKey] {
 			continue
