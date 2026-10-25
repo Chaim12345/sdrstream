@@ -2,8 +2,9 @@
 
 Evidence delivered by the radio capture lane via main on 2026-10-25 (~20:11
 IST) and integrated here verbatim. The lane reconciled its own tally against
-proof-ledger.jsonl (25 entries for 2026-10-25) before delivery; the earlier
-self-corrected totals (7-vs-9 captures) are superseded by the counts below.
+proof-ledger.jsonl before delivery; the earlier self-corrected totals
+(7-vs-9 captures, then 9-then-10 missed slots) are superseded by the
+script-derived reconciliation below (cutoff 18:10 UTC).
 
 ## Ledger reconciliation (lane-verified, 2026-10-25)
 
@@ -23,14 +24,52 @@ self-corrected totals (7-vs-9 captures) are superseded by the counts below.
   "expected service anchor missing" (gate heard framing-like content, no
   station/service anchor; receiver healthy - honest no-decode, not a
   service fault).
-- Missed slots (no ledger entry, neutral - VM frozen or service
-  restarting) - 10 individual slots in 00:00-18:10 UTC: Pinneberg 0150Z;
-  Heraklion 0300Z (backstop kill pre-guard); Portpatrick 0420Z (same);
-  Malin Head 0800Z (wedge; SIGQUIT 08:16Z, saved state 2de603dd per the
-  lane); Niton 0920Z (wedge kill); Oostende 1210Z (freeze; wedged,
-  backstop-killed); Portpatrick 1220Z (freeze); Niton 1320Z (service
-  restart + freeze); Portpatrick 1620Z and Niton 1720Z (frozen through
-  start; liveness guard correctly suppressed by stale heartbeat).
+- Missed slots (no ledger entry) - 15 individual slots at/before the
+  18:10 UTC cutoff, script-derived:
+  - Attempt started, killed/frozen, state-record-only (6): Pinneberg
+    0150Z; Heraklion 0300Z (backstop kill pre-guard); Portpatrick 0420Z
+    (same); Malin Head 0800Z (true wedge; SIGQUIT 08:16Z, saved state
+    2de603dd per the lane); Niton 0920Z (true wedge; SIGQUIT 09:36Z,
+    0fceb85a per the lane); Oostende 1210Z (true wedge; SIGQUIT 12:38Z,
+    ebbd0c5c per the lane).
+  - No attempt at all, VM frozen/restarting (9): Oostende 0810Z;
+    Heraklion 1100Z; Cullercoats 1120Z; Portpatrick 1220Z; Niton 1320Z;
+    Heraklion 1500Z; Cullercoats 1520Z; Portpatrick 1620Z; Niton 1720Z
+    (freeze/service restart; liveness guard correctly suppressed by stale
+    heartbeat where applicable).
+  The lane's earlier 9- and 10-slot hand counts were wrong (they missed
+  0810Z and the 1100/1120/1500/1520 cluster); the script-derived 15
+  supersedes both. The retracted 15:50 Serapeum "wedge" is not counted
+  anywhere: the schedule has no 15:50 Serapeum slot (confirmed below).
+
+### Reconciliation provenance (what is verified vs lane-reported)
+
+Method (lane's reconcile-navtex-20261025 script, transferred with its
+output and inspected at integration): schedule-file slots vs
+proof-ledger.jsonl keys vs state.json attempt records, cutoff 18:10 UTC.
+Arithmetic in the output is internally consistent: 15 failed
+(context-canceled pre-hold) + 9 recorded + 1 interrupted = 25 ledgered;
+40 due - 25 ledgered = 15 missing.
+
+- VERIFIED HERE: 40 slots due at/before 18:10Z, recomputed independently
+  from the committed schedule file
+  (examples/hfschedule/eibi-extra-navtex-490-4209.txt) with equivalent
+  parsing - matches the lane's 40 and its full 40-row per-slot table.
+  Also verified: Serapeum appears only at 0750 and 1150 UTC (no 15:50 or
+  19:50 slot), consistent with the lane's wedge retraction.
+- LANE-REPORTED (not independently reproducible here): the 25-ledgered
+  count, the per-slot ledger status/start/finish times and gate reasons,
+  and the state-record-only vs no-attempt classification. The ledger
+  (proof-ledger.jsonl) and state.json live on the lane's sandbox and were
+  not transferred; script + output support the lane's report but do not
+  reproduce its input state.
+
+### After the cutoff (kept separate, NOT in the totals above)
+
+Malin Head 2000Z: full capture (20:00:03-20:09:36Z, listen-timer finish),
+decode_live=false "too short" - honest no-decode, lane-reported via its
+reconciliation output's after-cutoff section. Not part of the day's
+reconciled 40/25/15.
 
 Scope honesty: the 3-of-9 decode ratio covers the held windows only. It is
 NOT an all-day reliability figure - the 15 pre-hold failures and the missed
