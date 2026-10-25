@@ -33,3 +33,16 @@ the live child. Killed processes leave such records behind (the runner keeps
 them for retry), so the backstop SIGQUITed two healthy services in a row.
 Fix: the supervisor records the child's launch time and only watches
 attempts Started at or after it. A process only dies for its own captures.
+
+## Thaw-boundary false positive (fixed 2026-10-25)
+
+First production night: the backstop SIGQUITed two attempts (Heraklion 03:00,
+Portpatrick 04:20 UTC) that were frozen, not wedged. Both kills happened at a
+thaw boundary with a stale heartbeat - the supervisor's 30s check ran before
+the just-thawed Go runtime delivered its pending slot_end watchdog write, so
+a healthy attempt seconds from recording its own slot_end failure was killed
+and its ledger record lost. Fix: only kill when the heartbeat file is fresh
+(<90s old, i.e. the sandbox is demonstrably running) AND the same attempt
+stays interrupted across two consecutive checks >=30s apart of live runtime.
+A stale heartbeat clears the pending state. True wedges (runtime alive,
+attempt stuck) still get SIGQUIT.

@@ -16,8 +16,21 @@ while true; do
   /tmp/hfschedule-ext -source both -extra examples/hfschedule/eibi-extra-navtex-490-4209.txt -match 'Oostende NAVTEX,Portpatrick NAVTEX,Niton NAVTEX,Pinneberg NAVTEX,Cullercoats NAVTEX,Malin Head NAVTEX,Istanbul NAVTEX,Heraklion NAVTEX,Serapeum NAVTEX' -receivers "$OUT/receivers.json" -run -listen 570s -poll 15s -out "$OUT/run1" >> "$OUT/run.log" 2>&1 &
   child=$!
   child_start=$(date -u +%Y-%m-%dT%H:%M:%S)
+  pending=""
+  pending_since=0
   while kill -0 "$child" 2>/dev/null; do
     sleep 30
+    # heartbeat-freshness guard: a stale heartbeat means the whole
+    # sandbox is frozen or just thawing. A frozen attempt is not wedged -
+    # its slot_end watchdog fires at thaw. Only a runtime that is alive
+    # (fresh heartbeat) while an attempt stays interrupted is a wedge.
+    hb="$OUT/heartbeat"
+    hb_age=99999
+    [ -f "$hb" ] && hb_age=$(( $(date -u +%s) - $(date -u -r "$hb" +%s) ))
+    if [ "$hb_age" -gt 90 ]; then
+      pending=""; pending_since=0
+      continue
+    fi
     wedged=$(python3 - "$STATE" "$child_start" <<'PY'
 import json,sys,time
 try:
@@ -34,11 +47,20 @@ for k,a in s.get('Attempts',{}).items():
         print(k)
 PY
 )
-    if [ -n "$wedged" ]; then
-      echo "$(date -u +%FT%TZ) backstop: attempt $wedged wedged >15min; SIGQUIT pid $child" >> "$OUT/supervisor.log"
+    if [ -z "$wedged" ]; then
+      pending=""; pending_since=0
+      continue
+    fi
+    now=$(date -u +%s)
+    if [ "$pending" = "$wedged" ] && [ $(( now - pending_since )) -ge 30 ]; then
+      # same attempt still stuck across >=30s of live runtime: wedge
+      echo "$(date -u +%FT%TZ) backstop: attempt $wedged wedged >15min under live heartbeat; SIGQUIT pid $child" >> "$OUT/supervisor.log"
       kill -QUIT "$child" 2>/dev/null
       sleep 3
       kill -9 "$child" 2>/dev/null
+      pending=""; pending_since=0
+    else
+      pending="$wedged"; pending_since=$now
     fi
   done
   wait "$child"
