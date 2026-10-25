@@ -1,6 +1,9 @@
 package probe
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
 // Requirement describes what a decode or monitor assignment needs from a
 // station. The zero value matches every reachable station.
@@ -15,6 +18,16 @@ type Requirement struct {
 	Kinds []string
 	// NoPassword excludes stations that advertise a password.
 	NoPassword bool
+	// IncludeBusy keeps stations that answered but advertised no free
+	// slot (Verdict "busy", e.g. a Kiwi at users >= users_max). Default
+	// skips them: a busy receiver cannot take work that starts now.
+	IncludeBusy bool
+	// MaxAge excludes stations whose last check is older than this long
+	// before now (the bound is inclusive: exactly MaxAge old still
+	// matches). Zero means no staleness bound - callers that assign
+	// immediate work should always set one, since "answered a probe
+	// days ago" says little about "alive now".
+	MaxAge time.Duration
 }
 
 // Select returns reachable stations satisfying req, best first: fewest
@@ -26,7 +39,7 @@ type Requirement struct {
 // Everything Select returns is probe- or listing-derived: a match says
 // "this station answered and advertised this coverage", never "this
 // station received anything".
-func Select(snap Snapshot, req Requirement, limit int) []*Record {
+func Select(snap Snapshot, req Requirement, now time.Time, limit int) []*Record {
 	kindOK := func(k string) bool {
 		if len(req.Kinds) == 0 {
 			return true
@@ -41,6 +54,12 @@ func Select(snap Snapshot, req Requirement, limit int) []*Record {
 	out := make([]*Record, 0, len(snap.Records))
 	for _, r := range snap.Records {
 		if !r.Reachable || !kindOK(r.Kind) {
+			continue
+		}
+		if !req.IncludeBusy && r.Verdict == VerdictBusy {
+			continue
+		}
+		if req.MaxAge > 0 && now.Sub(r.CheckedAt) > req.MaxAge {
 			continue
 		}
 		if req.NoPassword && r.Capability.Passworded {
