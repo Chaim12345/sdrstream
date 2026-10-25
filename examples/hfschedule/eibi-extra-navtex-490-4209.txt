@@ -7,7 +7,7 @@ Oostende B (55-110 NM) is the closest 490 station to Enschede; Iceland and
 French-language 490 (Corsen E) are omitted: groundwave out of range / the
 English maritime-word gate cannot verify French text.
 
-         Valid March 29, 2026 - October 25, 2026
+         Valid March 29, 2026 - October 31, 2026
 
 kHz           Time(UTC) Days  ITU Station                Lang. Target   Remarks
 ==============================================================================

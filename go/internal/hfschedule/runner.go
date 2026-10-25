@@ -156,11 +156,16 @@ func selectReceiver(receivers []Receiver, metrics map[string]ReceiverMetrics, no
 }
 
 type Audit struct {
-	Occurrence          Occurrence
-	Receiver            Receiver
-	Started, Finished   time.Time
-	Status              string // recorded, silent, failed or interrupted; never implies decode validity
-	Error               string `json:",omitempty"`
+	Occurrence        Occurrence
+	Receiver          Receiver
+	Started, Finished time.Time
+	Status            string // recorded, silent, failed or interrupted; never implies decode validity
+	Error             string `json:",omitempty"`
+	// FailureClass labels a failed audit by cause: receiver_io, truncated
+	// and no_pcm are receiver/stream health faults and drive benching;
+	// slot_end is a planned window-end truncation and local_cancel is our
+	// own shutdown - neither is a receiver fault and neither benches.
+	FailureClass        string `json:",omitempty"`
 	WAV, PNG, Text      string `json:",omitempty"`
 	SampleRate, Samples int
 	Peak                int
@@ -342,11 +347,39 @@ func (r *Runner) RunOnce(ctx context.Context, entries []Entry) (*Audit, error) {
 			a.Finished = r.Now().UTC()
 		}
 		a.Status = "failed"
+		// receiverFault gates benching: only genuine receiver/stream health
+		// faults may grow the consecutive-failure streak. A cancellation
+		// from our own shutdown and a planned window-end truncation say
+		// nothing about the receiver and must not bench it.
+		receiverFault := false
 		if err != nil {
 			a.Error = err.Error()
-			state.ReceiverFailures[receiver.URL] = now
+			switch {
+			case ctx.Err() != nil:
+				// Our own shutdown cancelled the capture; the receiver
+				// never got to fail. Status mirrors a crash interruption.
+				a.Status = "interrupted"
+				a.FailureClass = "local_cancel"
+			case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
+				// The capture ran to its planned deadline (slot end), or
+				// the wall-clock watchdog cut it after a host suspend: the
+				// receiver delivered for the whole window, our own timer
+				// cut it. Not a receiver fault. (The outer-ctx case above
+				// already claimed our shutdown; captureCtx cancellation
+				// with a live outer context can only come from the
+				// watchdog.)
+				a.FailureClass = "slot_end"
+			default:
+				a.FailureClass = "receiver_io"
+				receiverFault = true
+			}
+			if receiverFault {
+				state.ReceiverFailures[receiver.URL] = now
+			}
 		} else if len(result.AudioWAV) < 46 || string(result.AudioWAV[:4]) != "RIFF" {
 			a.Error = "capture returned no PCM WAV"
+			a.FailureClass = "no_pcm"
+			receiverFault = true
 			state.ReceiverFailures[receiver.URL] = now
 		} else {
 			wav := result.AudioWAV
@@ -365,6 +398,8 @@ func (r *Runner) RunOnce(ctx context.Context, entries []Entry) (*Audit, error) {
 			if a.SampleRate <= 0 || float64(a.Samples) < 0.9*duration.Seconds()*float64(a.SampleRate) {
 				a.Status = "failed"
 				a.Error = "short capture or invalid sample rate"
+				a.FailureClass = "truncated"
+				receiverFault = true
 				state.ReceiverFailures[receiver.URL] = now
 			}
 			base := filepath.Join(r.Dir, o.Key())
@@ -401,9 +436,14 @@ func (r *Runner) RunOnce(ctx context.Context, entries []Entry) (*Audit, error) {
 				a.VerifiedReason = v.Reason
 			}
 		}
-		m := state.Metrics[receiver.URL]
-		m.noteResult(a.Status == "recorded" || a.Status == "silent", a.Error, now)
-		state.Metrics[receiver.URL] = m
+		// Neutral outcomes (own shutdown, planned slot-end cut) are not
+		// folded into receiver health at all: they are neither evidence of
+		// a working receiver nor grounds to bench it.
+		if a.FailureClass != "local_cancel" && a.FailureClass != "slot_end" {
+			m := state.Metrics[receiver.URL]
+			m.noteResult(a.Status == "recorded" || a.Status == "silent", a.Error, now)
+			state.Metrics[receiver.URL] = m
+		}
 		if err := saveJSON(filepath.Join(r.Dir, o.Key()+".json"), a); err != nil {
 			return nil, err
 		}
