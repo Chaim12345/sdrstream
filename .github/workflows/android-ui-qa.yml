@@ -51,14 +51,7 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_6
-          script: |
-            QA1=0; QA2=0
-            timeout 700 bash -x qa-src/qa/android-ui-qa.sh fat.apk ui > /tmp/qa1.log 2>&1 || QA1=$?
-            cat /tmp/qa1.log | tee -a qa-results-trace.txt
-            timeout 600 bash qa-src/qa/android-func-audit.sh cgo1 200 fat.apk > /tmp/qa2.log 2>&1 || QA2=$?
-            cat /tmp/qa2.log | tee -a qa-results-trace.txt
-            echo "verdict: android-ui-qa.sh exit=$QA1 (gated); android-func-audit.sh exit=$QA2 (informational - no verdict semantics in that script yet)"
-            [ "$QA1" -eq 0 ]
+          script: bash qa-src/qa/android-ui-qa-run.sh fat.apk
       - uses: actions/upload-artifact@v4
         if: always()
         with:
