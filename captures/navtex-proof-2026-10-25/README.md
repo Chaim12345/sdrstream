@@ -23,12 +23,13 @@ self-corrected totals (7-vs-9 captures) are superseded by the counts below.
   "expected service anchor missing" (gate heard framing-like content, no
   station/service anchor; receiver healthy - honest no-decode, not a
   service fault).
-- Missed slots (no ledger entry, neutral - VM frozen or service restarting):
-  Pinneberg 0150Z; Heraklion 0300Z (backstop kill pre-guard); Portpatrick
-  0420Z (same); Niton 0920Z (wedge kill); Oostende/Portpatrick 1210Z/1220Z
-  (freeze; 1210Z wedged, backstop-killed); Niton 1320Z (service restart +
-  freeze); Portpatrick 1620Z and Niton 1720Z (frozen through start;
-  liveness guard correctly suppressed by stale heartbeat).
+- Missed slots (no ledger entry, neutral - VM frozen or service
+  restarting) - 9 individual slots: Pinneberg 0150Z; Heraklion 0300Z
+  (backstop kill pre-guard); Portpatrick 0420Z (same); Niton 0920Z (wedge
+  kill); Oostende 1210Z (freeze; wedged, backstop-killed); Portpatrick
+  1220Z (freeze); Niton 1320Z (service restart + freeze); Portpatrick
+  1620Z and Niton 1720Z (frozen through start; liveness guard correctly
+  suppressed by stale heartbeat).
 
 Scope honesty: the 3-of-9 decode ratio covers the held windows only. It is
 NOT an all-day reliability figure - the 15 pre-hold failures and the missed
@@ -59,6 +60,15 @@ by reading the headers: 7119 Hz, 16-bit, mono, 4,057,984 frames = 570.0 s
 - matches the lane's claim. They are raw demodulated audio; many players
 need the 7119 Hz rate specified explicitly. The 1350Z WAV was not
 transferred (attachment cap); available from the lane on request.
+
+## Date headers
+
+Broadcast headers in these files are preserved raw (e.g. "241915 UTC OKT
+26"). Their date interpretation is NOT asserted here: "OKT 26" plausibly
+denotes October 2026 (month-year), not day 26, and no source check against
+the official NAVTEX-HAMBURG broadcast schedule has been performed. Reading
+the decoded text establishes text readability only, not validation of
+broadcast content or dates.
 
 ## Content caveat
 
