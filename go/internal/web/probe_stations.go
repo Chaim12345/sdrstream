@@ -40,8 +40,11 @@ func (s *Server) handleProbeStations(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"stations": []stationView{}, "enabled": false})
 		return
 	}
-	out := make([]stationView, 0, len(c.Records))
-	for _, rec := range c.Records {
+	// The sweep writes the catalog concurrently; serialize a snapshot,
+	// never the live map (concurrent map read during write panics).
+	snap := c.Snapshot()
+	out := make([]stationView, 0, len(snap.Records))
+	for _, rec := range snap.Records {
 		v := stationView{
 			Key: rec.Key, Kind: rec.Kind, Name: rec.Name, URL: rec.URL,
 			Lat: rec.Lat, Lon: rec.Lon,
@@ -59,5 +62,5 @@ func (s *Server) handleProbeStations(w http.ResponseWriter, r *http.Request) {
 		}
 		return out[i].Key < out[j].Key
 	})
-	writeJSON(w, map[string]interface{}{"stations": out, "enabled": true, "updated_at": c.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")})
+	writeJSON(w, map[string]interface{}{"stations": out, "enabled": true, "updated_at": snap.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")})
 }

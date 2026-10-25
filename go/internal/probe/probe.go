@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/common"
@@ -78,11 +80,15 @@ type Record struct {
 	Capability Capability `json:"capability,omitempty"`
 }
 
-// Catalog is the persisted station catalog.
+// Catalog is the persisted station catalog. It is safe for concurrent
+// use: the sweep scheduler writes while HTTP handlers read, and an
+// unlocked concurrent map read during a write panics fatally (QA review).
 type Catalog struct {
 	Version   int                `json:"version"`
 	UpdatedAt time.Time          `json:"updated_at"`
 	Records   map[string]*Record `json:"records"`
+
+	mu sync.RWMutex
 }
 
 // catalogVersion is bumped when the on-disk shape changes.
@@ -91,6 +97,40 @@ const catalogVersion = 1
 // NewCatalog returns an empty catalog.
 func NewCatalog() *Catalog {
 	return &Catalog{Version: catalogVersion, Records: map[string]*Record{}}
+}
+
+// Touch stamps the catalog's update time.
+func (c *Catalog) Touch(t time.Time) {
+	c.mu.Lock()
+	c.UpdatedAt = t
+	c.mu.Unlock()
+}
+
+// Snapshot is a lock-free copy of the catalog for readers.
+type Snapshot struct {
+	Version   int
+	UpdatedAt time.Time
+	Records   map[string]*Record
+}
+
+// Snapshot returns a copy of the catalog for readers (HTTP handlers) that
+// must not hold the lock while serializing. Records and their capability
+// slices are copied, so the caller can range freely mid-sweep. The copy
+// deliberately drops the mutex (vet: no lock copying).
+func (c *Catalog) Snapshot() Snapshot {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := Snapshot{
+		Version:   c.Version,
+		UpdatedAt: c.UpdatedAt,
+		Records:   make(map[string]*Record, len(c.Records)),
+	}
+	for k, r := range c.Records {
+		cp := *r
+		cp.Capability.Profiles = append([]string(nil), r.Capability.Profiles...)
+		out.Records[k] = &cp
+	}
+	return out
 }
 
 // Load reads the catalog from path. A missing file is an empty catalog,
@@ -120,7 +160,9 @@ func Load(path string) (*Catalog, error) {
 // Save writes the catalog atomically (temp + rename, 0600) so a reader
 // never sees a half-written file.
 func (c *Catalog) Save(path string) error {
+	c.mu.RLock()
 	data, err := json.MarshalIndent(c, "", "  ")
+	c.mu.RUnlock()
 	if err != nil {
 		return err
 	}
@@ -135,6 +177,8 @@ func (c *Catalog) Save(path string) error {
 // from the previous record when the probe did not answer (so one bad
 // sweep does not blank what the station can receive).
 func (c *Catalog) Update(rec Record) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.Records == nil {
 		c.Records = map[string]*Record{}
 	}
@@ -151,11 +195,14 @@ func (c *Catalog) Update(rec Record) {
 // Reachable returns the records that answered their last probe, oldest
 // check first - the order a fleet scheduler should reconsider them.
 func (c *Catalog) Reachable() []*Record {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	out := make([]*Record, 0, len(c.Records))
 	for _, r := range c.Records {
 		if r.Reachable {
 			out = append(out, r)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CheckedAt.Before(out[j].CheckedAt) })
 	return out
 }

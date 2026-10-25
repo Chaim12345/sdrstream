@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -146,6 +147,7 @@ func TestProbeWebSDRLivenessOnly(t *testing.T) {
 
 func TestSweepMergesSourcesAndDedupes(t *testing.T) {
 	probed := map[string]int{}
+	var probedMu sync.Mutex
 	s := &Scheduler{
 		Source: Source{
 			OpenDirectory: func(ctx context.Context) ([]Record, error) {
@@ -157,7 +159,9 @@ func TestSweepMergesSourcesAndDedupes(t *testing.T) {
 			Manual: []Record{{Key: "m", Kind: KindKiwi}},
 		},
 		Prober: proberFunc(func(ctx context.Context, rec *Record) {
+			probedMu.Lock()
 			probed[rec.Key]++
+			probedMu.Unlock()
 			rec.Reachable, rec.Verdict, rec.CheckedAt = true, VerdictOK, time.Now()
 		}),
 		Workers: 4,
@@ -169,10 +173,55 @@ func TestSweepMergesSourcesAndDedupes(t *testing.T) {
 	if len(c.Records) != 4 {
 		t.Fatalf("want 4 deduped records (b from manual/open wins once), got %d", len(c.Records))
 	}
+	probedMu.Lock()
 	for k, n := range probed {
 		if n != 1 {
 			t.Fatalf("station %s probed %d times", k, n)
 		}
+	}
+	probedMu.Unlock()
+}
+
+// TestConcurrentReadDuringSweep pins the catalog's race safety: readers
+// (Snapshot, Reachable) must run cleanly while a sweep writes. Fails under
+// -race without the catalog lock.
+func TestConcurrentReadDuringSweep(t *testing.T) {
+	c := NewCatalog()
+	stop := make(chan struct{})
+	s := &Scheduler{
+		Source: Source{Manual: []Record{{Key: "a", Kind: KindKiwi}, {Key: "b", Kind: KindKiwi}}},
+		Prober: proberFunc(func(ctx context.Context, rec *Record) {
+			rec.Reachable, rec.Verdict, rec.CheckedAt = true, VerdictOK, time.Now()
+		}),
+	}
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = s.Sweep(context.Background(), c)
+			}
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		snap := c.Snapshot()
+		_ = len(snap.Records)
+		_ = c.Reachable()
+	}
+	close(stop)
+}
+
+// TestReachableSortedOldestFirst pins the documented order.
+func TestReachableSortedOldestFirst(t *testing.T) {
+	c := NewCatalog()
+	now := time.Now()
+	c.Update(Record{Key: "new", Kind: KindKiwi, Reachable: true, CheckedAt: now})
+	c.Update(Record{Key: "old", Kind: KindKiwi, Reachable: true, CheckedAt: now.Add(-time.Hour)})
+	c.Update(Record{Key: "down", Kind: KindKiwi, Reachable: false, CheckedAt: now.Add(-2 * time.Hour)})
+	out := c.Reachable()
+	if len(out) != 2 || out[0].Key != "old" || out[1].Key != "new" {
+		t.Fatalf("Reachable order: %v", out)
 	}
 }
 

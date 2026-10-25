@@ -116,7 +116,7 @@ func (s *Scheduler) Sweep(ctx context.Context, c *Catalog) error {
 	}
 	close(jobs)
 	wg.Wait()
-	c.UpdatedAt = s.now()
+	c.Touch(s.now())
 	if s.Path != "" {
 		if err := c.Save(s.Path); err != nil {
 			return err
