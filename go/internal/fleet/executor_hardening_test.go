@@ -90,3 +90,15 @@ func TestExecutorRecordsOutcomeAtCompletionTime(t *testing.T) {
 		t.Fatalf("late plan: %+v", late)
 	}
 }
+
+func TestExecutorSurvivesPanickingClose(t *testing.T) {
+	p := NewPlanner()
+	ex := &Executor{Planner: p, Open: func(ctx context.Context, a Assignment) (monitor.Source, error) {
+		return &panicCloseSource{}, nil
+	}, Work: okWork}
+	ex.RunOnce(context.Background(), fixture(), []Job{ft8job}, testNow) // must not panic
+}
+
+type panicCloseSource struct{ fakeSource }
+
+func (s *panicCloseSource) Close() error { panic("close blew up") }

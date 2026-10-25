@@ -90,7 +90,9 @@ func (e *Executor) RunOnce(ctx context.Context, snap probe.Snapshot, jobs []Job,
 				ok = err == nil
 			}()
 			if src != nil {
-				_ = src.Close()
+				// A panicking Close must not take the process down either
+				// (QA residual): Close is third-party teardown code.
+				func() { defer func() { _ = recover() }(); _ = src.Close() }()
 			}
 			// Context cancellation is NEUTRAL: a shutdown is not a station
 			// failure and must not park the (job, station) pair.
