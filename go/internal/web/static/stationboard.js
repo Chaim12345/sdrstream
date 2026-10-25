@@ -55,8 +55,8 @@
     const cov = coverage(cap);
     if (cov) { const line = document.createElement('div'); line.className = 'card-meta'; line.textContent = 'coverage ' + cov; node.appendChild(line); }
     const capacity = [];
-    if (cap.users_max) capacity.push(cap.users_max + ' slots');
-    if (cap.rx_channels) capacity.push(cap.rx_channels + ' channels');
+    if (cap.users_max) capacity.push(cap.users_max + (cap.users_max === 1 ? ' slot' : ' slots'));
+    if (cap.rx_channels) capacity.push(cap.rx_channels + (cap.rx_channels === 1 ? ' channel' : ' channels'));
     if (cap.passworded) capacity.push('password required');
     if (capacity.length) { const line = document.createElement('div'); line.className = 'card-meta'; line.textContent = capacity.join(' · '); node.appendChild(line); }
     if (cap.profiles && cap.profiles.length) {

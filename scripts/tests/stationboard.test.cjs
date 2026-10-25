@@ -79,6 +79,7 @@ test('card surfaces verdict, kind, coverage in MHz with bands, capacity, profile
   station({name:'Haifa Kiwi',url:'http://kiwi.example:8073',verdict:'ok',consec_failures:0,
    capability:{freq_min_hz:10000,freq_max_hz:30000000,profiles:['20m','40m'],users_max:4,rx_channels:4,antenna:'MLA-30 loop',location:'Haifa, Israel',version:'v1.800',passworded:true}}),
   station({key:'websdr|c:80',kind:'websdr',name:'Dead WebSDR',url:'http://c:80',reachable:false,verdict:'refused',consec_failures:1,checked_at:'2026-10-25T04:00:00Z'}),
+  station({key:'openwebrx|d:8073',kind:'openwebrx',name:'Single capacity',capability:{users_max:1,rx_channels:1}}),
  ]});await flush();
  const first=h.$('board-list').children[0];
  const text=first.textContent;
@@ -94,6 +95,8 @@ test('card surfaces verdict, kind, coverage in MHz with bands, capacity, profile
  assert.ok(link,'card links the station url');assert.equal(link.textContent,'http://kiwi.example:8073');
  const dead=h.$('board-list').children[1];
  assert.match(dead.textContent,/dead · refused/);assert.match(dead.textContent,/1 consecutive failure/);
+ const single=h.$('board-list').children[2];
+ assert.match(single.textContent,/1 slot · 1 channel/);assert.doesNotMatch(single.textContent,/1 slots|1 channels/);
 });
 
 test('unsafe station urls never become links; hostile markup stays inert text',async()=>{
