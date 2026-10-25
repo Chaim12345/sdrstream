@@ -57,12 +57,18 @@ Arithmetic in the output is internally consistent: 15 failed
   parsing - matches the lane's 40 and its full 40-row per-slot table.
   Also verified: Serapeum appears only at 0750 and 1150 UTC (no 15:50 or
   19:50 slot), consistent with the lane's wedge retraction.
-- LANE-REPORTED (not independently reproducible here): the 25-ledgered
-  count, the per-slot ledger status/start/finish times and gate reasons,
-  and the state-record-only vs no-attempt classification. The ledger
-  (proof-ledger.jsonl) and state.json live on the lane's sandbox and were
-  not transferred; script + output support the lane's report but do not
-  reproduce its input state.
+- VERIFIED HERE (against snapshots): the lane transferred its
+  proof-ledger.jsonl and state.json, snapshotted 2026-10-25T20:12:29Z.
+  Rerunning the same reconciliation script locally against those
+  snapshots and the committed schedule reproduces the lane's output
+  exactly, from the per-slot table through the 40/25/15 totals and the
+  after-cutoff section. Spot checks: 26 ledger rows for today (25
+  at/before cutoff + the 2000Z after-cutoff record); statuses and gate
+  reasons match the table; the 6 state-record-only slots (0150, 0300,
+  0420, 0800, 0920, 1210) all carry state Status=interrupted; the 9
+  no-attempt slots are absent from state. Caveat: snapshots are post-facto
+  copies of the lane's files - they verify the reconciliation as of
+  20:12:29Z, not the original runtime provenance of each record.
 
 ### After the cutoff (kept separate, NOT in the totals above)
 
