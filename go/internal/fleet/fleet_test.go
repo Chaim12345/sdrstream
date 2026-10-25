@@ -125,3 +125,54 @@ func TestPlanRequiresMaxAge(t *testing.T) {
 		t.Fatalf("job without MaxAge must not be placed: %+v", plan.Assigned)
 	}
 }
+
+func TestPlanStickyJobNotStolenByEarlierJob(t *testing.T) {
+	p := NewPlanner()
+	// First plan: stickyJob lands on the best station (hf-b).
+	first := p.Plan(fixture(), []Job{ft8job}, testNow)
+	if first.Assigned[0].Station.Key != "hf-b" {
+		t.Fatalf("setup: sticky job on %s, want hf-b", first.Assigned[0].Station.Key)
+	}
+	// Second plan: a NEW job earlier in the list also matches hf-b best.
+	// Without sticky-first placement the new job steals hf-b.
+	other := Job{ID: "wspr-20m", FreqHz: 14_095_600, Mode: "usb", Label: "WSPR 20m", MaxAge: 2 * time.Hour}
+	plan := p.Plan(fixture(), []Job{other, ft8job}, testNow.Add(time.Minute))
+	got := map[string]string{}
+	for _, a := range plan.Assigned {
+		got[a.Job.ID] = a.Station.Key
+	}
+	if got["ft8-20m"] != "hf-b" {
+		t.Fatalf("sticky job lost its station: %v", got)
+	}
+	if got["wspr-20m"] != "hf-a" {
+		t.Fatalf("new job should take the next-best: %v", got)
+	}
+}
+
+func TestPlannerConcurrentUse(t *testing.T) {
+	p := NewPlanner()
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 200; i++ {
+			p.RecordOutcome("ft8-20m", "hf-a", i%2 == 0, testNow)
+		}
+		close(done)
+	}()
+	for i := 0; i < 200; i++ {
+		p.Plan(fixture(), []Job{ft8job}, testNow)
+	}
+	<-done
+}
+
+func TestCooldownEntriesPrunedAfterExpiry(t *testing.T) {
+	p := NewPlanner()
+	p.RecordOutcome("ft8-20m", "hf-b", false, testNow)
+	if p.cooldownSize() != 1 {
+		t.Fatalf("setup: cooldown size %d", p.cooldownSize())
+	}
+	// Past the 30min cooldown: the next Plan prunes the expired entry.
+	p.Plan(fixture(), []Job{ft8job}, testNow.Add(31*time.Minute))
+	if p.cooldownSize() != 0 {
+		t.Fatalf("expired cooldown entries not pruned: %d", p.cooldownSize())
+	}
+}
