@@ -1,0 +1,161 @@
+// Package probe keeps a persistent catalog of what every publicly listed
+// SDR receiver can receive. A scheduler sweeps the public directories
+// (receiverbook for OpenWebRX/WebSDR, the KiwiSDR listing), probes each
+// station for liveness and capability, and records the result. The
+// catalog is the data layer the decoder fleet and the web UI build on:
+// it answers "which stations exist, are they alive, and what can they
+// hear" without each consumer probing for itself.
+//
+// Politeness: one probe per station per sweep, bounded concurrency, and
+// failures only increment counters - a dead station costs one request
+// per sweep, never more.
+package probe
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/chaim12345/sdrstream/go/internal/common"
+)
+
+// Kind identifies the receiver protocol family.
+const (
+	KindKiwi      = "kiwi"
+	KindOpenWebRX = "openwebrx"
+	KindWebSDR    = "websdr"
+)
+
+// Liveness verdicts, mirroring the kiwisdr preflight classes.
+const (
+	VerdictOK      = "ok"
+	VerdictBusy    = "busy"    // alive, no free slot
+	VerdictDead    = "dead"    // HTTP error or malformed answer
+	VerdictTimeout = "timeout" // nothing answered in time
+)
+
+// Capability is what a station can receive, from the directory listing and
+// the probe answer. Every field is optional: WebSDR stations expose no
+// machine-readable capability, so only liveness is recorded for them.
+type Capability struct {
+	FreqMinHz  int64    `json:"freq_min_hz,omitempty"`
+	FreqMaxHz  int64    `json:"freq_max_hz,omitempty"`
+	Profiles   []string `json:"profiles,omitempty"`    // OpenWebRX SDR profiles
+	UsersMax   int      `json:"users_max,omitempty"`   // KiwiSDR advertised slots
+	RXChannels int      `json:"rx_channels,omitempty"` // KiwiSDR hardware channels
+	Antenna    string   `json:"antenna,omitempty"`     // listing-reported antenna
+	Location   string   `json:"location,omitempty"`    // listing-reported location
+	Version    string   `json:"version,omitempty"`     // server software version
+	Passworded bool     `json:"passworded,omitempty"`  // KiwiSDR requires a password
+}
+
+// Record is one station in the catalog.
+type Record struct {
+	Key  string  `json:"key"` // normalized identity: host:port or trimmed URL
+	Kind string  `json:"kind"`
+	Name string  `json:"name"`
+	URL  string  `json:"url"`
+	Lat  float64 `json:"lat,omitempty"`
+	Lon  float64 `json:"lon,omitempty"`
+
+	// Listing facts, refreshed from the directory each sweep.
+	ListedOffline bool   `json:"listed_offline,omitempty"`
+	ListedUpdated string `json:"listed_updated,omitempty"`
+
+	// Probe outcome from the most recent sweep.
+	Reachable      bool          `json:"reachable"`
+	Verdict        string        `json:"verdict"`
+	Latency        time.Duration `json:"latency,omitempty"`
+	CheckedAt      time.Time     `json:"checked_at"`
+	ConsecFailures int           `json:"consec_failures,omitempty"`
+	LastError      string        `json:"last_error,omitempty"`
+
+	// Capability: last KNOWN answer. A failed probe never erases it -
+	// Reachable=false is what marks the station down, so a transient
+	// outage cannot blank the catalog the UI shows.
+	Capability Capability `json:"capability,omitempty"`
+}
+
+// Catalog is the persisted station catalog.
+type Catalog struct {
+	Version   int                `json:"version"`
+	UpdatedAt time.Time          `json:"updated_at"`
+	Records   map[string]*Record `json:"records"`
+}
+
+// catalogVersion is bumped when the on-disk shape changes.
+const catalogVersion = 1
+
+// NewCatalog returns an empty catalog.
+func NewCatalog() *Catalog {
+	return &Catalog{Version: catalogVersion, Records: map[string]*Record{}}
+}
+
+// Load reads the catalog from path. A missing file is an empty catalog,
+// not an error. A version mismatch or corrupt file is an error: silently
+// loading a wrong-shaped catalog would mislead the UI.
+func Load(path string) (*Catalog, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return NewCatalog(), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var c Catalog
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, fmt.Errorf("probe catalog %s: %w", path, err)
+	}
+	if c.Version != catalogVersion {
+		return nil, fmt.Errorf("probe catalog %s: version %d, want %d", path, c.Version, catalogVersion)
+	}
+	if c.Records == nil {
+		c.Records = map[string]*Record{}
+	}
+	return &c, nil
+}
+
+// Save writes the catalog atomically (temp + rename, 0600) so a reader
+// never sees a half-written file.
+func (c *Catalog) Save(path string) error {
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return common.WriteFileAtomic(path, data, 0o600)
+}
+
+// Update merges one probe outcome into the catalog keyed by rec.Key.
+// Identity and listing fields are always refreshed; capability is kept
+// from the previous record when the probe did not answer (so one bad
+// sweep does not blank what the station can receive).
+func (c *Catalog) Update(rec Record) {
+	if c.Records == nil {
+		c.Records = map[string]*Record{}
+	}
+	if prev, ok := c.Records[rec.Key]; ok {
+		if !rec.Reachable {
+			rec.Capability = prev.Capability
+			rec.ConsecFailures = prev.ConsecFailures + 1
+		}
+	}
+	r := rec
+	c.Records[rec.Key] = &r
+}
+
+// Reachable returns the records that answered their last probe, oldest
+// check first - the order a fleet scheduler should reconsider them.
+func (c *Catalog) Reachable() []*Record {
+	out := make([]*Record, 0, len(c.Records))
+	for _, r := range c.Records {
+		if r.Reachable {
+			out = append(out, r)
+		}
+	}
+	return out
+}
