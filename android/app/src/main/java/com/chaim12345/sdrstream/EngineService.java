@@ -224,7 +224,9 @@ public class EngineService extends Service {
                     writer.writeLine(LogDrain.clean(line));
                 }
             } catch (Throwable t) {
-                Diag.writeCrash(this, "engine log drain", t);
+                if (!LogDrain.isBenignClose(t)) {
+                    Diag.writeCrash(this, "engine log drain", t);
+                }
             } finally {
                 writer.close();
             }
