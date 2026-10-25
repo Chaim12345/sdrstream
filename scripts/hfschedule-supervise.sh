@@ -12,6 +12,16 @@
 #   Tightness: fires only while a slot is actually due, never on an
 #   idle schedule, never under a stale heartbeat, never during a
 #   receiver failure cooldown, and only after two confirming cycles.
+#   2026-10-25 correction: the event that motivated this guard (15:50
+#   UTC "service.go:93 wedge") was reclassified - no such slot exists
+#   in the schedule (Serapeum transmits only 0750/1150 UTC here); the
+#   service was healthy-idle and was killed in error. A healthy idle
+#   scheduler shows the same surface: no attempt record, zero CPU,
+#   goroutine 1 in a short untimed park on the poll ticker (true wedges
+#   show a timed park, e.g. "[select, 3 minutes]"). This guard keys
+#   only on slots present in the schedule file, and it correctly stayed
+#   silent at 19:50 UTC the same day. Slot times must always come from
+#   the schedule file, never from assumption.
 cd /home/sandbox/sdrstream-ext || exit 1
 OUT=/home/sandbox/navtex-ext
 STATE=$OUT/run1/state.json
