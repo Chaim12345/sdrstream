@@ -16,6 +16,14 @@ Everything current hangs off three lines:
 | Fleet | `feat/continuous-fleet-record-all` | `3af0750` | PR #5 (open) | All of PR #4 + continuous scanning, record-all archive, rotation persistence, review fixes R1/R3/R4, kiwi pre-capture drain (M4) |
 | Current work | `feat/ledger-on-pr5` | `4af3fee` | no PR yet | All of PR #5 + metrics (`/api/metrics.json`), proof ledger (`/api/ledger.json`/`.csv`), per-source terms block, WebSDR retune race fix, WSPR/AIS decode hardening |
 
+2026-10-25 addition (recorded at merge `34b271e`): a fourth line exists -
+`integration/nonphone-decoders` @ `1d21cec`, 342+ commits ahead of
+`master`, carrying the Android app (0.1.3 debug APK, CI emulator-install
+verified), fleet campaign, direct-SMTPS diagnostics, and the 2026-10-25
+S23 device-log fixes (crash-mislabel guard, logcat spam filter,
+dxcluster idle-deadline, FM skirt-peak suppression). It does not contain
+PR #4/#5 content; convergence with the fleet line is not yet mapped.
+
 Facts a fresh session should not re-derive:
 
 - PR #4's head is an ancestor of PR #5's head, and PR #5's head is an
