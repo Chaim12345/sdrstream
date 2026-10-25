@@ -21,8 +21,12 @@ Everything current hangs off three lines:
 `master`, carrying the Android app (0.1.3 debug APK, CI emulator-install
 verified), fleet campaign, direct-SMTPS diagnostics, and the 2026-10-25
 S23 device-log fixes (crash-mislabel guard, logcat spam filter,
-dxcluster idle-deadline, FM skirt-peak suppression). It does not contain
-PR #4/#5 content; convergence with the fleet line is not yet mapped.
+dxcluster idle-deadline, FM skirt-peak suppression). Correction, recorded
+2026-10-25 minutes later: the containment claim above is SUPERSEDED and
+was wrong. Verified by merge-base: `4af3fee` (fleet tip), `0f3a91bd`
+(PR #4 head), `3af0750` (PR #5 head) and `master` are all ancestors of
+`integration/nonphone-decoders` - the lines already converged; see
+`docs/convergence-2026-10-25.md`.
 
 Facts a fresh session should not re-derive:
 
