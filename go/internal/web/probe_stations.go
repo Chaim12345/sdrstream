@@ -66,5 +66,18 @@ func (s *Server) handleProbeStations(w http.ResponseWriter, r *http.Request) {
 		}
 		return out[i].Key < out[j].Key
 	})
-	writeJSON(w, map[string]interface{}{"stations": out, "enabled": true, "updated_at": snap.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")})
+	// Recent health transitions, newest first, capped for the response.
+	// These are probe-outcome transitions (station stopped/resumed
+	// answering), never RF reception claims.
+	events := make([]probe.Event, 0, len(snap.Events))
+	const maxResponseEvents = 50
+	for i := len(snap.Events) - 1; i >= 0 && len(events) < maxResponseEvents; i-- {
+		events = append(events, snap.Events[i])
+	}
+	writeJSON(w, map[string]interface{}{
+		"stations":   out,
+		"enabled":    true,
+		"updated_at": snap.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		"events":     events,
+	})
 }

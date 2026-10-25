@@ -347,3 +347,72 @@ func TestSweepSetsNextCheckBackoff(t *testing.T) {
 		t.Fatalf("good NextCheckAt = %v, want %v", got, want)
 	}
 }
+
+func TestUpdateRecordsHealthTransitions(t *testing.T) {
+	c := NewCatalog()
+	at := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	// New station appearing is not a transition.
+	c.Update(Record{Key: "a", Kind: KindKiwi, Reachable: true, CheckedAt: at})
+	if n := len(c.Events); n != 0 {
+		t.Fatalf("new station produced %d events", n)
+	}
+	// reachable -> unreachable: one "unreachable" event with the verdict.
+	c.Update(Record{Key: "a", Kind: KindKiwi, Reachable: false, Verdict: VerdictTimeout, CheckedAt: at.Add(time.Hour)})
+	if len(c.Events) != 1 || c.Events[0].Kind != EventUnreachable || c.Events[0].Verdict != VerdictTimeout {
+		t.Fatalf("unreachable transition events: %+v", c.Events)
+	}
+	// Steady state: no further events.
+	c.Update(Record{Key: "a", Kind: KindKiwi, Reachable: false, Verdict: VerdictTimeout, CheckedAt: at.Add(2 * time.Hour)})
+	if len(c.Events) != 1 {
+		t.Fatalf("steady dead produced extra events: %+v", c.Events)
+	}
+	// unreachable -> reachable: one "recovered" event.
+	c.Update(Record{Key: "a", Kind: KindKiwi, Reachable: true, Verdict: VerdictOK, CheckedAt: at.Add(3 * time.Hour)})
+	if len(c.Events) != 2 || c.Events[1].Kind != EventRecovered {
+		t.Fatalf("recovery transition events: %+v", c.Events)
+	}
+	if !c.Events[1].At.Equal(at.Add(3 * time.Hour)) {
+		t.Fatalf("event time = %v", c.Events[1].At)
+	}
+}
+
+func TestEventsRingIsBounded(t *testing.T) {
+	c := NewCatalog()
+	at := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	up := true
+	for i := 0; i < 300; i++ {
+		up = !up
+		c.Update(Record{Key: "a", Kind: KindKiwi, Reachable: up, CheckedAt: at.Add(time.Duration(i) * time.Minute)})
+	}
+	if len(c.Events) != maxEvents {
+		t.Fatalf("events = %d, want ring cap %d", len(c.Events), maxEvents)
+	}
+	// Newest event is the most recent transition.
+	last := c.Events[len(c.Events)-1]
+	if !last.At.Equal(at.Add(299 * time.Minute)) {
+		t.Fatalf("newest event at %v", last.At)
+	}
+}
+
+func TestEventsSurviveSnapshotAndSaveLoad(t *testing.T) {
+	dir := t.TempDir()
+	c := NewCatalog()
+	at := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	c.Update(Record{Key: "a", Kind: KindKiwi, Reachable: true, CheckedAt: at})
+	c.Update(Record{Key: "a", Kind: KindKiwi, Reachable: false, Verdict: VerdictDead, CheckedAt: at.Add(time.Hour)})
+	snap := c.Snapshot()
+	if len(snap.Events) != 1 || snap.Events[0].Kind != EventUnreachable {
+		t.Fatalf("snapshot events: %+v", snap.Events)
+	}
+	path := dir + "/catalog.json"
+	if err := c.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	back, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(back.Events) != 1 || back.Events[0].Key != "a" || back.Events[0].Verdict != VerdictDead {
+		t.Fatalf("reloaded events: %+v", back.Events)
+	}
+}

@@ -86,6 +86,25 @@ type Record struct {
 	Capability Capability `json:"capability,omitempty"`
 }
 
+// Event kinds for the catalog's health-transition ring.
+const (
+	EventRecovered   = "recovered"   // unreachable -> reachable
+	EventUnreachable = "unreachable" // reachable -> unreachable
+)
+
+// Event is one observed health transition. Events are monitoring facts
+// derived from probe outcomes - they say a station stopped or resumed
+// answering probes, never anything about RF reception.
+type Event struct {
+	Key     string    `json:"key"`
+	At      time.Time `json:"at"`
+	Kind    string    `json:"kind"`              // EventRecovered or EventUnreachable
+	Verdict string    `json:"verdict,omitempty"` // why, for EventUnreachable
+}
+
+// maxEvents bounds the catalog's transition ring; oldest events drop off.
+const maxEvents = 200
+
 // Catalog is the persisted station catalog. It is safe for concurrent
 // use: the sweep scheduler writes while HTTP handlers read, and an
 // unlocked concurrent map read during a write panics fatally (QA review).
@@ -93,6 +112,10 @@ type Catalog struct {
 	Version   int                `json:"version"`
 	UpdatedAt time.Time          `json:"updated_at"`
 	Records   map[string]*Record `json:"records"`
+	// Events is a bounded ring (maxEvents) of reachability transitions,
+	// oldest first. A station appearing in the directory is not an
+	// event; only observed reachable<->unreachable flips are.
+	Events []Event `json:"events,omitempty"`
 
 	mu sync.RWMutex
 }
@@ -117,6 +140,7 @@ type Snapshot struct {
 	Version   int
 	UpdatedAt time.Time
 	Records   map[string]*Record
+	Events    []Event
 }
 
 // Snapshot returns a copy of the catalog for readers (HTTP handlers) that
@@ -130,6 +154,7 @@ func (c *Catalog) Snapshot() Snapshot {
 		Version:   c.Version,
 		UpdatedAt: c.UpdatedAt,
 		Records:   make(map[string]*Record, len(c.Records)),
+		Events:    append([]Event(nil), c.Events...),
 	}
 	for k, r := range c.Records {
 		cp := *r
@@ -192,6 +217,18 @@ func (c *Catalog) Update(rec Record) {
 		if !rec.Reachable {
 			rec.Capability = prev.Capability
 			rec.ConsecFailures = prev.ConsecFailures + 1
+		}
+		if prev.Reachable != rec.Reachable {
+			kind := EventRecovered
+			if prev.Reachable {
+				kind = EventUnreachable
+			}
+			c.Events = append(c.Events, Event{
+				Key: rec.Key, At: rec.CheckedAt, Kind: kind, Verdict: rec.Verdict,
+			})
+			if len(c.Events) > maxEvents {
+				c.Events = c.Events[len(c.Events)-maxEvents:]
+			}
 		}
 	}
 	r := rec
