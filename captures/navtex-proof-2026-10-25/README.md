@@ -77,6 +77,17 @@ decode_live=false "too short" - honest no-decode, lane-reported via its
 reconciliation output's after-cutoff section. Not part of the day's
 reconciled 40/25/15.
 
+Oostende 2010Z: fourth true wedge of the day, LANE-REPORTED (source agent
+report relayed via main, not independently inspected here). Capture
+started 20:10:03Z, suspended; after thaw, expired timers did not clear
+within guard confirmations; automated backstop SIGQUIT 20:42:49Z, restart
+20:42:58Z; run.log showed main select at websdr.go:413 (the same wedge
+signature as the three in-window wedges). No ledger entry, no metric
+inflation; service reported healthy afterward. Not part of the reconciled
+40/25/15. If confirmed by artifact transfer, this is also the first
+recorded automated-backstop recovery on a true wedge (the in-window
+wedges were killed by the guard/backstop under different conditions).
+
 Scope honesty: the 3-of-9 decode ratio covers the held windows only. It is
 NOT an all-day reliability figure - the 15 pre-hold failures and the missed
 slots above are part of the same day and are listed here deliberately.
