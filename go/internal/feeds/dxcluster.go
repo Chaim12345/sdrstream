@@ -24,6 +24,14 @@ type DXCluster struct {
 	Login  string // greeting callsign, default NOCALL
 	Dial   func(ctx context.Context, addr string) (net.Conn, error)
 	Now    func() time.Time
+	// IdleTimeout bounds how long the cluster may stay completely silent
+	// before the connection is treated as dead. Default 5 minutes: a
+	// quiet cluster (no spots between them) is normal and must NOT churn
+	// reconnects (device evidence 2026-10-25: i/o-timeout reconnect loop
+	// every ~90 s on a healthy node). Dead peers are caught at the TCP
+	// level by the dialer's keepalive, so this only needs to catch a
+	// hung server process.
+	IdleTimeout time.Duration
 }
 
 func (d *DXCluster) Name() string { return "dxcluster" }
@@ -34,6 +42,13 @@ func (d *DXCluster) server() string {
 		return d.Server
 	}
 	return "dxc.ve7cc.net:23"
+}
+
+func (d *DXCluster) idleTimeout() time.Duration {
+	if d.IdleTimeout > 0 {
+		return d.IdleTimeout
+	}
+	return 5 * time.Minute
 }
 
 func (d *DXCluster) login() string {
@@ -76,7 +91,7 @@ func (d *DXCluster) Run(ctx context.Context, emit func(Item)) error {
 func (d *DXCluster) RunReady(ctx context.Context, emit func(Item), ready func()) error {
 	dial := d.Dial
 	if dial == nil {
-		nd := &net.Dialer{Timeout: 20 * time.Second}
+		nd := &net.Dialer{Timeout: 20 * time.Second, KeepAlive: 30 * time.Second}
 		dial = func(ctx context.Context, addr string) (net.Conn, error) { return nd.DialContext(ctx, "tcp", addr) }
 	}
 	conn, err := dial(ctx, d.server())
@@ -86,7 +101,7 @@ func (d *DXCluster) RunReady(ctx context.Context, emit func(Item), ready func())
 	defer conn.Close()
 	go func() { <-ctx.Done(); conn.Close() }()
 
-	if err := conn.SetDeadline(d.now().Add(90 * time.Second)); err != nil {
+	if err := conn.SetDeadline(d.now().Add(d.idleTimeout())); err != nil {
 		return err
 	}
 	sc := bufio.NewScanner(conn)
@@ -96,6 +111,13 @@ func (d *DXCluster) RunReady(ctx context.Context, emit func(Item), ready func())
 	sentLogin := false
 	for sc.Scan() {
 		line := sc.Text()
+		// ANY line proves the peer is alive - banners, talk and keepalive
+		// chatter included, not only parseable spots. The pre-fix code
+		// refreshed the deadline only on spots, so an active connection
+		// with a spotless stretch still timed out and reconnected.
+		if err := conn.SetDeadline(d.now().Add(d.idleTimeout())); err != nil {
+			return err
+		}
 		if !sentLogin && loginPrompt(line) {
 			if _, err := fmt.Fprintf(conn, "%s\n", d.login()); err != nil {
 				return err
@@ -116,9 +138,6 @@ func (d *DXCluster) RunReady(ctx context.Context, emit func(Item), ready func())
 			Label:  fmt.Sprintf("%s %.3f MHz", dxcall, freq/1000),
 			Detail: fmt.Sprintf("spotted by %s %s", spotter, comment),
 		})
-		if err := conn.SetDeadline(d.now().Add(90 * time.Second)); err != nil {
-			return err
-		}
 	}
 	if err := sc.Err(); err != nil && ctx.Err() == nil {
 		return err
