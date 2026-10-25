@@ -147,3 +147,55 @@ test('long catalogs page with show more',async()=>{
  assert.equal(h.$('board-list').children.length,70);
  assert.equal(h.$('board-more').hidden,true);
 });
+test('activity section renders probe transitions with direction and verdict, never RF words',async()=>{
+ const h=harness();openView(h);
+ h.pending.shift().resolve({enabled:true,updated_at:'2026-10-25T05:30:00Z',stations:[
+  station({key:'kiwi|a:8073',name:'Haifa Kiwi'}),
+  station({key:'websdr|gone:80',kind:'websdr',name:'Gone WebSDR',reachable:false,verdict:'timeout'}),
+ ],events:[
+  {key:'websdr|gone:80',at:'2026-10-25T05:10:00Z',kind:'unreachable',verdict:'timeout'},
+  {key:'kiwi|a:8073',at:'2026-10-25T04:00:00Z',kind:'recovered'},
+ ]});await flush();
+ const box=h.$('board-events');
+ assert.equal(box.children.length,2);
+ const first=box.children[0];
+ assert.match(first.textContent,/Gone WebSDR/);
+ assert.match(first.textContent,/stopped answering/);
+ assert.match(first.textContent,/FMT\(2026-10-25T05:10:00Z\)/);
+ assert.match(first.textContent,/timeout/);
+ const second=box.children[1];
+ assert.match(second.textContent,/Haifa Kiwi/);
+ assert.match(second.textContent,/resumed answering/);
+ assert.doesNotMatch(box.textContent,/received|decoded|heard/i);
+ // Newest first is the server's order; the UI must not re-sort.
+ assert.ok(box.textContent.indexOf('Gone WebSDR')<box.textContent.indexOf('Haifa Kiwi'));
+});
+
+test('event for a station missing from the catalog falls back to its key',async()=>{
+ const h=harness();openView(h);
+ h.pending.shift().resolve({enabled:true,updated_at:'2026-10-25T05:30:00Z',stations:[],events:[
+  {key:'kiwi|old:8073',at:'2026-10-25T05:10:00Z',kind:'unreachable',verdict:'refused'},
+ ]});await flush();
+ assert.match(h.$('board-events').textContent,/kiwi\|old:8073/);
+ assert.match(h.$('board-events').textContent,/stopped answering/);
+});
+
+test('no events yet is a quiet note, not an error',async()=>{
+ const h=harness();openView(h);
+ h.pending.shift().resolve({enabled:true,updated_at:'2026-10-25T05:30:00Z',stations:[station()]});await flush();
+ assert.match(h.$('board-events').textContent,/No reachability transitions recorded yet/);
+ assert.doesNotMatch(h.$('board-state').textContent,/unavailable/);
+});
+
+test('next check line appears only when next_check_at is present',async()=>{
+ const h=harness();openView(h);
+ const soon=new Date(Date.now()+3*3600*1000).toISOString();
+ h.pending.shift().resolve({enabled:true,updated_at:'2026-10-25T05:30:00Z',stations:[
+  station({name:'With next',next_check_at:soon}),
+  station({key:'websdr|b:80',kind:'websdr',name:'Without next'}),
+ ],events:[]});await flush();
+ const withNext=h.$('board-list').children[0];
+ assert.match(withNext.textContent,/next check ~3h/);
+ const without=h.$('board-list').children[1];
+ assert.doesNotMatch(without.textContent,/next check/);
+});

@@ -72,6 +72,43 @@
     const meta = document.createElement('div'); meta.className = 'card-meta muted';
     meta.textContent = facts.join(' · ');
     node.appendChild(meta);
+    const next = untilCheck(st.next_check_at);
+    if (next) {
+      const line = document.createElement('div'); line.className = 'card-meta muted';
+      line.textContent = 'next check ' + next;
+      node.appendChild(line);
+    }
+    return node;
+  }
+  // Relative time until the monitor's next planned probe: "~45m", "~3h",
+  // or "due" when the scheduled moment has passed.
+  function untilCheck(iso) {
+    if (!iso) return '';
+    const ms = new Date(iso).getTime() - Date.now();
+    if (isNaN(ms)) return '';
+    if (ms <= 60000) return 'due';
+    const m = Math.round(ms / 60000);
+    if (m < 60) return '~' + m + 'm';
+    const h = Math.round(m / 60);
+    if (h < 24) return '~' + h + 'h';
+    return '~' + Math.round(h / 24) + 'd';
+  }
+  // One health-transition event: direction is a probe-outcome fact
+  // (stopped/resumed answering probes), never a reception claim.
+  function eventCard(ev, names) {
+    const node = document.createElement('div'); node.className = 'card';
+    const title = document.createElement('div'); title.className = 'card-title';
+    const dir = document.createElement('span');
+    const recovered = ev.kind === 'recovered';
+    dir.className = 'badge ' + (recovered ? 'board-alive' : 'board-dead');
+    dir.textContent = recovered ? 'resumed answering' : 'stopped answering';
+    title.appendChild(dir);
+    const b = document.createElement('b'); b.textContent = names[ev.key] || clean(ev.key) || 'unknown station';
+    title.appendChild(b);
+    node.appendChild(title);
+    const meta = document.createElement('div'); meta.className = 'card-meta muted';
+    meta.textContent = fmtDate(ev.at) + (clean(ev.verdict) ? ' · ' + clean(ev.verdict) : '');
+    node.appendChild(meta);
     return node;
   }
   function emptyNote(box, text) {
@@ -107,6 +144,14 @@
     const more = $('board-more');
     more.hidden = filtered.length <= shown.length;
     if (!more.hidden) more.textContent = 'show ' + Math.min(200, filtered.length - shown.length) + ' more of ' + filtered.length;
+    const eventsBox = $('board-events'); eventsBox.textContent = '';
+    if (data) {
+      const names = {};
+      stations.forEach(st => { if (clean(st.name)) names[st.key] = clean(st.name); });
+      const events = data.events || [];
+      events.forEach(ev => eventsBox.appendChild(eventCard(ev, names)));
+      if (!events.length) emptyNote(eventsBox, 'No reachability transitions recorded yet.');
+    }
   }
   async function load() {
     const id = ++request;
