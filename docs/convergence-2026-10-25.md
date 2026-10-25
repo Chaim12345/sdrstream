@@ -47,7 +47,7 @@ tests) before merging into `integration/nonphone-decoders`:
 | 6 | `feat/navtex-ext-490-4209-recovery` | 11 | recovery variant of #5 - merge after, or instead; decide by diff |
 | 7 | `feature/qa-tests` | 11 | qa-matrix.sh; review before adopting as gate |
 | 8 | `candidate/android-current-ui` | 1 | UI candidate; needs visual check |
-| 9 | `enhancements` | 1 | duplicate of #2 - close, do not merge |
+| 9 | `enhancements` | 1 | duplicate of #2 - recommend close (owner's word) |
 | hold | `wip/auto-capture-detector` | 1 | WIP capture package - hold until owner declares it ready |
 
 ## What this unblocks
