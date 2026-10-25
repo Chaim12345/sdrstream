@@ -64,6 +64,7 @@ public class MainActivity extends Activity {
     private static final int MENU_SHARE_LOGS = 6;
     private static final int MENU_BACKGROUND = 7;
     private static final int MENU_AUTOSEND = 9;
+    private static final int MENU_DIAG_PW = 11;
     private static final int MENU_SEND_DIAG = 10;
 
     private WebView webView;
@@ -157,6 +158,7 @@ public class MainActivity extends Activity {
         popup.getMenu().add(0, MENU_AUTOSEND, 7, "Auto-send crash reports")
                 .setCheckable(true)
                 .setChecked(DiagUploadAndroid.uploader(this).optedIn());
+        popup.getMenu().add(0, MENU_DIAG_PW, 8, "Crash-report password");
         popup.getMenu().add(0, MENU_SEND_DIAG, 8, "Send diagnostics now");
         popup.setOnMenuItemClickListener(item -> {
             handleMenuAction(item.getItemId());
@@ -208,12 +210,13 @@ public class MainActivity extends Activity {
                                 + "Auto-send transmits only that summary text: the same diagnostics "
                                 + "summary that menu -> Share logs produces (Share additionally attaches "
                                 + "raw log files, which auto-send never sends).\n\n"
+                                + "Reports are emailed over TLS through mail.cock.li to b92sq3@mail.instinct.com. "
                                 + "At most one automatic report per day; the same crash is never sent twice. "
                                 + "You can turn this off in the menu at any time.")
                         .setPositiveButton("Auto-send", (d, w) -> {
                             up.setOptIn(true);
                             markShown.run();
-                            DiagUploadAndroid.maybeAutoSendAsync(this);
+                            ensureDiagPasswordThen(DiagUploadAndroid::maybeAutoSendAsync);
                         })
                         .setNeutralButton("Share once", (d, w) -> {
                             up.markAsked();
@@ -449,6 +452,7 @@ public class MainActivity extends Activity {
         menu.add(0, MENU_AUTOSEND, 7, "Auto-send crash reports")
                 .setCheckable(true)
                 .setChecked(DiagUploadAndroid.uploader(this).optedIn());
+        menu.add(0, MENU_DIAG_PW, 8, "Crash-report password");
         menu.add(0, MENU_SEND_DIAG, 8, "Send diagnostics now");
         return true;
     }
@@ -458,12 +462,67 @@ public class MainActivity extends Activity {
         return handleMenuAction(item.getItemId()) || super.onOptionsItemSelected(item);
     }
 
+    /** Prompts for the relay password only if none is stored yet, then runs after. */
+    private void ensureDiagPasswordThen(java.util.function.Consumer<android.content.Context> after) {
+        if (DiagCredentials.hasPassword(getSharedPreferences("sdrstream_diag", MODE_PRIVATE))) {
+            after.accept(this);
+        } else {
+            promptDiagPassword(() -> after.accept(this));
+        }
+    }
+
+    /** One-time (or rotation) password prompt; saved encrypted in Android Keystore. */
+    private void promptDiagPassword(Runnable onSaved) {
+        final android.widget.EditText input = new android.widget.EditText(this);
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        input.setHint("SMTP password (mail.cock.li)");
+        int pad = (int) (20 * getResources().getDisplayMetrics().density);
+        android.widget.FrameLayout wrap = new android.widget.FrameLayout(this);
+        wrap.setPadding(pad, pad / 2, pad, 0);
+        wrap.addView(input);
+        new AlertDialog.Builder(this)
+                .setTitle("Crash-report password")
+                .setMessage("Crash reports are emailed through your mail.cock.li account to b92sq3@mail.instinct.com. "
+                        + "Enter its password once - it is stored encrypted in Android Keystore "
+                        + "and never leaves the device except to the mail server over TLS.")
+                .setView(wrap)
+                .setPositiveButton("Save", (d, w) -> {
+                    char[] pw = input.getText().toString().toCharArray();
+                    if (pw.length == 0) return;
+                    try {
+                        DiagCredentials.store(
+                                getSharedPreferences("sdrstream_diag", MODE_PRIVATE), pw);
+                        onSaved.run();
+                    } catch (Exception e) {
+                        Toast.makeText(this, "Could not store password: " + e.getMessage(),
+                                Toast.LENGTH_LONG).show();
+                    } finally {
+                        java.util.Arrays.fill(pw, '\0');
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     /** One handler behind both the overflow PopupMenu and the options menu. */
     private boolean handleMenuAction(int id) {
         switch (id) {
             case MENU_AUTOSEND: {
                 DiagUploader up = DiagUploadAndroid.uploader(this);
                 boolean on = !up.optedIn();
+                if (on && !DiagCredentials.hasPassword(
+                        getSharedPreferences("sdrstream_diag", MODE_PRIVATE))) {
+                    // No silent no-op: the password gate comes first.
+                    promptDiagPassword(() -> {
+                        up.setOptIn(true);
+                        Toast.makeText(this,
+                                "Crash reports will be sent automatically (redacted, max 1/day)",
+                                Toast.LENGTH_LONG).show();
+                        DiagUploadAndroid.maybeAutoSendAsync(this);
+                    });
+                    return true;
+                }
                 up.setOptIn(on);
                 Toast.makeText(this,
                         on ? "Crash reports will be sent automatically (redacted, max 1/day)"
@@ -472,12 +531,17 @@ public class MainActivity extends Activity {
                 if (on) DiagUploadAndroid.maybeAutoSendAsync(this);
                 return true;
             }
+            case MENU_DIAG_PW:
+                promptDiagPassword(() -> Toast.makeText(this,
+                        "Crash-report password saved (stored in Android Keystore)",
+                        Toast.LENGTH_LONG).show());
+                return true;
             case MENU_SEND_DIAG:
                 DiagUploadAndroid.sendNowAsync(this, r -> {
                     String msg;
                     switch (r) {
                         case SENT: msg = "Diagnostics sent"; break;
-                        case NO_ENDPOINT: msg = "Auto-send relay not configured in this build"; break;
+                        case NO_ENDPOINT: msg = "Set the crash-report password in the menu first"; break;
                         case OFFLINE: msg = "No connection - will retry on next launch"; break;
                         default: msg = "Send failed (" + r + ") - will retry on next launch"; break;
                     }

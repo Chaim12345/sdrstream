@@ -808,3 +808,37 @@ Copyright (C) 2026 Chaim12345 and sdrstream contributors.
 SPDX-License-Identifier: AGPL-3.0-or-later. See `LICENSE`, `NOTICE` and
 `NOTICE-third-party.md` (also served by the web UI footer). Note the open
 permission issue for the WebSDR table described in `NOTICE`.
+
+## Crash diagnostics
+
+The Android app can email a redacted diagnostics summary (device model,
+Android/app versions, engine state, file names in the app folder, recent
+exit reasons, log tails with URLs, passwords, tokens and locations
+stripped) to the developer. Opt-in only: a first-crash consent dialog
+names exactly what leaves the device, and the menu toggle can turn it off
+at any time. At most one automatic report per day; the same crash is never
+sent twice; offline or failed sends retry on next launch (some mobile
+carriers block outbound port 465 - that surfaces as an ordinary retry,
+never a crash).
+
+Transport is direct SMTPS from the app to the relay mailbox
+(`mail.cock.li:465`, implicit TLS with RFC 2818 hostname verification) via
+a minimal hand-rolled SMTP client - no third-party mail library, no server
+component, no credentials in the repo or the APK. The mailbox password is
+entered once in the app (menu -> "Crash-report password") and stored
+encrypted under an AndroidKeyStore AES/GCM key (`DiagCredentials`); until
+then the uploader is a hard no-op. Treat the relay mailbox as disposable
+and rotate it if it is ever abused. First use requires the one-time
+cock.li browser unblock for new accounts (https://cock.li/unblock.php);
+outbound volume (tens of emails/month, one recipient) is far under
+cock.li's policyd limits.
+
+QA/deliverability note: after entering the password on a test device, do
+one menu -> "Send diagnostics now" and confirm the report lands in the
+diagnostics inbox - this also proves the receiving side accepts cock.li's
+outbound IPs (their ranges occasionally land on blocklists).
+
+`workers/diag-relay/` keeps the earlier relay design (Cloudflare Worker +
+Resend, and a considered SMTP-over-Worker-sockets variant) as tested
+documentation of the alternative; the direct-SMTP transport replaced it -
+no deploy needed.

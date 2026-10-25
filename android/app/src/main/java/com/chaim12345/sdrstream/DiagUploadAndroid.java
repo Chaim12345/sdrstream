@@ -10,28 +10,31 @@ import android.os.Looper;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Android adapters for DiagUploader: SharedPreferences state,
- * HttpURLConnection transport, ConnectivityManager gating, and the crash.log
- * source. All policy lives in DiagUploader (pure Java, JVM-tested).
+ * Android adapters for DiagUploader: SharedPreferences state, SmtpClient
+ * transport, ConnectivityManager gating, and the crash.log source. All
+ * policy lives in DiagUploader (pure Java, JVM-tested).
  *
- * ENDPOINT and CLIENT_ID are empty in the repo on purpose: the uploader is a
- * hard no-op until the diag-relay Worker is deployed and the owner fills both
- * in a release commit. The repo as shipped makes no live calls.
+ * Transport: the app sends the report directly over SMTPS (implicit TLS)
+ * to a disposable relay mailbox owned by the developer, addressed to the
+ * diagnostics inbox. No server component of ours is involved.
+ *
+ * The relay password is NEVER in git or the APK: the user enters it once
+ * in the app UI and it is stored encrypted under an AndroidKeyStore AES/GCM
+ * key (DiagCredentials). Until then the uploader is a hard no-op - the repo
+ * as shipped makes no live calls and contains no credentials.
  */
 final class DiagUploadAndroid {
-    static final String ENDPOINT = "";
-    static final String CLIENT_ID = "";
+    static final String SMTP_HOST = "mail.cock.li";
+    static final int SMTP_PORT = 465;
+    static final String SMTP_USER = "chaim12345@cock.li";
+    static final String FROM = "chaim12345@cock.li";
+    static final String DIAG_INBOX = "b92sq3@mail.instinct.com";
 
     private static final String PREFS = "sdrstream_diag";
     private static final int CRASH_HASH_BYTES = 256 * 1024;
-    private static final int CONNECT_TIMEOUT_MS = 15000;
-    private static final int READ_TIMEOUT_MS = 15000;
 
     interface Callback { void onResult(DiagUploader.Result result); }
 
@@ -61,7 +64,14 @@ final class DiagUploadAndroid {
             JavaLog.capture(ctx, new java.io.File(ctx.getFilesDir(), Diag.JAVA_LOG));
             return Diag.report(ctx, Diag.fetchRingTail(ctx));
         };
-        return new DiagUploader(store, DiagUploadAndroid::post, bundle, net, ENDPOINT, CLIENT_ID);
+        // Password comes from the Keystore-backed store (entered once in the
+        // UI); empty = user never entered it = uploader is a hard no-op.
+        DiagUploader.UploadTarget target = new DiagUploader.UploadTarget(
+                "smtps", SMTP_HOST, SMTP_PORT, SMTP_USER,
+                DiagCredentials.load(prefs), FROM, DIAG_INBOX);
+        DiagUploader.Transport transport = (t, subject, text) ->
+                new SmtpClient().send(t.host, t.port, t.user, t.password, t.from, t.to, subject, text);
+        return new DiagUploader(store, transport, bundle, net, target);
     }
 
     /** crash.log content for the dedupe hash; capped, null-safe. */
@@ -110,32 +120,5 @@ final class DiagUploadAndroid {
             final DiagUploader.Result done = r;
             main.post(() -> cb.onResult(done));
         }, "diag-sendnow").start();
-    }
-
-    private static int post(String url, String clientId, String bodyJson) throws Exception {
-        URL u = new URL(url);
-        if (!"https".equals(u.getProtocol())) {
-            throw new SecurityException("diag endpoint must be https: " + u.getProtocol());
-        }
-        HttpURLConnection conn = (HttpURLConnection) u.openConnection();
-        try {
-            // Never follow redirects: HttpURLConnection would forward the
-            // client-id header and the bundle to the redirect target.
-            conn.setInstanceFollowRedirects(false);
-            conn.setRequestMethod("POST");
-            conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            conn.setReadTimeout(READ_TIMEOUT_MS);
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setRequestProperty("X-Sdrstream-Client", clientId);
-            byte[] body = bodyJson.getBytes(StandardCharsets.UTF_8);
-            conn.setFixedLengthStreamingMode(body.length);
-            try (OutputStream out = conn.getOutputStream()) {
-                out.write(body);
-            }
-            return conn.getResponseCode();
-        } finally {
-            conn.disconnect();
-        }
     }
 }
