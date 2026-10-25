@@ -50,6 +50,14 @@ tests) before merging into `integration/nonphone-decoders`:
 | 9 | `enhancements` | 1 | duplicate of #2 - recommend close (owner's word) |
 | hold | `wip/auto-capture-detector` | 1 | WIP capture package - hold until owner declares it ready |
 
+## Landed status (recorded 2026-10-25, integration tip fa4fa4e)
+
+Items 1-8 merged into `integration/nonphone-decoders` in plan order with
+per-branch QA (merge SHAs: c63e0db, 1dd084a, f59725c, 8eac23c, e1e0a5d,
+c037b7d, 18cbf3e, fa4fa4e). Item 9 `enhancements`: identical patch-id
+to #2 - recommend close, owner's word. `wip/auto-capture-detector`:
+still WIP, hold.
+
 ## What this unblocks
 
 "Add features and show real decoded data" now has one landing zone:
