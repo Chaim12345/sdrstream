@@ -2468,3 +2468,40 @@ if ('serviceWorker' in navigator) {
     });
   });
 }
+
+/* ---------- decode targets: one tap onto a real data service ---------- */
+/* The curated HF target list served at /api/decode-targets.json: each
+   chip fills the sweep window with the service's narrow dial window and
+   fires the same start path the form uses, so the phone lands where
+   decodable data modes (FT8/NAVTEX/RTTY/...) actually transmit instead
+   of a band with nothing to decode. */
+function initDecodeTargets() {
+  const box = el('decode-targets');
+  if (!box) return;
+  fetchJSON('/api/decode-targets.json').then(list => {
+    box.textContent = '';
+    if (!Array.isArray(list) || !list.length) {
+      setEmpty(box, 'no decode targets served');
+      return;
+    }
+    list.forEach(t => {
+      const chip = document.createElement('button');
+      chip.className = 'chip';
+      chip.type = 'button';
+      chip.textContent = t.name;
+      chip.title = t.kind.toUpperCase() + ' · dial ' + t.dial_khz + ' kHz ' + t.mode.toUpperCase() +
+        (t.expect ? ' · gate anchor ' + t.expect : '') +
+        ' · window ' + (t.start_hz / 1e6).toFixed(4) + '-' + (t.end_hz / 1e6).toFixed(4) + ' MHz';
+      chip.addEventListener('click', () => {
+        el('monitor-start-mhz').value = (t.start_hz / 1e6).toFixed(4);
+        el('monitor-end-mhz').value = (t.end_hz / 1e6).toFixed(4);
+        el('monitor-start').click();
+      });
+      box.appendChild(chip);
+    });
+  }).catch(err => {
+    box.textContent = '';
+    setEmpty(box, 'decode targets unavailable: ' + err);
+  });
+}
+initDecodeTargets();
