@@ -63,6 +63,8 @@ public class MainActivity extends Activity {
     private static final int MENU_DIAGNOSTICS = 5;
     private static final int MENU_SHARE_LOGS = 6;
     private static final int MENU_BACKGROUND = 7;
+    private static final int MENU_AUTOSEND = 9;
+    private static final int MENU_SEND_DIAG = 10;
 
     private WebView webView;
     private AlertDialog batteryDialog;
@@ -105,6 +107,9 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         showCrashReportIfAny();
+        // Opted-in users only: retry any pending/one-per-day diagnostics
+        // upload. Hard no-op while the relay endpoint is unconfigured.
+        DiagUploadAndroid.maybeAutoSendAsync(this);
         loadWhenUp();
     }
 
@@ -149,6 +154,10 @@ public class MainActivity extends Activity {
         popup.getMenu().add(0, MENU_SHARE_LOGS, 5, "Share logs");
         popup.getMenu().add(0, MENU_TAILNET, 6, "Tailscale remote access");
         popup.getMenu().add(0, MENU_BACKGROUND, 6, "Allow background running");
+        popup.getMenu().add(0, MENU_AUTOSEND, 7, "Auto-send crash reports")
+                .setCheckable(true)
+                .setChecked(DiagUploadAndroid.uploader(this).optedIn());
+        popup.getMenu().add(0, MENU_SEND_DIAG, 8, "Send diagnostics now");
         popup.setOnMenuItemClickListener(item -> {
             handleMenuAction(item.getItemId());
             return true;
@@ -183,14 +192,47 @@ public class MainActivity extends Activity {
             long shown = getSharedPreferences("sdrstream_diag", MODE_PRIVATE)
                     .getLong("crash_shown_mtime", -1);
             if (crash.lastModified() == shown) return;
-            new AlertDialog.Builder(this)
-                    .setTitle("sdrstream crashed last time")
-                    .setMessage("A crash log was saved. Sharing it with the report helps fix the problem.")
-                    .setPositiveButton("Share log", (d, w) -> shareLogs())
-                    .setNegativeButton("Dismiss", (d, w) ->
-                            getSharedPreferences("sdrstream_diag", MODE_PRIVATE).edit()
-                                    .putLong("crash_shown_mtime", crash.lastModified()).apply())
-                    .show();
+            final long mtime = crash.lastModified();
+            Runnable markShown = () -> getSharedPreferences("sdrstream_diag", MODE_PRIVATE)
+                    .edit().putLong("crash_shown_mtime", mtime).apply();
+            DiagUploader up = DiagUploadAndroid.uploader(this);
+            if (!up.asked()) {
+                // First-crash consent: names exactly what leaves the device.
+                new AlertDialog.Builder(this)
+                        .setTitle("sdrstream crashed last time")
+                        .setMessage("Send crash reports automatically?\n\n"
+                                + "What leaves this device: the redacted diagnostics summary only - "
+                                + "device model, Android and app versions, engine state, file names "
+                                + "in the app folder, recent process exit reasons, and log tails with "
+                                + "URLs, passwords, tokens and locations stripped. Nothing else.\n\n"
+                                + "Auto-send transmits only that summary text: the same diagnostics "
+                                + "summary that menu -> Share logs produces (Share additionally attaches "
+                                + "raw log files, which auto-send never sends).\n\n"
+                                + "At most one automatic report per day; the same crash is never sent twice. "
+                                + "You can turn this off in the menu at any time.")
+                        .setPositiveButton("Auto-send", (d, w) -> {
+                            up.setOptIn(true);
+                            markShown.run();
+                            DiagUploadAndroid.maybeAutoSendAsync(this);
+                        })
+                        .setNeutralButton("Share once", (d, w) -> {
+                            up.markAsked();
+                            markShown.run();
+                            shareLogs();
+                        })
+                        .setNegativeButton("Not now", (d, w) -> {
+                            up.markAsked();
+                            markShown.run();
+                        })
+                        .show();
+            } else {
+                new AlertDialog.Builder(this)
+                        .setTitle("sdrstream crashed last time")
+                        .setMessage("A crash log was saved. Sharing it with the report helps fix the problem.")
+                        .setPositiveButton("Share log", (d, w) -> shareLogs())
+                        .setNegativeButton("Dismiss", (d, w) -> markShown.run())
+                        .show();
+            }
         } catch (Throwable t) {
             Diag.writeCrash(this, "show crash report", t);
         }
@@ -404,6 +446,10 @@ public class MainActivity extends Activity {
         menu.add(0, MENU_SHARE_LOGS, 5, "Share logs");
         menu.add(0, MENU_TAILNET, 6, "Tailscale remote access");
         menu.add(0, MENU_BACKGROUND, 6, "Allow background running");
+        menu.add(0, MENU_AUTOSEND, 7, "Auto-send crash reports")
+                .setCheckable(true)
+                .setChecked(DiagUploadAndroid.uploader(this).optedIn());
+        menu.add(0, MENU_SEND_DIAG, 8, "Send diagnostics now");
         return true;
     }
 
@@ -415,6 +461,29 @@ public class MainActivity extends Activity {
     /** One handler behind both the overflow PopupMenu and the options menu. */
     private boolean handleMenuAction(int id) {
         switch (id) {
+            case MENU_AUTOSEND: {
+                DiagUploader up = DiagUploadAndroid.uploader(this);
+                boolean on = !up.optedIn();
+                up.setOptIn(on);
+                Toast.makeText(this,
+                        on ? "Crash reports will be sent automatically (redacted, max 1/day)"
+                           : "Automatic crash reports off",
+                        Toast.LENGTH_LONG).show();
+                if (on) DiagUploadAndroid.maybeAutoSendAsync(this);
+                return true;
+            }
+            case MENU_SEND_DIAG:
+                DiagUploadAndroid.sendNowAsync(this, r -> {
+                    String msg;
+                    switch (r) {
+                        case SENT: msg = "Diagnostics sent"; break;
+                        case NO_ENDPOINT: msg = "Auto-send relay not configured in this build"; break;
+                        case OFFLINE: msg = "No connection - will retry on next launch"; break;
+                        default: msg = "Send failed (" + r + ") - will retry on next launch"; break;
+                    }
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+                });
+                return true;
             case MENU_SHOW_PASSWORD:
                 new AlertDialog.Builder(this)
                         .setTitle("Web UI password")
