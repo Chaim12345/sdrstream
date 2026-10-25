@@ -210,7 +210,7 @@ public class MainActivity extends Activity {
                                 + "Auto-send transmits only that summary text: the same diagnostics "
                                 + "summary that menu -> Share logs produces (Share additionally attaches "
                                 + "raw log files, which auto-send never sends).\n\n"
-                                + "Reports are emailed to the developer over TLS. "
+                                + "Reports are emailed over TLS through mail.cock.li to b92sq3@mail.instinct.com. "
                                 + "At most one automatic report per day; the same crash is never sent twice. "
                                 + "You can turn this off in the menu at any time.")
                         .setPositiveButton("Auto-send", (d, w) -> {
@@ -483,7 +483,7 @@ public class MainActivity extends Activity {
         wrap.addView(input);
         new AlertDialog.Builder(this)
                 .setTitle("Crash-report password")
-                .setMessage("Crash reports are emailed through your mail.cock.li account. "
+                .setMessage("Crash reports are emailed through your mail.cock.li account to b92sq3@mail.instinct.com. "
                         + "Enter its password once - it is stored encrypted in Android Keystore "
                         + "and never leaves the device except to the mail server over TLS.")
                 .setView(wrap)

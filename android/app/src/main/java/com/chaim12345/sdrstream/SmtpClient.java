@@ -37,14 +37,32 @@ final class SmtpClient {
     private static final int READ_TIMEOUT_MS = 15000;
 
     /** Production factory: implicit TLS, handshake verified before use. */
-    static final SocketFactory TLS_FACTORY = (host, port) -> {
-        SSLSocket s = newTlsSocket();
-        s.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
-        s.setSoTimeout(READ_TIMEOUT_MS);
-        requireHostnameVerification(s);
-        s.startHandshake();
-        return s;
-    };
+    static final SocketFactory TLS_FACTORY =
+            tlsFactory((SSLSocketFactory) SSLSocketFactory.getDefault());
+
+    /**
+     * TLS over an already-connected plain socket. The layered
+     * createSocket(socket, host, port, autoClose) form fixes the peer host
+     * for both SNI and hostname verification (QA review) - the unconnected
+     * createSocket() + connect() form can leave verification without the
+     * intended peer name.
+     */
+    static SocketFactory tlsFactory(SSLSocketFactory ssl) {
+        return (host, port) -> {
+            Socket plain = new Socket();
+            try {
+                plain.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
+                SSLSocket s = (SSLSocket) ssl.createSocket(plain, host, port, true);
+                s.setSoTimeout(READ_TIMEOUT_MS);
+                requireHostnameVerification(s);
+                s.startHandshake();
+                return s;
+            } catch (IOException | RuntimeException e) {
+                try { plain.close(); } catch (IOException ignored) {}
+                throw e;
+            }
+        };
+    }
 
     /**
      * Raw SSLSocket validates the certificate CHAIN but not the HOSTNAME:

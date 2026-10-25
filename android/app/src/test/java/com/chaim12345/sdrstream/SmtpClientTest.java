@@ -39,7 +39,11 @@ public class SmtpClientTest {
         private final Thread thread;
 
         FakeServer() throws IOException {
-            listen = new ServerSocket(0);
+            this(new ServerSocket(0));
+        }
+
+        FakeServer(ServerSocket listen) throws IOException {
+            this.listen = listen;
             thread = new Thread(this::serve, "fake-smtp");
             thread.setDaemon(true);
             thread.start();
