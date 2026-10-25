@@ -142,3 +142,32 @@ func TestShellWiresStationBoard(t *testing.T) {
 		t.Fatal("static/stationboard.js not embedded")
 	}
 }
+
+func TestProbeStationsExposesEventsNewestFirst(t *testing.T) {
+	catalog := probe.NewCatalog()
+	at := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	catalog.Update(probe.Record{Key: "a", Kind: probe.KindKiwi, Reachable: true, CheckedAt: at})
+	catalog.Update(probe.Record{Key: "a", Kind: probe.KindKiwi, Reachable: false, Verdict: probe.VerdictTimeout, CheckedAt: at.Add(time.Hour)})
+	catalog.Update(probe.Record{Key: "a", Kind: probe.KindKiwi, Reachable: true, Verdict: probe.VerdictOK, CheckedAt: at.Add(2 * time.Hour)})
+	server := &Server{}
+	server.SetProbeCatalog(catalog)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/station-catalog.json", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	var body struct {
+		Events []probe.Event `json:"events"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Events) != 2 {
+		t.Fatalf("events = %+v", body.Events)
+	}
+	if body.Events[0].Kind != probe.EventRecovered || body.Events[1].Kind != probe.EventUnreachable {
+		t.Fatalf("want newest-first [recovered, unreachable], got %+v", body.Events)
+	}
+}

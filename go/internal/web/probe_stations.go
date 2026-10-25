@@ -18,6 +18,7 @@ type stationView struct {
 	Reachable      bool             `json:"reachable"`
 	Verdict        string           `json:"verdict"`
 	CheckedAt      string           `json:"checked_at,omitempty"`
+	NextCheckAt    string           `json:"next_check_at,omitempty"`
 	ConsecFailures int              `json:"consec_failures,omitempty"`
 	Capability     probe.Capability `json:"capability,omitempty"`
 }
@@ -32,6 +33,8 @@ func (s *Server) SetProbeCatalog(c *probe.Catalog) {
 // handleProbeStations serves the station capability catalog, reachable
 // stations first: the UI and the decoder fleet read "which stations exist,
 // are they alive, what can they hear" from here instead of probing.
+// updated_at is the last COMPLETED sweep (a sweep that found nothing due
+// still counts), so a stale updated_at means the scheduler is stalled.
 func (s *Server) handleProbeStations(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	c := s.probeCatalog
@@ -54,6 +57,9 @@ func (s *Server) handleProbeStations(w http.ResponseWriter, r *http.Request) {
 		if !rec.CheckedAt.IsZero() {
 			v.CheckedAt = rec.CheckedAt.UTC().Format("2006-01-02T15:04:05Z")
 		}
+		if !rec.NextCheckAt.IsZero() {
+			v.NextCheckAt = rec.NextCheckAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
 		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -62,5 +68,18 @@ func (s *Server) handleProbeStations(w http.ResponseWriter, r *http.Request) {
 		}
 		return out[i].Key < out[j].Key
 	})
-	writeJSON(w, map[string]interface{}{"stations": out, "enabled": true, "updated_at": snap.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")})
+	// Recent health transitions, newest first, capped for the response.
+	// These are probe-outcome transitions (station stopped/resumed
+	// answering), never RF reception claims.
+	events := make([]probe.Event, 0, len(snap.Events))
+	const maxResponseEvents = 50
+	for i := len(snap.Events) - 1; i >= 0 && len(events) < maxResponseEvents; i-- {
+		events = append(events, snap.Events[i])
+	}
+	writeJSON(w, map[string]interface{}{
+		"stations":   out,
+		"enabled":    true,
+		"updated_at": snap.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		"events":     events,
+	})
 }

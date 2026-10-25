@@ -74,11 +74,38 @@ type Record struct {
 	ConsecFailures int           `json:"consec_failures,omitempty"`
 	LastError      string        `json:"last_error,omitempty"`
 
+	// NextCheckAt is when the monitor should probe this station again.
+	// Exact schedule (base = sweep interval): healthy -> base; after
+	// consecutive failure N -> base * 2^(N-1), so the waits run
+	// base, 2*base, 4*base, ... capped at 24h. The first failure waits
+	// only the base interval; doubling begins at the second failure.
+	// Zero means due immediately (new stations).
+	NextCheckAt time.Time `json:"next_check_at,omitempty"`
+
 	// Capability: last KNOWN answer. A failed probe never erases it -
 	// Reachable=false is what marks the station down, so a transient
 	// outage cannot blank the catalog the UI shows.
 	Capability Capability `json:"capability,omitempty"`
 }
+
+// Event kinds for the catalog's health-transition ring.
+const (
+	EventRecovered   = "recovered"   // unreachable -> reachable
+	EventUnreachable = "unreachable" // reachable -> unreachable
+)
+
+// Event is one observed health transition. Events are monitoring facts
+// derived from probe outcomes - they say a station stopped or resumed
+// answering probes, never anything about RF reception.
+type Event struct {
+	Key     string    `json:"key"`
+	At      time.Time `json:"at"`
+	Kind    string    `json:"kind"`              // EventRecovered or EventUnreachable
+	Verdict string    `json:"verdict,omitempty"` // why, for EventUnreachable
+}
+
+// maxEvents bounds the catalog's transition ring; oldest events drop off.
+const maxEvents = 200
 
 // Catalog is the persisted station catalog. It is safe for concurrent
 // use: the sweep scheduler writes while HTTP handlers read, and an
@@ -87,6 +114,10 @@ type Catalog struct {
 	Version   int                `json:"version"`
 	UpdatedAt time.Time          `json:"updated_at"`
 	Records   map[string]*Record `json:"records"`
+	// Events is a bounded ring (maxEvents) of reachability transitions,
+	// oldest first. A station appearing in the directory is not an
+	// event; only observed reachable<->unreachable flips are.
+	Events []Event `json:"events,omitempty"`
 
 	mu sync.RWMutex
 }
@@ -111,6 +142,7 @@ type Snapshot struct {
 	Version   int
 	UpdatedAt time.Time
 	Records   map[string]*Record
+	Events    []Event
 }
 
 // Snapshot returns a copy of the catalog for readers (HTTP handlers) that
@@ -124,6 +156,7 @@ func (c *Catalog) Snapshot() Snapshot {
 		Version:   c.Version,
 		UpdatedAt: c.UpdatedAt,
 		Records:   make(map[string]*Record, len(c.Records)),
+		Events:    append([]Event(nil), c.Events...),
 	}
 	for k, r := range c.Records {
 		cp := *r
@@ -187,9 +220,52 @@ func (c *Catalog) Update(rec Record) {
 			rec.Capability = prev.Capability
 			rec.ConsecFailures = prev.ConsecFailures + 1
 		}
+		if prev.Reachable != rec.Reachable {
+			kind := EventRecovered
+			if prev.Reachable {
+				kind = EventUnreachable
+			}
+			c.Events = append(c.Events, Event{
+				Key: rec.Key, At: rec.CheckedAt, Kind: kind, Verdict: rec.Verdict,
+			})
+			if len(c.Events) > maxEvents {
+				c.Events = c.Events[len(c.Events)-maxEvents:]
+			}
+		}
 	}
 	r := rec
 	c.Records[rec.Key] = &r
+}
+
+// Get returns a copy of one record, for the scheduler's backoff decision.
+func (c *Catalog) Get(key string) (Record, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	r, ok := c.Records[key]
+	if !ok {
+		return Record{}, false
+	}
+	return *r, true
+}
+
+// Backoff returns how long to wait before re-checking a station after
+// consecFailures consecutive failed probes: base * 2^(consecFailures-1),
+// capped at 24h - i.e. failure 1 waits base (no penalty yet), failure 2
+// waits 2*base, failure 3 waits 4*base, and so on. Healthy stations are
+// scheduled with the base interval directly (pass 0 or 1).
+func Backoff(base time.Duration, consecFailures int) time.Duration {
+	const cap = 24 * time.Hour
+	if consecFailures <= 1 {
+		return base
+	}
+	d := base
+	for i := 1; i < consecFailures; i++ {
+		d *= 2
+		if d >= cap {
+			return cap
+		}
+	}
+	return d
 }
 
 // Reachable returns the records that answered their last probe, oldest
