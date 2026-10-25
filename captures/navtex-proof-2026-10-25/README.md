@@ -24,12 +24,13 @@ self-corrected totals (7-vs-9 captures) are superseded by the counts below.
   station/service anchor; receiver healthy - honest no-decode, not a
   service fault).
 - Missed slots (no ledger entry, neutral - VM frozen or service
-  restarting) - 9 individual slots: Pinneberg 0150Z; Heraklion 0300Z
-  (backstop kill pre-guard); Portpatrick 0420Z (same); Niton 0920Z (wedge
-  kill); Oostende 1210Z (freeze; wedged, backstop-killed); Portpatrick
-  1220Z (freeze); Niton 1320Z (service restart + freeze); Portpatrick
-  1620Z and Niton 1720Z (frozen through start; liveness guard correctly
-  suppressed by stale heartbeat).
+  restarting) - 10 individual slots in 00:00-18:10 UTC: Pinneberg 0150Z;
+  Heraklion 0300Z (backstop kill pre-guard); Portpatrick 0420Z (same);
+  Malin Head 0800Z (wedge; SIGQUIT 08:16Z, saved state 2de603dd per the
+  lane); Niton 0920Z (wedge kill); Oostende 1210Z (freeze; wedged,
+  backstop-killed); Portpatrick 1220Z (freeze); Niton 1320Z (service
+  restart + freeze); Portpatrick 1620Z and Niton 1720Z (frozen through
+  start; liveness guard correctly suppressed by stale heartbeat).
 
 Scope honesty: the 3-of-9 decode ratio covers the held windows only. It is
 NOT an all-day reliability figure - the 15 pre-hold failures and the missed
@@ -63,12 +64,29 @@ transferred (attachment cap); available from the lane on request.
 
 ## Date headers
 
-Broadcast headers in these files are preserved raw (e.g. "241915 UTC OKT
-26"). Their date interpretation is NOT asserted here: "OKT 26" plausibly
-denotes October 2026 (month-year), not day 26, and no source check against
-the official NAVTEX-HAMBURG broadcast schedule has been performed. Reading
-the decoded text establishes text readability only, not validation of
-broadcast content or dates.
+Broadcast headers in these files are preserved raw. The lane's reading,
+from internal consistency of the decoded text itself, is the format
+DDHHMM UTC MON YY:
+
+- Transmission stamps "250950", "251350", "251750 NAVTEX-HAMBURG (NCC)"
+  match the capture day (25th) and the exact slot times - an empirical
+  anchor for DDHHMM.
+- "150945 UTC SEP 26" in the 1350Z file is a still-repeated warning; read
+  as 15 Sep 2026 09:45 UTC, the trailing "SEP 26" is month + 2-digit year,
+  which makes "OKT 26" = October 2026 in the same position.
+- On that reading: "241915 UTC OKT 26" = issued 24 Oct 2026 19:15 UTC,
+  and "NACHRICHT WIRD AUFGEHOBEN 261100 UTC OKT 26" = cancellation
+  26 Oct 2026 11:00 UTC - the next-day part comes from the leading DD=26
+  token, not from "OKT 26". LE70 "VORHERSAGE FUER SONNTAG" is a forecast
+  for Sunday, the capture day itself, not the next day.
+
+This is an interpretation from internal consistency, NOT independent
+verification against the NAVTEX standard or the NAVTEX-HAMBURG broadcast
+schedule. Corrupt headers stay raw with uncertainty: "160500 UTCUWKT 26"
+(garbled - do not assert), "211230 UTCUTC OKT 26" (duplicated UTC token),
+and "WARNUNG NR. 90 250435UTC OCT" / "NR. 175 251030UTC OCT" carry no
+year token. Reading the decoded text establishes text readability only,
+not validation of broadcast content or dates.
 
 ## Content caveat
 
