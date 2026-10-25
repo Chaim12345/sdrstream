@@ -199,3 +199,12 @@ test('next check line appears only when next_check_at is present',async()=>{
  const without=h.$('board-list').children[1];
  assert.doesNotMatch(without.textContent,/next check/);
 });
+test('event key colliding with Object.prototype falls back to the key, never an inherited function',async()=>{
+ const h=harness();openView(h);
+ h.pending.shift().resolve({enabled:true,updated_at:'2026-10-25T05:30:00Z',stations:[station()],events:[
+  {key:'constructor',at:'2026-10-25T05:10:00Z',kind:'unreachable',verdict:'timeout'},
+ ]});await flush();
+ const card=h.$('board-events').children[0];
+ assert.match(card.textContent,/constructor/);
+ assert.doesNotMatch(card.textContent,/function Object/);
+});

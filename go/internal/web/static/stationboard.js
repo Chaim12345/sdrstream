@@ -146,7 +146,7 @@
     if (!more.hidden) more.textContent = 'show ' + Math.min(200, filtered.length - shown.length) + ' more of ' + filtered.length;
     const eventsBox = $('board-events'); eventsBox.textContent = '';
     if (data) {
-      const names = {};
+      const names = Object.create(null); // directory keys are untrusted: no prototype chain
       stations.forEach(st => { if (clean(st.name)) names[st.key] = clean(st.name); });
       const events = data.events || [];
       events.forEach(ev => eventsBox.appendChild(eventCard(ev, names)));
