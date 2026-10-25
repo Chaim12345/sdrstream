@@ -360,6 +360,14 @@ list.
 4. Work queue: ask the integrator lane for the current roadmap; each fix
    gets a test, `gofmt`, `go vet ./...`, `go test -race` on the touched
    package, then a tight commit on a feat/* branch.
+6. feat/probe-catalog (in review, NOT yet merged): station probe catalog.
+   Package go/internal/probe (Catalog with RWMutex + lock-free Snapshot,
+   per-kind HTTP probers, Sweep scheduler, directory-source adapters) plus
+   GET /api/station-catalog.json (only when a catalog is installed) and the
+   OPT-IN --probe-directory flag (off by default; enabling it makes the
+   server sweep public receiver listings into a persistent catalog file).
+   QA: -race -count=20 clean on internal/probe, handler-mid-sweep -race
+   test in internal/web.
 5. Live-verify against real receivers only when the current task's
    owner approves the poll; never claim verification without real
    receivers or real feeds.

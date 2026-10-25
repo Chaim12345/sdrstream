@@ -31,6 +31,7 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/feeds"
 	"github.com/chaim12345/sdrstream/go/internal/gallery"
 	"github.com/chaim12345/sdrstream/go/internal/monitor"
+	"github.com/chaim12345/sdrstream/go/internal/probe"
 	"github.com/chaim12345/sdrstream/go/internal/relays"
 	"github.com/chaim12345/sdrstream/go/internal/satellites"
 	"github.com/chaim12345/sdrstream/go/internal/satnogs"
@@ -297,6 +298,7 @@ type Server struct {
 	networkDetail     string
 	logRing           *LogRing
 	feeds             *feeds.Manager
+	probeCatalog      *probe.Catalog
 	scans             []ScanStatus
 	scanIndex         map[string]int
 	scanStatePath     string
@@ -1039,6 +1041,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/live.json", s.handleLive)
 	mux.HandleFunc("/api/tune.json", s.handleTune)
 	mux.HandleFunc("/api/stations.json", s.handleStations)
+	mux.HandleFunc("/api/station-catalog.json", s.handleProbeStations)
 	mux.HandleFunc("/api/map.json", s.handleMap)
 	mux.HandleFunc("/api/tiles/", s.handleTile)
 	mux.HandleFunc("/manifest.webmanifest", handlePWAFile("manifest.webmanifest", "application/manifest+json", true))
