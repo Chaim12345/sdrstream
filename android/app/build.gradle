@@ -10,8 +10,8 @@ android {
         applicationId 'com.chaim12345.sdrstream'
         minSdk 26
         targetSdk 34
-        versionCode (project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 4)
-        versionName '0.1.3'
+        versionCode (project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 5)
+        versionName '0.1.4'
     }
 
     // The Go engine binary lives in jniLibs/<abi>/libsdrstreamd.so; it must
