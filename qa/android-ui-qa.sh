@@ -90,8 +90,8 @@ if [ "$R1" = ok ]; then
   R2=$(tapnode "$R-03c-menu-open.xml" 'text="Show UI password"')
   log "tap Show UI password: $R2"
   sleep 2; dump 03d-password-dialog  # no screenshot: the dialog shows the real password in clear
-  SHOWN=$(grep -oE 'text="Log in to the UI with:[^"]*"' "$R-03d-password-dialog.xml" | sed 's/.*&#10;&#10;\([0-9a-f]\{36\}\)&#10;.*/\1/')
   { set +x; } 2>/dev/null
+  SHOWN=$(grep -oE 'text="Log in to the UI with:[^"]*"' "$R-03d-password-dialog.xml" | sed 's/.*&#10;&#10;\([0-9a-f]\{36\}\)&#10;.*/\1/')
   case "$SHOWN" in [0-9a-f]*) echo "::add-mask::$SHOWN"; log "dialog shows a 36-hex password (masked)";; *) log "dialog did not show a password";; esac
   { set -x; } 2>/dev/null
   ONDEV=$(adb shell run-as $PKG cat shared_prefs/sdrstream.xml 2>/dev/null | sed -n 's/.*name="ui_password">\([^<]*\)<.*/\1/p')
