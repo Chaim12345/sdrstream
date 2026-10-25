@@ -93,9 +93,9 @@ if [ "$R1" = ok ]; then
   { set +x; } 2>/dev/null
   SHOWN=$(grep -oE 'text="Log in to the UI with:[^"]*"' "$R-03d-password-dialog.xml" | sed 's/.*&#10;&#10;\([0-9a-f]\{36\}\)&#10;.*/\1/')
   case "$SHOWN" in [0-9a-f]*) echo "::add-mask::$SHOWN"; log "dialog shows a 36-hex password (masked)";; *) log "dialog did not show a password";; esac
-  { set -x; } 2>/dev/null
   ONDEV=$(adb shell run-as $PKG cat shared_prefs/sdrstream.xml 2>/dev/null | sed -n 's/.*name="ui_password">\([^<]*\)<.*/\1/p')
   [ -n "$SHOWN" ] && [ "$SHOWN" = "$ONDEV" ] && log "dialog password MATCHES on-device stored password" || log "dialog password does NOT match stored password"
+  { set -x; } 2>/dev/null
   adb shell input keyevent KEYCODE_BACK; sleep 1
 fi
 
@@ -103,8 +103,8 @@ fi
 { set +x; } 2>/dev/null
 PW=$(adb shell run-as $PKG cat shared_prefs/sdrstream.xml 2>/dev/null | sed -n 's/.*name="ui_password">\([^<]*\)<.*/\1/p')
 echo "::add-mask::$PW"
-{ set -x; } 2>/dev/null
 [ -n "$PW" ] && log "on-device password exists (len ${#PW})" || log "NO on-device password found"
+{ set -x; } 2>/dev/null
 adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 5; ensure_fg
 dump 04-pre-login
 python3 - "$R-04-pre-login.xml" <<'PY' > /tmp/field.txt
@@ -176,9 +176,20 @@ else
   log "CHIPS PIXEL CHECK: FAIL (decode-targets not visible after 6 scrolls)"; exit 1
 fi
 
+# Verdict for a post-ENTER login screen dump. An EMPTY dump means the device was
+# lost mid-step - that is UNKNOWN (device lost?), never ACCEPTED. Discriminating
+# fixtures for this function live in qa/test-login-state-verdict.sh.
+login_state_verdict() { # <xml-file> <label>
+  if [ ! -s "$1" ]; then log "set-pw: $2 password -> verdict UNKNOWN (UI dump empty - device lost?)"
+  elif grep -q 'class="android.widget.EditText"' "$1"; then log "set-pw: $2 password -> still on login form (rejected)"
+  else log "set-pw: $2 password -> ACCEPTED (left login form)"; fi
+}
+
 # Set UI password flow (stale-env bug check): change it, expect new works, old rejected.
 NEWPW="qaNewPass123"
+{ set +x; } 2>/dev/null
 OLDPW="$PW"
+{ set -x; } 2>/dev/null
 edit_center() { python3 - "$1" <<'PY'
 import re,sys
 x=open(sys.argv[1],errors='ignore').read()
@@ -202,7 +213,9 @@ if [ "$S1" = ok ]; then
   sleep 25; shot 06f-after-save; dump 06f
   log "after save: engine process $(alive); toast/page text: $(grep -oE 'text="[^"]+"' $R-06f.xml | head -8 | tr '\n' ' ')"
   for TRY in old new; do
+    { set +x; } 2>/dev/null
     [ $TRY = old ] && CAND="$OLDPW" || CAND="$NEWPW"
+    { set -x; } 2>/dev/null
     dump 06g-$TRY; C=$(edit_center "$R-06g-$TRY.xml")
     if [ -n "$C" ]; then
       adb shell input tap $C; sleep 1
@@ -211,7 +224,7 @@ if [ "$S1" = ok ]; then
       { set -x; } 2>/dev/null
       adb shell input keyevent KEYCODE_ENTER; sleep 6
       shot 06h-$TRY; dump 06h-$TRY
-      if grep -q 'class="android.widget.EditText"' "$R-06h-$TRY.xml"; then log "set-pw: $TRY password -> still on login form (rejected)"; else log "set-pw: $TRY password -> ACCEPTED (left login form)"; fi
+      login_state_verdict "$R-06h-$TRY.xml" "$TRY" 
     else log "set-pw: no login field for $TRY try (maybe already logged in)"; fi
   done
 fi
@@ -228,4 +241,6 @@ adb forward tcp:18080 tcp:8080 >/dev/null
 curl -sS -m 8 http://127.0.0.1:18080/healthz > "$R-healthz.txt" 2>&1; log "healthz: $(cat $R-healthz.txt | head -c 200)"
 adb logcat -d -v threadtime > "$R-logcat.txt" 2>&1
 grep -E 'FATAL EXCEPTION|AndroidRuntime' "$R-logcat.txt" | head -20 > "$R-fatal.txt"; log "fatal lines: $(wc -l < $R-fatal.txt)"
+{ set +x; } 2>/dev/null
 adb shell run-as $PKG sh -c 'tail -40 files/engine.log 2>/dev/null' | sed "s/$PW/<pw>/g" > "$R-engine-tail.txt" 2>&1
+{ set -x; } 2>/dev/null
