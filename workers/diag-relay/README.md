@@ -1,5 +1,15 @@
 # diag-relay
 
+> Superseded: the app now sends diagnostics directly over SMTPS from the
+> device (see the "Crash diagnostics" section of the top-level README).
+> This directory is kept as tested documentation of the relay alternative:
+> the Worker + Resend design below, plus a considered variant that sends
+> SMTP straight from the Worker over Cloudflare TCP sockets
+> (`secureTransport: "on"` to `mail.cock.li:465`; outbound port 25 is
+> blocked on Workers, 465 is not). If direct-from-app SMTP ever needs a
+> server-side leg again, this is where to start.
+
+
 Receives redacted diagnostics bundles from the sdrstream Android app and
 forwards them to the diagnostics inbox via [Resend](https://resend.com).
 Runs on the Cloudflare Workers free plan (100,000 requests/day - the app
