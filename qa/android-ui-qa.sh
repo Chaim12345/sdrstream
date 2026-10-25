@@ -7,7 +7,7 @@ ADB_BIN="$(command -v adb)"; adb() { timeout 40 "$ADB_BIN" "$@"; }
 APK="$1"; LABEL="$2"; PKG=com.chaim12345.sdrstream
 OUT=qa-results; mkdir -p "$OUT"; export PATH=$PATH; R="$OUT/$LABEL"
 log() { echo "[qa] $*" | tee -a "$R-steps.txt"; }
-shot() { adb exec-out screencap -p > "$R-$1.png"; log "screenshot $1"; }
+shot() { adb exec-out screencap -p > "$R-$1.png"; if [ -s "$R-$1.png" ]; then log "screenshot $1"; else log "WARN: screenshot $1 is EMPTY (device lost?)"; fi; }
 dump() { adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; adb exec-out cat /sdcard/ui.xml > "$R-$1.xml" 2>/dev/null; }
 ensure_fg() { # relaunch and dismiss any battery dialog until the app owns focus
   for i in 1 2 3 4; do
@@ -27,6 +27,10 @@ PY
   done; log "WARN: app not in foreground"
 }
 alive() { adb shell pidof $PKG >/dev/null 2>&1 && echo alive || echo dead; }
+require_device() { # hard-fail when the emulator is gone; past this point every check is noise
+  state=$(adb get-state 2>/dev/null) || true
+  if [ "$state" != "device" ]; then log "FATAL: emulator lost (adb get-state: '${state:-no answer}') - aborting; harness verdict FAIL"; exit 1; fi
+}
 
 adb install -r "$APK" 2>&1 | tee "$R-install.txt"
 grep -q Success "$R-install.txt" || { log "INSTALL FAILED"; exit 1; }
@@ -35,6 +39,7 @@ adb shell getprop ro.build.version.release | tee "$R-android.txt"
 adb shell input keyevent KEYCODE_WAKEUP; adb shell wm dismiss-keyguard
 adb shell am start -n $PKG/.MainActivity >/dev/null
 sleep 45
+require_device
 # Dismiss the battery dialog if present ("Not now") by tapping its button via UI dump.
 dump 01-launch
 python3 - "$R-01-launch.xml" <<'PY' > /tmp/notnow.txt
@@ -121,6 +126,37 @@ else
   log "no EditText found on screen (login form not exposed)"
 fi
 
+# Decode-target chips: scroll the Overview until the Receiver panel's chip row is
+# visible, then prove it with pixels. An earlier run DOM-verified the chips but its
+# emulator died before scrolling - this makes the pixel proof a hard gate.
+log "--- decode-target chips: scroll into view ---"
+require_device; ensure_fg
+CHIPS_OK=0
+for i in 1 2 3 4 5 6; do
+  dump 06i-try$i
+  CH=$(python3 - "$R-06i-try$i.xml" <<'PY'
+import re,sys
+x=open(sys.argv[1],errors='ignore').read()
+m=re.search(r'<node[^>]*resource-id="decode-targets"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"',x)
+if not m: print("absent"); sys.exit()
+a,b,c,d=map(int,m.groups())
+print("visible" if (c-a)>0 and (d-b)>0 else "offscreen")
+PY
+)
+  log "decode-targets (try $i): $CH"
+  [ "$CH" = visible ] && { CHIPS_OK=1; break; }
+  SZ=$(adb shell wm size | sed 's/.*: //'); W=${SZ%x*}; H=${SZ#*x}
+  adb shell input swipe $((W/2)) $((H*3/4)) $((W/2)) $((H/4)) 400; sleep 2
+done
+shot 06i-decode-chips; dump 06i-decode-chips
+if [ "$CHIPS_OK" = 1 ]; then
+  BTNS=$(grep -oE 'text="(DWD RTTY [^"]+|DWD WEFAX [^"]+|Shannon VOLMET [^"]+|NAVTEX 518|OK0EU CW beacon)"' "$R-06i-decode-chips.xml" | sort -u | tr '\n' ' ')
+  log "chip buttons in frame: $BTNS"
+  if [ -n "$BTNS" ]; then log "CHIPS PIXEL CHECK: PASS"; else log "CHIPS PIXEL CHECK: FAIL (container visible but no chip buttons)"; exit 1; fi
+else
+  log "CHIPS PIXEL CHECK: FAIL (decode-targets not visible after 6 scrolls)"; exit 1
+fi
+
 # Set UI password flow (stale-env bug check): change it, expect new works, old rejected.
 NEWPW="qaNewPass123"
 OLDPW="$PW"
@@ -154,6 +190,7 @@ if [ "$S1" = ok ]; then
 fi
 
 # Lifecycle: background/foreground, then force-stop and relaunch.
+require_device
 adb shell input keyevent KEYCODE_HOME; sleep 5
 log "after HOME: $(alive)"
 adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 5; shot 07-resume

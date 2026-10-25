@@ -52,8 +52,12 @@ jobs:
           arch: x86_64
           profile: pixel_6
           script: |
-            timeout 700 bash -x qa-src/qa/android-ui-qa.sh fat.apk ui 2>&1 | tee -a qa-results-trace.txt
-            timeout 600 bash qa-src/qa/android-func-audit.sh cgo1 200 fat.apk 2>&1 | tee -a qa-results-trace.txt
+            set -o pipefail
+            QA1=0; QA2=0
+            timeout 700 bash -x qa-src/qa/android-ui-qa.sh fat.apk ui 2>&1 | tee -a qa-results-trace.txt || QA1=$?
+            timeout 600 bash qa-src/qa/android-func-audit.sh cgo1 200 fat.apk 2>&1 | tee -a qa-results-trace.txt || QA2=$?
+            echo "verdict: android-ui-qa.sh exit=$QA1 (gated); android-func-audit.sh exit=$QA2 (informational - no verdict semantics in that script yet)"
+            [ "$QA1" -eq 0 ]
       - uses: actions/upload-artifact@v4
         if: always()
         with:
