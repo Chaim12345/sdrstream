@@ -416,3 +416,27 @@ func TestEventsSurviveSnapshotAndSaveLoad(t *testing.T) {
 		t.Fatalf("reloaded events: %+v", back.Events)
 	}
 }
+
+func TestSweepWithNothingDueStillTouchesAndSaves(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	c := NewCatalog()
+	c.Update(Record{Key: "dead", Kind: KindKiwi, Reachable: false, CheckedAt: now.Add(-time.Hour), NextCheckAt: now.Add(time.Hour)})
+	s := &Scheduler{
+		Source: Source{Manual: []Record{{Key: "dead", Kind: KindKiwi}}},
+		Prober: proberFunc(func(ctx context.Context, rec *Record) {
+			t.Fatalf("not-due station must not be probed")
+		}),
+		Now:  func() time.Time { return now },
+		Path: dir + "/catalog.json",
+	}
+	if err := s.Sweep(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	if !c.UpdatedAt.Equal(now) {
+		t.Fatalf("UpdatedAt = %v, want sweep stamp %v", c.UpdatedAt, now)
+	}
+	if _, err := Load(dir + "/catalog.json"); err != nil {
+		t.Fatalf("quiet sweep did not persist: %v", err)
+	}
+}

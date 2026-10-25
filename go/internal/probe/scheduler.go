@@ -90,6 +90,15 @@ func (s *Scheduler) Sweep(ctx context.Context, c *Catalog) error {
 	}
 	sort.Strings(keys)
 	if len(keys) == 0 {
+		// Nothing due: still stamp and persist so UpdatedAt always means
+		// "last completed sweep" - a stalled scheduler is distinguishable
+		// from a quiet one, and the UI can trust the staleness signal.
+		c.Touch(s.now())
+		if s.Path != "" {
+			if err := c.Save(s.Path); err != nil {
+				return err
+			}
+		}
 		return firstErr
 	}
 

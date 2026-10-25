@@ -33,6 +33,8 @@ func (s *Server) SetProbeCatalog(c *probe.Catalog) {
 // handleProbeStations serves the station capability catalog, reachable
 // stations first: the UI and the decoder fleet read "which stations exist,
 // are they alive, what can they hear" from here instead of probing.
+// updated_at is the last COMPLETED sweep (a sweep that found nothing due
+// still counts), so a stale updated_at means the scheduler is stalled.
 func (s *Server) handleProbeStations(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	c := s.probeCatalog

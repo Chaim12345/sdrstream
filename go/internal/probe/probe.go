@@ -74,9 +74,11 @@ type Record struct {
 	ConsecFailures int           `json:"consec_failures,omitempty"`
 	LastError      string        `json:"last_error,omitempty"`
 
-	// NextCheckAt is when the monitor should probe this station again:
-	// base interval for healthy stations, doubling backoff (capped at 24h)
-	// for consecutive failures so dead receivers are not hammered.
+	// NextCheckAt is when the monitor should probe this station again.
+	// Exact schedule (base = sweep interval): healthy -> base; after
+	// consecutive failure N -> base * 2^(N-1), so the waits run
+	// base, 2*base, 4*base, ... capped at 24h. The first failure waits
+	// only the base interval; doubling begins at the second failure.
 	// Zero means due immediately (new stations).
 	NextCheckAt time.Time `json:"next_check_at,omitempty"`
 
@@ -247,9 +249,10 @@ func (c *Catalog) Get(key string) (Record, bool) {
 }
 
 // Backoff returns how long to wait before re-checking a station after
-// consecFailures consecutive failed probes: the base interval after the
-// first failure, doubling with each further failure, capped at 24h.
-// Healthy stations are scheduled with the base interval directly.
+// consecFailures consecutive failed probes: base * 2^(consecFailures-1),
+// capped at 24h - i.e. failure 1 waits base (no penalty yet), failure 2
+// waits 2*base, failure 3 waits 4*base, and so on. Healthy stations are
+// scheduled with the base interval directly (pass 0 or 1).
 func Backoff(base time.Duration, consecFailures int) time.Duration {
 	const cap = 24 * time.Hour
 	if consecFailures <= 1 {
