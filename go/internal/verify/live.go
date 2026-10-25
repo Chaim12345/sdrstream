@@ -59,7 +59,20 @@ func Text(kind, text, anchor string) Result {
 // maritimeWords are common NAVTEX/maritime-weather terms. They are reported in
 // the gate reason as supporting evidence only; the NAVTEX framing and area
 // anchors above remain the sole publication criteria.
-var maritimeWords = []string{"NAVAREA", "METAREA", "WARNING", "GALE", "STORM", "WIND", "WAVES", "SWELL", "VISIBILITY", "FORECAST", "SEA", "COAST", "MARINERS", "NAVIGATION", "LIGHT", "BUOY", "HAZARD", "CANCEL"}
+// The national 490/4209.5 kHz services broadcast in the issuing country's
+// language (Oostende: Dutch, Pinneberg: German, Corsen: French), so the
+// supporting-evidence vocabulary spans EN/NL/DE/FR. The ZCZC..NNNN framing
+// requirement is unchanged and remains the hard anchor.
+var maritimeWords = []string{
+	// English (international 518 kHz and UK national 490 kHz).
+	"NAVAREA", "METAREA", "WARNING", "GALE", "STORM", "WIND", "WAVES", "SWELL", "VISIBILITY", "FORECAST", "SEA", "COAST", "MARINERS", "NAVIGATION", "LIGHT", "BUOY", "HAZARD", "CANCEL",
+	// Dutch (Oostende national 490 kHz).
+	"SCHEEPVAART", "BOEI", "HAVEN", "WAARSCHUWING", "KUST", "ANKEREN", "VISSEN", "ZEEGEBIED", "VAARWATER", "GEDOOFD", "LICHT", "VAARWEG", "WADDEN",
+	// German (Pinneberg national 490 kHz).
+	"SEEGEBIET", "SEEWETTER", "BOJE", "HAFEN", "SEEFAHRER", "ANKERN", "STURMWARNUNG", "NEBEL", "WARN", "LEUCHTTURM", "OSTSEE", "NORDSEE", "SPERRGEBIET", "TONNE", "BAKE", "FEUERSCHIFF",
+	// French (Corsen national 490 kHz).
+	"AVIS", "TEMPETE", "NAVIGATEURS", "BALISE", "MOUILLAGE", "GOLFE",
+}
 
 // MaritimeWordHits counts distinct maritime words present in text.
 func MaritimeWordHits(text string) int {

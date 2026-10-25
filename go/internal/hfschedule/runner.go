@@ -306,7 +306,36 @@ func (r *Runner) RunOnce(ctx context.Context, entries []Entry) (*Audit, error) {
 			deadline = o.End
 		}
 		captureCtx, cancel := context.WithDeadline(ctx, deadline)
+		// context deadlines and duration timers run on the monotonic
+		// clock, which stalls when the host is suspended while the wall
+		// clock jumps ahead. Without a wall-clock check a suspended
+		// capture completes its full monotonic duration long after the
+		// slot ended, holding the receiver and eating the next slot
+		// (observed live: a 570s NAVTEX capture overran its slot by
+		// ~6 wall minutes on 2026-10-23). The watchdog wakes within
+		// seconds of a resume and cancels at the wall-clock cap.
+		wallCap := time.Now().Add(duration + 10*time.Second)
+		if o.End.Before(wallCap) {
+			wallCap = o.End
+		}
+		watchdogDone := make(chan struct{})
+		go func() {
+			tick := time.NewTicker(2 * time.Second)
+			defer tick.Stop()
+			for {
+				select {
+				case <-watchdogDone:
+					return
+				case <-tick.C:
+					if time.Now().After(wallCap) {
+						cancel()
+						return
+					}
+				}
+			}
+		}()
 		result, err := record(captureCtx, receiver, o.Entry.Target, duration)
+		close(watchdogDone)
 		cancel()
 		a.Finished = time.Now().UTC()
 		if r.Now != nil {

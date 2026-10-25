@@ -172,7 +172,19 @@ func decodeHF(ctx context.Context, target HFTarget, server string, samples16 []i
 		}
 		result.Gate = verify.CW(result.Text, target.Expect)
 	case "navtex":
-		msgs := NAVTEXDecode(samples, rate, 0)
+		// Trust the dial: the target's mark/space pair fixes the audio
+		// centre, so auto-detection only runs as a fallback. Auto-detect
+		// scans the first half-second, which can be idle carrier or noise
+		// at slot start and then locks onto garbage (verified on a live
+		// 490 kHz capture, 2026-10-22 23:20Z).
+		center := 0.0
+		if target.MarkHz > 0 && target.SpaceHz > 0 {
+			center = (target.MarkHz + target.SpaceHz) / 2
+		}
+		msgs := NAVTEXDecode(samples, rate, center)
+		if len(msgs) == 0 && center != 0 {
+			msgs = NAVTEXDecode(samples, rate, 0)
+		}
 		for _, m := range msgs {
 			result.Text += m.Raw + "\n"
 		}
