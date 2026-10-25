@@ -123,7 +123,7 @@ func TestShellWiresStationBoard(t *testing.T) {
 	if boardIdx < appIdx {
 		t.Fatal("stationboard.js must load after app.js")
 	}
-	for _, marker := range []string{`data-view="stationboard"`, `id="view-stationboard"`, `id="board-list"`, `id="board-disabled"`, `id="board-refresh"`, `Station probing is not enabled on this server.`, `--probe-directory`} {
+	for _, marker := range []string{`data-view="stationboard"`, `id="view-stationboard"`, `id="board-list"`, `id="board-disabled"`, `id="board-refresh"`, `id="board-events"`, `Station probing is not enabled on this server.`, `--probe-directory`} {
 		if !strings.Contains(string(page), marker) {
 			t.Fatal(marker)
 		}
