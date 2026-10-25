@@ -379,7 +379,7 @@ def telemetry_frames(
             payload = json.loads(response.read().decode("utf-8", "replace"))
         if isinstance(payload, dict):
             items = payload.get("results", [])
-            cursor = payload.get("next") or None
+            cursor = _cursor_token(payload.get("next"))
         else:  # plain list when unpaginated
             items = payload
             cursor = None
@@ -387,6 +387,18 @@ def telemetry_frames(
         if not cursor:
             break
     return frames[:max(limit, 0)]
+
+
+def _cursor_token(next_url: Optional[str]) -> Optional[str]:
+    """Extract the cursor token from the API's ``next`` URL.
+
+    The endpoint returns an absolute next-page URL, but its ``cursor``
+    parameter takes the token alone; passing the whole URL back is a 404.
+    """
+    if not next_url:
+        return None
+    values = urllib.parse.parse_qs(urllib.parse.urlparse(next_url).query).get("cursor")
+    return values[0] if values else None
 
 
 def _api_time(value: datetime) -> str:
