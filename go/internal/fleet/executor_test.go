@@ -79,6 +79,7 @@ func TestExecutorOpenFailureParksPair(t *testing.T) {
 	// failure so the next plan moves the job.
 	fo.failOn["hf-b"] = true
 	ex := &Executor{Planner: p, Open: fo.open, Work: okWork}
+	ex.nowFunc = func() time.Time { return testNow }
 	first := ex.RunOnce(context.Background(), fixture(), []Job{ft8job}, testNow)
 	failed := first.Assigned[0].Station.Key
 	if failed != "hf-b" {
@@ -99,6 +100,7 @@ func TestExecutorWorkFailureParksPair(t *testing.T) {
 	ex := &Executor{Planner: p, Open: fo.open, Work: func(ctx context.Context, a Assignment, src monitor.Source) error {
 		return errors.New("decode crashed")
 	}}
+	ex.nowFunc = func() time.Time { return testNow }
 	first := ex.RunOnce(context.Background(), fixture(), []Job{ft8job}, testNow)
 	failed := first.Assigned[0].Station.Key
 	second := p.Plan(fixture(), []Job{ft8job}, testNow.Add(time.Minute))

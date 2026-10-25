@@ -31,13 +31,31 @@ type Executor struct {
 	// MaxConcurrent bounds simultaneously open receivers. Default 2:
 	// every assignment holds a scarce public receiver slot.
 	MaxConcurrent int
+
+	// nowFunc stamps outcomes at COMPLETION time (test override). Nil =
+	// time.Now. QA: cooldown must start when the attempt finished, not
+	// when the plan was made, or long work silently shortens the park.
+	nowFunc func() time.Time
 }
 
 // RunOnce plans jobs against the snapshot and executes each assignment:
 // open the station's source, run the work, close the source (always),
-// record the outcome. Sources are closed even when open succeeded but
-// work failed; a half-run assignment never leaks a receiver slot.
+// record the outcome at completion time. Sources are closed even when
+// open succeeded but work failed or panicked; a half-run assignment
+// never leaks a receiver slot.
+//
+// RunOnce BLOCKS until every assignment's work returns. Long-running
+// decodes therefore block the planning loop: campaign designers must
+// slice work into bounded pieces (or accept the cadence) rather than
+// handing RunOnce an unbounded listen.
 func (e *Executor) RunOnce(ctx context.Context, snap probe.Snapshot, jobs []Job, now time.Time) Plan {
+	if e.Planner == nil {
+		return Plan{Unplaced: append([]Job(nil), jobs...)}
+	}
+	nowFn := e.nowFunc
+	if nowFn == nil {
+		nowFn = time.Now
+	}
 	plan := e.Planner.Plan(snap, jobs, now)
 	conc := e.MaxConcurrent
 	if conc <= 0 {
@@ -51,14 +69,35 @@ func (e *Executor) RunOnce(ctx context.Context, snap probe.Snapshot, jobs []Job,
 		go func(a Assignment) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			var src monitor.Source
 			ok := false
-			src, err := e.Open(ctx, a)
-			if err == nil {
+			// A panic in Open/Work must not kill the engine: recover,
+			// close whatever opened, record the failure (QA review).
+			func() {
+				defer func() { _ = recover() }()
+				if ctx.Err() != nil {
+					return // shutdown before we even open
+				}
+				if e.Open == nil || e.Work == nil {
+					return // misconfigured executor: counts as failure below
+				}
+				var err error
+				src, err = e.Open(ctx, a)
+				if err != nil || src == nil {
+					return
+				}
 				err = e.Work(ctx, a, src)
+				ok = err == nil
+			}()
+			if src != nil {
 				_ = src.Close()
 			}
-			ok = err == nil
-			e.Planner.RecordOutcome(a.Job.ID, a.Station.Key, ok, now)
+			// Context cancellation is NEUTRAL: a shutdown is not a station
+			// failure and must not park the (job, station) pair.
+			if ctx.Err() != nil {
+				return
+			}
+			e.Planner.RecordOutcome(a.Job.ID, a.Station.Key, ok, nowFn())
 		}(a)
 	}
 	wg.Wait()
