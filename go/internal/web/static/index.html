@@ -45,6 +45,7 @@
   <button data-view="captures"><span class="ico">&#9834;</span><span class="lbl">Captures</span></button>
   <button data-view="scan"><span class="ico">&#8981;</span><span class="lbl">Scan</span></button>
   <button data-view="stations"><span class="ico">&#8962;</span><span class="lbl">Stations</span></button>
+  <button data-view="stationboard"><span class="ico">&#9783;</span><span class="lbl">Catalog</span></button>
   <button data-view="satellites"><span class="ico">&#10022;</span><span class="lbl">Satellites</span></button>
   <button data-view="feeds"><span class="ico">&#9788;</span><span class="lbl">Live data</span></button>
   <button data-view="settings"><span class="ico">&#9881;</span><span class="lbl">Settings</span></button>
@@ -353,6 +354,38 @@
     <button id="station-more" class="btn" hidden>show more</button>
   </section>
 
+  <section id="view-stationboard" class="view" aria-label="Station board">
+    <h2>Station board</h2>
+    <p class="muted">Public SDR receivers from the server probe catalog: who is alive, what each one can hear. The server sweeps; this page only reads the catalog and never contacts a station itself.</p>
+    <div id="board-disabled" class="panel" hidden>
+      <b>Station probing is not enabled on this server.</b>
+      <p class="muted">The catalog endpoint answers, but no probe sweep is running. Start the server with --probe-directory to build the station catalog.</p>
+    </div>
+    <div id="board-enabled">
+      <div class="stat-cards">
+        <div class="stat"><div class="stat-value" id="board-total">&ndash;</div><div class="stat-label">stations</div></div>
+        <div class="stat good"><div class="stat-value" id="board-alive">&ndash;</div><div class="stat-label">alive</div></div>
+        <div class="stat"><div class="stat-value" id="board-dead">&ndash;</div><div class="stat-label">dead</div></div>
+      </div>
+      <p class="muted" id="board-updated"></p>
+      <div class="toolbar" role="group" aria-label="Filter by receiver type">
+        <button class="chip on" data-bkind="">all types</button>
+        <button class="chip" data-bkind="kiwi">KiwiSDR</button>
+        <button class="chip" data-bkind="openwebrx">OpenWebRX</button>
+        <button class="chip" data-bkind="websdr">WebSDR</button>
+      </div>
+      <div class="toolbar" role="group" aria-label="Filter by reachability">
+        <button class="chip on" data-breach="">all</button>
+        <button class="chip" data-breach="alive">alive</button>
+        <button class="chip" data-breach="dead">dead</button>
+        <button id="board-refresh" class="chip" type="button">refresh</button>
+      </div>
+      <p id="board-state" role="status" aria-live="polite"></p>
+      <div id="board-list" class="cards"></div>
+      <button id="board-more" class="btn" hidden>show more</button>
+    </div>
+  </section>
+
   <section id="view-feeds" class="view" aria-label="Live data">
     <h1>Live public data</h1>
     <p class="muted">Independent internet feeds, not decodes from your receiver. Provider observation times are shown separately from fetch times. Cached on the server, with no extra upstream requests when you open this view.</p>
@@ -477,5 +510,6 @@
 <script src="/static/app.js"></script>
 <script src="/static/msglog.js"></script>
 <script src="/static/history.js"></script>
+<script src="/static/stationboard.js"></script>
 </body>
 </html>
