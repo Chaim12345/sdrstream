@@ -52,6 +52,14 @@ Every other `feature/*`, `fix/*`, `recover/*`, `licence-agpl`,
 `acars-cleanroom` and `openhands/*` branch is already merged into
 `feat/ledger-on-pr5`.
 
+## 1a. Open items (integration lane)
+
+- 2026-10-25: android-ui-qa harness robustness - fail the run when the
+  emulator is lost mid-run (run 40211520353 concluded SUCCESS with
+  "device not found" x12 and 0-byte screenshots), scroll to the Receiver
+  panel and screenshot the decode-target chip row (verified via DOM dump
+  only). Owner: integration lane, after OpenHands findings land.
+
 ## 2. The product and its stated end goal
 
 Vision (from `AGENTS.md` + `go/docs/SCAN-DESIGN.md`): sdrstream finds active
