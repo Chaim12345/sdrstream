@@ -40,6 +40,7 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/military"
 	"github.com/chaim12345/sdrstream/go/internal/monitor"
 	"github.com/chaim12345/sdrstream/go/internal/openwebrx"
+	"github.com/chaim12345/sdrstream/go/internal/probe"
 	"github.com/chaim12345/sdrstream/go/internal/rdio"
 	"github.com/chaim12345/sdrstream/go/internal/relays"
 	"github.com/chaim12345/sdrstream/go/internal/satellite"
@@ -1519,6 +1520,7 @@ func cmdWeb(args []string) error {
 	scanStations := fs.String("scan-stations", "", "comma-separated public receivers for bounded parallel scan (one connection per receiver)")
 	scanOpenDirectory := fs.Bool("scan-open-directory", false, "scan OpenWebRX and WebSDR entries from receiverbook")
 	scanKiwiDirectory := fs.Bool("scan-kiwi-directory", false, "scan free-slot KiwiSDR entries from cached public directory")
+	probeDirectory := fs.Bool("probe-directory", false, "sweep public receiver directories into a persistent station capability catalog (state dir probe-catalog.json, served at /api/station-catalog.json)")
 	scanDirectoryRefresh := fs.Duration("scan-directory-refresh", time.Hour, "re-fetch receiver directories this often; 0 disables refresh")
 	scanRecordAll := fs.Bool("scan-record-all", false, "archive audio for every detected activity, including unverified/noise/carrier clips")
 	scanState := fs.String("scan-state", defaultRotationStatePath(), "file that carries HF target / OpenWebRX profile rotation across restarts (empty disables)")
@@ -1665,6 +1667,30 @@ func cmdWeb(args []string) error {
 		feedsCtx, feedsCancel := context.WithCancel(ctx)
 		defer feedsCancel()
 		feeds.Start(feedsCtx, feedsManager, *feedsLat, *feedsLon, *aisKey)
+	}
+	if *probeDirectory {
+		catalogPath := web.StateFile("probe-catalog.json")
+		catalog, err := probe.Load(catalogPath)
+		if err != nil {
+			log.Printf("probe: catalog unreadable, starting empty (%v)", err)
+			catalog = probe.NewCatalog()
+		}
+		probeCacheDir := filepath.Join(os.Getenv("HOME"), ".cache", "sdrstream")
+		if stateDir := os.Getenv("SDRSTREAM_STATE_DIR"); stateDir != "" {
+			probeCacheDir = filepath.Join(stateDir, "cache")
+		}
+		sched := &probe.Scheduler{
+			Source: probe.Source{
+				OpenDirectory: probe.OpenDirectorySource,
+				KiwiDirectory: probe.KiwiDirectorySource(kiwisdr.NewLoader(probeCacheDir)),
+			},
+			Prober:   probe.NewHTTPProber(),
+			Path:     catalogPath,
+			Interval: *scanDirectoryRefresh,
+		}
+		server.SetProbeCatalog(catalog)
+		go sched.Run(ctx, catalog)
+		log.Printf("probe: station capability sweep every %s -> %s", sched.Interval, catalogPath)
 	}
 	roster := newScanRoster(log.Printf)
 	if strings.TrimSpace(*scanStations) != "" {

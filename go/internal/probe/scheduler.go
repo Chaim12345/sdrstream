@@ -26,6 +26,9 @@ type Scheduler struct {
 	Workers  int           // concurrent probes per sweep; default 16
 	Interval time.Duration // time between sweeps; default 1h
 	Now      func() time.Time
+	// Path, when set, persists the catalog after every completed sweep so
+	// a restart starts from the last known station capabilities.
+	Path string
 
 	sweepMu sync.Mutex
 }
@@ -114,6 +117,11 @@ func (s *Scheduler) Sweep(ctx context.Context, c *Catalog) error {
 	close(jobs)
 	wg.Wait()
 	c.UpdatedAt = s.now()
+	if s.Path != "" {
+		if err := c.Save(s.Path); err != nil {
+			return err
+		}
+	}
 	return firstErr
 }
 
