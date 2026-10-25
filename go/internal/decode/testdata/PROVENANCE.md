@@ -48,11 +48,14 @@ License check result for the FT8/JT9 corpus (2026-10-24):
   repo-wide MIT license (see ft8_lib.LICENSE). The 191111_* wavs and their
   .txt WSJT-X decode lists are byte-identical to upstream test/wav/
   (sha256-verified against raw.githubusercontent.com/kgoba/ft8_lib/master
-  on 2026-10-24). The test_01..06 wavs are the ft8_lib websdr test
-  recordings as committed in repo commit 8428a81 ("Licenses: ft8_lib
-  recordings MIT"); they are not byte-identical to the current upstream
-  websdr_test*.wav files, so they are likely an earlier upstream revision -
-  same source project, same MIT license.
+  on 2026-10-24). The test_01..06 wav+txt pairs are the ft8_lib websdr
+  test recordings from upstream test/wav/20m_busy/: BYTE-IDENTICAL to
+  current upstream master (git blob sha1 match for all 12 files against
+  github.com/kgoba/ft8_lib @ 9fec6ca, verified 2026-10-25). An earlier
+  note claimed they matched only "an earlier upstream revision" and cited
+  commit 8428a81 - that commit does not exist upstream; the mismatch was
+  a comparison against the wrong upstream filenames (websdr_test*.wav
+  instead of 20m_busy/test_0*), and the claim is corrected here.
 - **live_websdr_utwente_7074kHz_20261022T052841Z.wav**: recorded by the
   sdrstream team from the public Twente WebSDR; own recording, no
   reference list (LDPC+CRC-14 validity gates it in ft8_test.go).

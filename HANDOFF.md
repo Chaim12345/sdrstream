@@ -301,9 +301,12 @@ Code-owned follow-ups for a future lane; none block the current tip.
    exemptions fail, and an allowlisted line that starts reproducing is
    logged. Version-sensitivity at the margins: 2.7.0 reproduces RX3ASQ
    but misses 6 other, mostly stronger-signal lines.
-3. **test_01..06 upstream-revision claim unproven.** The pinned files match
-   an EARLIER upstream revision of the same MIT project; verify against
-   upstream history or drop the revision claim from PROVENANCE.md.
+3. ~~test_01..06 upstream-revision claim unproven~~ RESOLVED 2026-10-25:
+   all 12 pinned files (6 wav + 6 txt) are BYTE-IDENTICAL (git blob sha1)
+   to current upstream master test/wav/20m_busy/ @ 9fec6ca. The "earlier
+   revision" claim came from comparing against the wrong upstream
+   filenames (websdr_test*.wav); the cited commit 8428a81 does not exist
+   upstream. PROVENANCE.md and the manifest provenance strings corrected.
 
 ## 8. Running it
 
