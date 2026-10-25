@@ -14,3 +14,15 @@ Data: LibriSpeech dev-clean, real human read speech with true transcripts (14 ut
 | simulated radio 12 dB SNR, 15 s gaps (8 files, 120 words) | 40.0% | 25.8% |
 
 At the old 0.6 fallback threshold the fallback never fired and WER matched the baseline (26.5% vs 25.5%), so the gain comes from the fallback and silence removal, and the threshold was raised to 0.8. Mean confidence of files with WER<=10%: 0.89, files above: 0.81 (a weak but real signal). Small sample; not yet validated on real recorded radio audio.
+
+## Hosted vs local (28 LibriSpeech dev-clean utterances, 525 words, human read speech)
+Radio = SIMULATED channel (300-2800 Hz band-pass, 8 dB SNR white noise, 3 s noise lead-in and tail). NIM backends via `cmd/nimasr` (branch feature/nim-asr-whisper, commit 41f08f4); Whisper-large-v3 run with `-lang en`. Seconds are wall clock for the whole set (hosted includes network).
+
+| system | clean WER | simulated radio 8 dB WER |
+|---|---|---|
+| local tiny.en, beam 5 (baseline) | 6.7% | 24.2% |
+| local tiny.en + VAD/chunking + base.en fallback (asr) | 6.5% | 20.2% |
+| NIM Parakeet | 3.6% | 13.3% |
+| NIM Whisper large-v3 | 4.0% | 7.0% |
+
+Not real radio audio. Single run, fixed noise seed, one speaker set; differences under about 1 point on clean audio are noise.
