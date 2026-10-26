@@ -59,11 +59,16 @@ func DialKiwiIQ(ctx context.Context, cfg KiwiIQConfig) (*KiwiIQClient, error) {
 	if err := cli.Connect(ctx); err != nil {
 		return nil, err
 	}
-	if err := cli.Tune(ctx, cfg.Frequency, "iq"); err != nil {
+	c := &KiwiIQClient{cli: cli, started: time.Now(), maxTime: cfg.MaxDuration}
+	if cfg.Frequency == 0 {
+		// Monitor-style use: the first SetFrequency tunes. The rate is
+		// learned from MSG frames as they arrive.
+		return c, nil
+	}
+	if err := c.SetFrequency(cfg.Frequency); err != nil {
 		cli.Close()
 		return nil, err
 	}
-	c := &KiwiIQClient{cli: cli, started: time.Now(), maxTime: cfg.MaxDuration}
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if c.maxTime > 0 && time.Since(c.started) >= c.maxTime {
@@ -126,6 +131,26 @@ func (c *KiwiIQClient) noteRate(text string) {
 	}
 }
 
+// WaitRate reads frames until the server's sample-rate announcement
+// arrives or d elapses. Needed when the dial deferred tuning: the MSG
+// carrying the rate may not have been read yet.
+func (c *KiwiIQClient) WaitRate(d time.Duration) (int, error) {
+	deadline := time.Now().Add(d)
+	for c.SampleRate() == 0 {
+		if !time.Now().Before(deadline) {
+			return 0, fmt.Errorf("kiwisdr: no sample-rate announcement within %v", d)
+		}
+		kind, data, err := c.cli.ReadFrame()
+		if err != nil {
+			return 0, err
+		}
+		if _, err := c.handle(kind, data); err != nil {
+			return 0, err
+		}
+	}
+	return c.SampleRate(), nil
+}
+
 // SampleRate is the rate the server announced, 0 until known.
 func (c *KiwiIQClient) SampleRate() int { c.mu.Lock(); defer c.mu.Unlock(); return c.rate }
 
@@ -153,6 +178,11 @@ func (c *KiwiIQClient) ReadSamples(buf []complex64) (int, error) {
 	n := copy(buf, c.pending)
 	c.pending = c.pending[n:]
 	return n, nil
+}
+
+// SetFrequency retunes the session's channel, keeping IQ mode.
+func (c *KiwiIQClient) SetFrequency(hz int64) error {
+	return c.cli.Tune(context.Background(), hz, "iq")
 }
 
 // Close ends the session; safe to call more than once.
