@@ -111,3 +111,11 @@ User-Agent string, and a loopback fake-server test.
   `bandplans.jsx` of the same upstream commit. Allocation ranges are public
   facts; extra rows (airband, marine VHF, NOAA weather, NAVTEX) were added
   here. Canvas code is new; no upstream source text was copied.
+## sgoudelis/ground-station (design reference, GPL-3.0)
+
+`go/internal/passplan` re-implements, independently in Go, the pass-observation
+scheduling rules of ground-station (pinned 351631d3066b,
+`backend/observations/{constants,conflicts,generator}.py`): peak-elevation
+filter, task window from elevation crossing, +/-5 min overlap tolerance,
+shared-resource conflicts, priority/skip/force strategies, status lifecycle.
+No upstream source text was copied. Upstream is GPL-3.0; sdrstream is AGPL-3.0.

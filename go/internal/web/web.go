@@ -289,6 +289,7 @@ type Server struct {
 	mu          sync.Mutex
 	decodeMu    sync.Mutex
 	satsched    interface{ StatusesJSON() interface{} }
+	passplan    interface{ TimelineJSON() interface{} }
 	captures    []Capture
 	passes      []PassInfo
 	gallery     []gallery.Item
@@ -1113,6 +1114,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/satellites.json", s.handleSatellites)
 	mux.HandleFunc("/api/passes.json", s.handlePasses)
 	mux.HandleFunc("/api/satfollow.json", s.handleSatfollow)
+	mux.HandleFunc("/api/passplan.json", s.handlePassplan)
 	mux.HandleFunc("/api/observations.json", s.handleObservations)
 	mux.HandleFunc("/api/gallery.json", s.handleGallery)
 	mux.HandleFunc("/api/test-fixtures.json", s.handleTestFixtures)

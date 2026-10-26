@@ -1704,6 +1704,7 @@ func cmdWeb(args []string) error {
 	defer ledger.Close()
 	feedsManager.SetLedger(ledger)
 	server.SetFeeds(feedsManager)
+	startPassplan(ctx, server, *feedsLat, *feedsLon) // web.New above already filled the TLE cache (loadPasses)
 	if !*noFeeds {
 		feedsCtx, feedsCancel := context.WithCancel(ctx)
 		defer feedsCancel()
