@@ -82,6 +82,11 @@ type Server struct {
 	// resolves and checks the address at connect time and refuses private,
 	// loopback and link-local targets.
 	NetDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+
+	// InsecureTLS turns off certificate verification for https receivers. The
+	// default (false) verifies, which is right for anything found in a public
+	// directory. Upstream's own client always skips verification.
+	InsecureTLS bool
 }
 
 // redact removes the session password from text that may reach a log or an
@@ -160,9 +165,12 @@ func (s *Server) client() *http.Client {
 			CheckRedirect: noRedirect,
 			Transport: &http.Transport{
 				DialContext:     s.NetDialContext,
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: s.InsecureTLS}, //nolint:gosec
 			},
 		}
+	}
+	if s.InsecureTLS {
+		return insecureHTTP
 	}
 	return defaultHTTP
 }
@@ -171,10 +179,15 @@ func (s *Server) client() *http.Client {
 // send the session password to wherever it points.
 func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
-// defaultHTTP skips certificate verification, as the C bridge does
-// (LCCSCF_ALLOW_SELFSIGNED and no hostname check): receivers behind
-// self-signed certificates are common in this project's deployments.
+// defaultHTTP verifies certificates. insecureHTTP is for receivers behind
+// self-signed certificates, chosen explicitly with Server.InsecureTLS.
 var defaultHTTP = &http.Client{
+	Timeout:       10 * time.Second,
+	CheckRedirect: noRedirect,
+	Transport:     &http.Transport{Proxy: http.ProxyFromEnvironment},
+}
+
+var insecureHTTP = &http.Client{
 	Timeout:       10 * time.Second,
 	CheckRedirect: noRedirect,
 	Transport: &http.Transport{

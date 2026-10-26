@@ -75,7 +75,7 @@ func (s *Server) DialIQ(ctx context.Context, sessionID string, freqHz int64, khz
 	d := websocket.Dialer{
 		Proxy:            http.ProxyFromEnvironment,
 		HandshakeTimeout: 10 * time.Second,
-		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // as the C bridge
+		TLSClientConfig:  &tls.Config{InsecureSkipVerify: s.InsecureTLS}, //nolint:gosec
 		ReadBufferSize:   64 << 10,
 	}
 	if s.NetDialContext != nil {
