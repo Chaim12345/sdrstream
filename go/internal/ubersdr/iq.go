@@ -78,6 +78,10 @@ func (s *Server) DialIQ(ctx context.Context, sessionID string, freqHz int64, khz
 		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // as the C bridge
 		ReadBufferSize:   64 << 10,
 	}
+	if s.NetDialContext != nil {
+		d.Proxy = nil
+		d.NetDialContext = s.NetDialContext
+	}
 	h := http.Header{}
 	h.Set("User-Agent", UserAgent)
 	ws, resp, err := d.DialContext(ctx, s.IQURL(sessionID, freqHz, khz, minMargin), h)
@@ -86,9 +90,9 @@ func (s *Server) DialIQ(ctx context.Context, sessionID string, freqHz int64, khz
 			if resp.StatusCode == http.StatusTooManyRequests {
 				return nil, fmt.Errorf("websocket: %w", ErrRateLimited)
 			}
-			return nil, fmt.Errorf("websocket: %w (HTTP %d)", err, resp.StatusCode)
+			return nil, fmt.Errorf("websocket: %s (HTTP %d)", s.redact(err.Error()), resp.StatusCode)
 		}
-		return nil, fmt.Errorf("websocket: %w", err)
+		return nil, fmt.Errorf("websocket: %s", s.redact(err.Error()))
 	}
 	ws.SetReadLimit(8 << 20)
 	return &IQConn{ws: ws, dec: pcmv4.NewPCMv4StreamDecoder()}, nil
