@@ -12,6 +12,11 @@ func (s *Server) SetPassplan(provider interface{ TimelineJSON() interface{} }) {
 
 // handlePassplan serves GET /api/passplan.json: the planned observations.
 func (s *Server) handlePassplan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	s.mu.Lock()
 	provider := s.passplan
 	s.mu.Unlock()

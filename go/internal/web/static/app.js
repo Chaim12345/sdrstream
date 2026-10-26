@@ -200,9 +200,16 @@ async function refreshStatus() {
     renderStatCards(status);
     renderNextPass(status);
     renderPasses(status);
+    refreshObservationPlan();
     renderCaptures(status);
     renderHealth();
   } catch (err) { el('msg').textContent = 'status unavailable: ' + err; }
+}
+
+async function refreshObservationPlan() {
+  if (!window.SDRPassplan) return;
+  try { window.SDRPassplan.render(await fetchJSON('/api/passplan.json')); }
+  catch (err) { window.SDRPassplan.render(null, String(err && err.message || err)); }
 }
 
 /* ---------- passes view ---------- */

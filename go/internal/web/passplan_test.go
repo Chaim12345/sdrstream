@@ -50,3 +50,12 @@ func TestPassplanHandlerServesOptionalInfo(t *testing.T) {
 		t.Fatal("info must be absent for providers without it")
 	}
 }
+
+func TestPassplanReadOnly(t *testing.T) {
+	s := &Server{}
+	rec := httptest.NewRecorder()
+	s.handlePassplan(rec, httptest.NewRequest("POST", "/api/passplan.json", nil))
+	if rec.Code != 405 || rec.Header().Get("Allow") != "GET" {
+		t.Fatalf("%d %v", rec.Code, rec.Header())
+	}
+}

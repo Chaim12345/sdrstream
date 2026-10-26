@@ -137,7 +137,8 @@ const rx = byId['rxproof-list'];
 check('proof with receiver names it', texts(rx).includes('kiwi.example:8073'));
 check('proof without receiver says not recorded', texts(rx).includes('receiver not recorded'));
 check('proof with unknown capture source says so', texts(rx).includes('provenance: source not recorded'));
-check('proof with live capture source says recorded by this receiver', texts(rx).includes('provenance: recorded by this receiver'));
+check('proof with live capture source names sdrstream recorder and external receiver', texts(rx).includes('provenance: live capture recorded by this sdrstream (from the receiver named above)'));
+check('proof does not claim receiver is recorder', !texts(rx).includes('provenance: recorded by this receiver'));
 
 
 // --- renderActivity summary: ui-features' verdict filter surfaces when present ---
