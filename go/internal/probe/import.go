@@ -52,7 +52,8 @@ func importReachable(r LedgerRow) bool {
 
 // ImportLedger reads an rxprobe JSONL ledger and upserts one Record per
 // row. Returns the number of rows applied. Malformed rows abort the import:
-// a half-imported test batch would misstate what was verified.
+// a half-imported test batch would misstate what was verified. updated_at
+// is touched on success so the UI does not show "catalog updated unknown".
 func (c *Catalog) ImportLedger(path string) (int, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -90,5 +91,11 @@ func (c *Catalog) ImportLedger(path string) (int, error) {
 		c.Update(rec)
 		n++
 	}
-	return n, sc.Err()
+	if err := sc.Err(); err != nil {
+		return n, err
+	}
+	if n > 0 {
+		c.Touch(time.Now().UTC())
+	}
+	return n, nil
 }
