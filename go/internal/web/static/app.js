@@ -210,6 +210,7 @@ function renderPasses(status) {
   const box = el('passes-list');
   const passes = (status.passes || []).slice().sort((a, b) => new Date(a.rise) - new Date(b.rise));
   box.textContent = '';
+  if (window.renderPassTimeline) window.renderPassTimeline(passes);
   if (!passes.length) { setEmpty(box, 'no passes predicted'); return; }
   const now = Date.now();
   passes.slice(0, 60).forEach(p => {
@@ -268,11 +269,41 @@ const fmtDuration = sec => {
   return (m ? m + 'm ' : '') + r + 's';
 };
 
+/* Player for one archived clip. preload=metadata makes the browser read the
+   WAV header so the control shows the real length instead of 0:00 (a range
+   request for the header only, not the whole file). The line under it
+   states what the player actually reported and flags a disagreement with the
+   header-derived length; a load failure is shown, never left silent. Playback
+   itself is only claimed after the browser fires "playing". */
+function captureAudio(url, label, headerSec) {
+  const wrap = document.createElement('div'); wrap.className = 'capture-audio';
+  const audio = document.createElement('audio');
+  audio.controls = true; audio.preload = 'metadata'; audio.src = url;
+  audio.setAttribute('aria-label', 'listen to ' + label);
+  const note = document.createElement('div'); note.className = 'muted capture-audio-note';
+  const hdr = fmtDuration(headerSec);
+  note.textContent = hdr ? 'length from WAV header: ' + hdr + ' (player not yet loaded)' : 'length not recorded in header';
+  audio.addEventListener('loadedmetadata', () => {
+    const d = audio.duration;
+    if (!isFinite(d) || d <= 0) { note.textContent = 'player reports no usable length' + (hdr ? '; WAV header says ' + hdr : ''); return; }
+    const pl = fmtDuration(d);
+    note.textContent = 'player length ' + pl + (hdr && Math.abs(d - headerSec) > 2 ? ' - differs from WAV header (' + hdr + ')' : ' - matches WAV header');
+  });
+  audio.addEventListener('playing', () => { note.dataset.played = '1'; });
+  audio.addEventListener('error', () => {
+    const e = audio.error;
+    note.textContent = 'audio failed to load' + (e && e.message ? ': ' + e.message : (e ? ' (media error ' + e.code + ')' : ''));
+  });
+  wrap.append(audio, note);
+  wrap.audio = audio;
+  return wrap;
+}
+
 // One honest provenance label per capture, shared by the card line
 // and the proof panel: the explicit sidecar class verbatim, unknown
 // stated plainly, never guessed.
 function captureProvenance(c) {
-  return c.source === 'live' ? 'recorded live from the listed receiver (not synthetic)'
+  return c.source === 'live' ? 'live capture recorded by this sdrstream (from the receiver named above)'
     : c.source === 'test-fixture' ? 'test fixture (synthetic - not a reception)'
     : c.source ? c.source
     : 'source not recorded';
@@ -588,11 +619,9 @@ function renderCaptures(status) {
       card.appendChild(prov);
       if (c.decode) { const d=document.createElement('div'); d.className='detail'; d.textContent=c.decode; card.appendChild(d); }
       if (c.url) {
-        const audio = document.createElement('audio');
-        audio.controls = true; audio.preload = 'none'; audio.src = c.url;
-        audio.setAttribute('aria-label', 'listen to ' + (c.satellite || 'capture'));
-        card.appendChild(audio);
-        card.appendChild(recordButtonFor(audio));
+        const player = captureAudio(c.url, c.satellite || 'capture', c.samples && c.rate ? c.samples / c.rate : 0);
+        card.appendChild(player);
+        card.appendChild(recordButtonFor(player.audio));
         const open = document.createElement('div'); open.style.marginTop = '6px';
         open.appendChild(link(c.url, c.path));
         card.appendChild(open);
@@ -1001,6 +1030,8 @@ function drawSpectrum(bins, centre, span) {
     }
   }
   drawBookmarkFlags(ctx, w, centre, span, ratio);
+  if (window.SDRBandPlan) window.SDRBandPlan.draw(ctx, w, h, centre, span, ratio);
+  window.redrawSpectrum = () => drawSpectrum(bins, centre, span);
   el('spec-lo').textContent = mhz(centre - span / 2);
   el('spec-mid').textContent = mhz(centre);
   el('spec-hi').textContent = mhz(centre + span / 2);
@@ -1116,6 +1147,7 @@ function activityCard(a, fresh) {
     level.textContent = a.level_db.toFixed(0) + ' dB' + (a.bandwidth_hz ? ' · ' + (a.bandwidth_hz / 1000).toFixed(0) + ' kHz' : '');
     rowEl.appendChild(level);
   }
+  if (window.SDRCategory) { const t = window.SDRCategory.tag(a); if (t) rowEl.appendChild(t); }
   card.appendChild(rowEl);
   // Provenance is stated on every card: the receiver a decode came from,
   // or that no source was recorded - never guessed or silently omitted.
@@ -1135,6 +1167,8 @@ function activityCard(a, fresh) {
     const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = a.detail;
     card.appendChild(detail);
   }
+  // Optional machine English translation, always after the original text.
+  if (window.SDRTranslation) { const tr = window.SDRTranslation.render(a); if (tr) card.appendChild(tr); }
   // Verdict precedence matches activityGateVerdict (ui-features): a
   // recorded rejection outranks everything - a repeated RecordGate can
   // leave both fields set, and the card must agree with the filter.
@@ -1176,6 +1210,7 @@ activityReset.type = 'button'; activityReset.className = 'chip'; activityReset.t
 verdictFilter.after(activityReset);
 activityReset.addEventListener('click', () => {
   activityKind = ''; activityMode = ''; activitySearch = ''; activityWindowSec = 0; activityVerdict = ''; activityLimit = 0;
+  if (window.SDRCategory) window.SDRCategory.reset();
   el('activity-search').value = ''; el('activity-mode').value = ''; el('activity-window').value = ''; verdictFilter.value = '';
   document.querySelectorAll('[data-kind]').forEach(b => b.classList.toggle('on', b.dataset.kind === ''));
   renderActivity();
@@ -1190,6 +1225,7 @@ function filteredActivity() {
   const cutoff = activityWindowSec ? Date.now() - activityWindowSec * 1000 : 0;
   return activityItems.filter(a => {
     if (activityKind && a.kind !== activityKind) return false;
+    if (window.SDRCategory && !window.SDRCategory.match(a)) return false;
     if (activityMode && (a.mode || '') !== activityMode) return false;
     if (activityVerdict && activityGateVerdict(a) !== activityVerdict) return false;
     if (cutoff && !(new Date(a.started).getTime() >= cutoff)) return false;
@@ -1218,6 +1254,7 @@ function renderModeOptions() {
 }
 function renderActivity() {
   renderModeOptions();
+  if (window.SDRCategory) window.SDRCategory.update(activityItems);
   const full = filteredActivity();
   const limit = activityLimit || +settings.pageSize || DEFAULT_SETTINGS.pageSize;
   const feed = el('feed');
@@ -1233,6 +1270,8 @@ function renderActivity() {
   if (!more.hidden) more.textContent = 'show ' + Math.min(limit, full.length - limit) + ' more of ' + full.length;
   const active = [];
   if (activityKind) active.push('kind ' + activityKind);
+  if (window.SDRCategory && window.SDRCategory.state.cat) active.push('category ' + window.SDRCategory.state.cat);
+  if (window.SDRCategory && window.SDRCategory.state.hideGuesses) active.push('frequency guesses hidden');
   if (activityMode) active.push('decoder ' + activityMode);
   if (activityWindowSec) active.push('time window');
   if (activitySearch.trim()) active.push('search');

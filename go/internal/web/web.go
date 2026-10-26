@@ -818,7 +818,7 @@ func (s *Server) listCaptures() []Capture {
 			sidecar, err = os.ReadFile(path + ".txt")
 		}
 		if err == nil {
-			for _, line := range strings.Split(string(sidecar), "\n") {
+			for _, line := range strings.Split(strings.ReplaceAll(string(sidecar), "\r\n", "\n"), "\n") {
 				switch {
 				case strings.HasPrefix(line, "frequency_hz="):
 					freq, _ = strconv.ParseFloat(strings.TrimPrefix(line, "frequency_hz="), 64)
@@ -903,7 +903,7 @@ func (s *Server) listCaptures() []Capture {
 		// raw text is never mis-listed as a capture proof.
 		if sidecar, err := os.ReadFile(filepath.Join(s.capturesDir, name)); err == nil {
 			known := false
-			for _, line := range strings.Split(string(sidecar), "\n") {
+			for _, line := range strings.Split(strings.ReplaceAll(string(sidecar), "\r\n", "\n"), "\n") {
 				switch {
 				case strings.HasPrefix(line, "frequency_hz="):
 					known = true

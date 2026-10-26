@@ -24,6 +24,7 @@ Exit status is 1 when any file has an error. Warnings print but do not fail.
 | crosscheck | see below | independent cross-check facet |
 | crosscheck_ref | text | what the cross-check compared against |
 | crosscheck_detail | text | how it compared, method and limits |
+| source | text | provenance class: `live` = recorded live by this sdrstream instance from the receiver named in `receiver` (says nothing about who owns that receiver), `test-fixture` = synthetic, `satnogs` = imported; omitted by pre-field sidecars (UI shows "source not recorded", never guessed) |
 | started | RFC3339 | capture start, UTC |
 | duration_sec | number >= 0 | clip length |
 | verified | `true` or `false` | legacy summary flag: the live gate passed |

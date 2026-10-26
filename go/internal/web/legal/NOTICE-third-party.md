@@ -96,3 +96,18 @@ Adapted from `clients/hpsdr-go` in https://github.com/madpsy/ka9q_ubersdr
 `pcmv4` protocol-4 decoder (with the encoder used only by tests). Dropped: the
 mDNS LAN discovery (needs an extra dependency). Changed: import paths, the
 User-Agent string, and a loopback fake-server test.
+
+## sgoudelis/ground-station (GPL-3.0-only) - UI design reference
+
+- `go/internal/web/static/passtimeline.js`: pass timeline chart. Layout,
+  axes and colour thresholds follow
+  `frontend/src/components/passes/timeline/` of
+  https://github.com/sgoudelis/ground-station at commit 351631d3066b
+  (Copyright its authors). Re-implemented as dependency-free SVG; no upstream
+  source text was copied.
+- `go/internal/web/static/bandplan.js`: spectrum band-plan overlay. Concept
+  and band table cross-checked against
+  `frontend/src/components/waterfall/bandplan-overlay.jsx` and
+  `bandplans.jsx` of the same upstream commit. Allocation ranges are public
+  facts; extra rows (airband, marine VHF, NOAA weather, NAVTEX) were added
+  here. Canvas code is new; no upstream source text was copied.

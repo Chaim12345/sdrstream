@@ -28,7 +28,7 @@ var sidecarKeys = map[string]bool{
 	"frequency_hz": true, "mode": true, "receiver": true, "decode": true,
 	"kind": true, "target": true, "gate": true, "gate_verdict": true,
 	"crosscheck": true, "crosscheck_ref": true, "crosscheck_detail": true,
-	"started": true, "duration_sec": true, "verified": true,
+	"started": true, "duration_sec": true, "verified": true, "source": true,
 }
 
 // ValidateSidecar checks one capture metadata sidecar (.txt next to a .wav)
@@ -78,6 +78,11 @@ func ValidateSidecar(data []byte) []SidecarIssue {
 		if ferr != nil || f < 0 {
 			err("duration_sec", "must be a non-negative number, got "+strconv.Quote(v))
 		}
+	}
+	switch v := fields["source"]; v {
+	case "", "live", "test-fixture", "satnogs":
+	default:
+		warn("source", "unrecognised provenance class "+strconv.Quote(v)+`; the UI shows it verbatim (known: "live", "test-fixture", "satnogs")`)
 	}
 	if v, ok := fields["verified"]; ok && v != "true" && v != "false" {
 		err("verified", `must be "true" or "false", got `+strconv.Quote(v))

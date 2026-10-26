@@ -154,6 +154,65 @@ func TestStaticAssetsServed(t *testing.T) {
 	}
 }
 
+// TestPassTimelineWired pins the pass timeline: the page carries its mount
+// point and script, the script is served, and app.js feeds it the passes.
+func TestPassTimelineWired(t *testing.T) {
+	for _, want := range []string{`id="pass-timeline"`, "/static/passtimeline.js"} {
+		if !strings.Contains(indexPage, want) {
+			t.Fatalf("index page missing %s", want)
+		}
+	}
+	server := &Server{}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest("GET", "/static/passtimeline.js", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "renderPassTimeline") {
+		t.Fatalf("passtimeline.js not served correctly: %d", recorder.Code)
+	}
+	app, err := staticFS.ReadFile("static/app.js")
+	if err != nil || !strings.Contains(string(app), "renderPassTimeline(passes)") {
+		t.Fatal("app.js does not call renderPassTimeline")
+	}
+}
+
+// TestBandPlanWired pins the band plan overlay: toggle and script on the
+// page, script served, and app.js draws it on the spectrum canvas.
+func TestBandPlanWired(t *testing.T) {
+	for _, want := range []string{`id="bandplan-toggle"`, "/static/bandplan.js"} {
+		if !strings.Contains(indexPage, want) {
+			t.Fatalf("index page missing %s", want)
+		}
+	}
+	plan, err := staticFS.ReadFile("static/bandplan.js")
+	if err != nil || !strings.Contains(string(plan), "SDRBandPlan") || !strings.Contains(string(plan), "NAVTEX 518") {
+		t.Fatal("bandplan.js missing or incomplete")
+	}
+	app, err := staticFS.ReadFile("static/app.js")
+	if err != nil || !strings.Contains(string(app), "SDRBandPlan.draw(") {
+		t.Fatal("app.js does not draw the band plan")
+	}
+}
+
+// TestCategoryFilterWired pins the Activity category filter: script on the
+// page, evidence/inference split in the script, and app.js applies it.
+func TestCategoryFilterWired(t *testing.T) {
+	if !strings.Contains(indexPage, "/static/categories.js") {
+		t.Fatal("index page does not load categories.js")
+	}
+	cat, err := staticFS.ReadFile("static/categories.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SDRCategory", "basis: 'decoder'", "basis: 'frequency'", "Hide frequency guesses"} {
+		if !strings.Contains(string(cat), want) {
+			t.Fatalf("categories.js missing %q", want)
+		}
+	}
+	app, _ := staticFS.ReadFile("static/app.js")
+	if !strings.Contains(string(app), "SDRCategory.match(a)") {
+		t.Fatal("filteredActivity does not apply the category filter")
+	}
+}
+
 // TestMapAPI checks the map payload stays well-formed when no TLE source is
 // reachable: receivers still list, satellites degrade to a flag.
 func TestMapAPI(t *testing.T) {
