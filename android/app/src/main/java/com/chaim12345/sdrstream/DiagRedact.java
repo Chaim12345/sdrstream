@@ -1,5 +1,7 @@
 package com.chaim12345.sdrstream;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -18,9 +20,25 @@ final class DiagRedact {
     private static final Pattern COORD = Pattern.compile(
             "(?i)\\b(lat|lon|latitude|longitude)(\\s*[:=]\\s*)-?\\d+(\\.\\d+)?");
 
+    // Exact live secret values (provider API keys) registered at runtime:
+    // even if a value appears without a telling keyword, it is scrubbed.
+    // Values shorter than 8 chars are ignored so ordinary words survive.
+    private static final Set<String> SECRET_VALUES = ConcurrentHashMap.newKeySet();
+
     private DiagRedact() {}
 
+    static void addSecretValue(String value) {
+        if (value != null && value.length() >= 8) {
+            SECRET_VALUES.add(value);
+        }
+    }
+
     static String redact(String line) {
+        for (String secret : SECRET_VALUES) {
+            if (line.contains(secret)) {
+                line = line.replace(secret, "[redacted]");
+            }
+        }
         Matcher m = URL.matcher(line);
         StringBuffer sb = new StringBuffer();
         while (m.find()) {
