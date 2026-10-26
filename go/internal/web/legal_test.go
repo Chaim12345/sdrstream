@@ -49,3 +49,22 @@ func TestLegalFilesMatchRepoRoot(t *testing.T) {
 		}
 	}
 }
+
+// The catalog board's type-filter chips and the monitor start dropdown must
+// offer every kind the catalog and the monitor actually support. KINDS in
+// stationboard.js covers the labels; the chips and options are the wiring.
+func TestNewFamilyUIControlsPresent(t *testing.T) {
+	for _, frag := range []string{
+		`data-bkind="ubersdr"`,
+		`data-bkind="web-888"`,
+		`<option value="ubersdr">`,
+	} {
+		if !strings.Contains(indexPage, frag) {
+			t.Fatalf("index page missing %q", frag)
+		}
+	}
+	// web-888 has no runtime client yet, so it must NOT be a monitor option.
+	if strings.Contains(indexPage, `<option value="web-888">`) {
+		t.Fatal("web-888 offered as a monitor kind with no runtime client")
+	}
+}
