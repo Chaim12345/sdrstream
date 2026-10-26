@@ -206,6 +206,7 @@ function renderPasses(status) {
   const box = el('passes-list');
   const passes = (status.passes || []).slice().sort((a, b) => new Date(a.rise) - new Date(b.rise));
   box.textContent = '';
+  if (window.renderPassTimeline) window.renderPassTimeline(passes);
   if (!passes.length) { setEmpty(box, 'no passes predicted'); return; }
   const now = Date.now();
   passes.slice(0, 60).forEach(p => {

@@ -154,6 +154,26 @@ func TestStaticAssetsServed(t *testing.T) {
 	}
 }
 
+// TestPassTimelineWired pins the pass timeline: the page carries its mount
+// point and script, the script is served, and app.js feeds it the passes.
+func TestPassTimelineWired(t *testing.T) {
+	for _, want := range []string{`id="pass-timeline"`, "/static/passtimeline.js"} {
+		if !strings.Contains(indexPage, want) {
+			t.Fatalf("index page missing %s", want)
+		}
+	}
+	server := &Server{}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest("GET", "/static/passtimeline.js", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "renderPassTimeline") {
+		t.Fatalf("passtimeline.js not served correctly: %d", recorder.Code)
+	}
+	app, err := staticFS.ReadFile("static/app.js")
+	if err != nil || !strings.Contains(string(app), "renderPassTimeline(passes)") {
+		t.Fatal("app.js does not call renderPassTimeline")
+	}
+}
+
 // TestMapAPI checks the map payload stays well-formed when no TLE source is
 // reachable: receivers still list, satellites degrade to a flag.
 func TestMapAPI(t *testing.T) {
