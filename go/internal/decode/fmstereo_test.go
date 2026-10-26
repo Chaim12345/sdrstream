@@ -54,3 +54,35 @@ func TestFMStereoNoPilotIsMono(t *testing.T) {
 		}
 	}
 }
+
+// Full-band check: tones at 14 kHz (near the 15 kHz audio edge, so the
+// L-R sideband reaches 52 kHz) must still separate, and a rate below the
+// minimum must not pretend to decode.
+func TestFMStereoFullBand(t *testing.T) {
+	rate := 192000
+	n := rate
+	mpx := make([]float64, n)
+	for i := range mpx {
+		tt := float64(i) / float64(rate)
+		l := 0.8 * math.Sin(2*math.Pi*14000*tt)
+		r := 0.8 * math.Sin(2*math.Pi*9000*tt)
+		mpx[i] = 0.45*(l+r) + 0.45*(l-r)*math.Sin(2*math.Pi*38000*tt+0.6) + 0.1*math.Sin(2*math.Pi*19000*tt+0.3)
+	}
+	res := DecodeFMStereo(mpx, rate)
+	if !res.PilotLocked {
+		t.Fatal("no lock")
+	}
+	lw, lx := tonePow(res.L, rate, 14000), tonePow(res.L, rate, 9000)
+	rw, rx := tonePow(res.R, rate, 9000), tonePow(res.R, rate, 14000)
+	t.Logf("L sep %.1f dB, R sep %.1f dB; L14k %.2e R9k %.2e", 10*math.Log10(lw/lx), 10*math.Log10(rw/rx), lw, rw)
+	if 10*math.Log10(lw/lx) < 15 || 10*math.Log10(rw/rx) < 15 {
+		t.Fatal("full-band separation too low")
+	}
+}
+
+func TestFMStereoRejectsLowRate(t *testing.T) {
+	res := DecodeFMStereo(synthMPX(76000, 76000, true, 0), 76000)
+	if res.PilotLocked || res.L != nil {
+		t.Fatal("decoded below minimum rate")
+	}
+}

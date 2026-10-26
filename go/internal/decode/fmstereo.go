@@ -4,8 +4,8 @@ import "math"
 
 // fmstereo.go: broadcast-FM stereo decoder for the composite (MPX) signal a
 // wideband FM discriminator outputs: L+R at baseband, a 19 kHz pilot, and
-// L-R as DSB-SC around 38 kHz. Input is the MPX waveform at rate >= 76 kHz
-// (>= 100 kHz recommended). It is a pure function of samples and does not
+// L-R as DSB-SC around 38 kHz. Input is the MPX waveform at rate >= 114 kHz
+// (L-R extends to 53 kHz). It is a pure function of samples and does not
 // touch any receiver path. Written from the FM stereo (pilot-tone system)
 // definition; no upstream code copied.
 
@@ -42,12 +42,21 @@ func lowpass(x []float64, rate int, fc float64, k int) []float64 {
 	return out
 }
 
+// Audio response: three cascaded one-pole 15 kHz low-passes, so a 14 kHz tone
+// is about 4 dB down vs 9 kHz (measured in TestFMStereoFullBand). Gentle,
+// not a broadcast-grade filter.
+//
+// FMStereoMinRate is the lowest usable MPX sample rate: the L-R sideband
+// reaches 38+15 = 53 kHz, so Nyquist needs > 106 kHz. 114 kHz and up are
+// accepted; 128 kHz or 192 kHz are the practical choices.
+const FMStereoMinRate = 114000
+
 // DecodeFMStereo returns L/R. If no 19 kHz pilot stands out by at least
 // 12 dB over its neighbours, it returns mono (L=R=L+R) with PilotLocked
 // false rather than inventing a stereo difference.
 func DecodeFMStereo(mpx []float64, rate int) StereoResult {
 	var res StereoResult
-	if rate < 76000 || len(mpx) < rate/20 {
+	if rate < FMStereoMinRate || len(mpx) < rate/20 {
 		return res
 	}
 	pil := goertzelPower(mpx, rate, 19000)
