@@ -13,6 +13,11 @@ const (
 	NBFM
 	USB
 	LSB
+	// WFM is broadcast wideband FM: a wide channel (about 90 kHz half-width)
+	// and a high MPX output rate (>= 150 kHz) so the stereo composite up to
+	// 53 kHz survives. Audio/stereo extraction happens downstream
+	// (decode.DecodeFMStereo + de-emphasis); this mode yields the MPX stream.
+	WFM
 )
 
 // Demodulator is a streaming tuner+decimator+demod for one channel.
@@ -37,6 +42,30 @@ type Demodulator struct {
 	// surviving sideband to 0..+bw (USB) or -bw..0 (LSB) before real().
 	postPhase float64
 	postStep  float64
+}
+
+// wfmBW is the WFM channel half-width. 95 kHz keeps the +/-75 kHz deviation
+// plus MPX sidebands with slight edge softening (a true broadcast channel is
+// 200 kHz wide); documented, deliberate, better than clipping at NBFM width.
+const wfmBW = 95e3
+
+// NewWFM builds a wideband-FM channel from inRate Hz IQ centered on the
+// station: decimation is chosen so the MPX rate lands in [150, 240] kHz
+// (>= decode.FMStereoMinRate with margin; integer decimation only), the
+// channel filter is wfmBW wide, and the discriminator is normalized so
+// +/-75 kHz deviation maps to about +/-0.7. Returns nil if inRate is too
+// low to carry a broadcast channel (< ~250 kHz).
+func NewWFM(inRate int) *Demodulator {
+	dec := inRate / 192000
+	if dec < 1 {
+		dec = 1
+	}
+	outRate := inRate / dec
+	if outRate < 150000 || float64(inRate) < 2*wfmBW+60e3 {
+		return nil
+	}
+	d := New(inRate, outRate, 0, WFM)
+	return d
 }
 
 // New builds a channel: inRate Hz IQ, a signal offsetHz above the IQ center is
@@ -66,6 +95,9 @@ func New(inRate, outRate int, offsetHz float64, mode Mode) *Demodulator {
 	// rotator: multiply by exp(-j*2*pi*eff/inRate) per sample
 	d.step = -2 * math.Pi * eff / float64(inRate)
 	cut := bw / float64(inRate) // cycles/sample; carrier sits at the edge for SSB
+	if mode == WFM {
+		cut = wfmBW / float64(inRate)
+	}
 	if taps%2 == 0 {
 		taps++
 	}
@@ -144,8 +176,10 @@ func (d *Demodulator) Process(iq []complex64, out []float64) []float64 {
 
 func (d *Demodulator) demod(z complex64) float64 {
 	switch d.mode {
-	case NBFM:
-		// quadrature discriminator: arg(z * conj(prev))
+	case NBFM, WFM:
+		// quadrature discriminator: arg(z * conj(prev)). For WFM the wide
+		// channel and MPX rate are set in New/NewWFM; the math is the same,
+		// only the chain parameters differ.
 		p := z * cmplxConj(d.prevIQ)
 		d.prevIQ = z
 		return math.Atan2(float64(imag(p)), float64(real(p))) / math.Pi
