@@ -118,3 +118,50 @@ func TestVFOsIndependent(t *testing.T) {
 		t.Fatal("vfo state kept after leave")
 	}
 }
+
+func TestConcurrentChurn(t *testing.T) {
+	h := NewHub()
+	stops := make(chan string, 1000)
+	h.OnWorkerStop = func(id string) { stops <- id }
+	h.Start("a", "c", cfg(), false)
+	done := make(chan struct{})
+	for i := 0; i < 20; i++ {
+		go func(i int) {
+			defer func() { done <- struct{}{} }()
+			id := "j" + string(rune('A'+i))
+			for n := 0; n < 200; n++ {
+				if _, err := h.Join("a", id); err == nil {
+					f := int64(n)
+					h.UpdateVFO(id, 1+n%4, VFOUpdate{CenterHz: &f})
+					h.Config("a")
+					h.Leave("a", id)
+				}
+			}
+		}(i)
+	}
+	for i := 0; i < 20; i++ {
+		<-done
+	}
+	if m := h.Members("a"); len(m) != 1 || m[0] != "c" {
+		t.Fatalf("members after churn: %v", m)
+	}
+	h.Stop("c")
+	if len(h.Members("a")) != 0 || len(h.sources) != 0 || len(h.vfos) != 0 {
+		t.Fatalf("leaked state: %d sources %d vfo banks", len(h.sources), len(h.vfos))
+	}
+	if len(stops) < 1 {
+		t.Fatal("worker stop not signalled")
+	}
+}
+
+func TestStopCleansEverything(t *testing.T) {
+	h := NewHub()
+	h.Start("a", "c", cfg(), false)
+	h.Join("a", "j")
+	h.Stop("j")
+	h.Stop("j") // idempotent
+	h.Stop("nobody")
+	if len(h.vfos) != 1 {
+		t.Fatalf("banks %d", len(h.vfos))
+	}
+}
