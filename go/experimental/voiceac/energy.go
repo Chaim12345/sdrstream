@@ -8,7 +8,7 @@ import (
 	"sort"
 )
 
-const Algorithm = "frame_centered_energy_v1"
+const Algorithm = "frame_centered_energy_native_timing_v2"
 
 type Frame struct {
 	Lo, Hi              int
@@ -27,8 +27,8 @@ func finite(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) }
 
 // Analyze uses per-frame mean-centered RMS, unchanged3x/2x energy ratios,
 // .005 absolute start floor,400ms hangover,200ms minimum,150ms padding.
-// Frame support is explicit; segment timing deliberately retains the
-// production20ms index map, including its fractional-rate mismatch.
+// Frame and segment timing use exact native sample supports.
+// This timing correction is separate from the unchanged AC energy rules.
 // High energy is activity only, never evidence of speech or valid text.
 func Analyze(x []float64, rate int) (Result, error) {
 	if rate <= 0 || len(x) < rate/4 {
@@ -83,13 +83,13 @@ func Analyze(x []float64, rate int) (Result, error) {
 			open, first, last = true, i, i
 		case open && f.ACRMS >= r.EndThreshold:
 			last = i
-		case open && i-last > 20:
-			raw = append(raw, Segment{int(float64(first) * .02 * float64(rate)), int(float64(last+1) * .02 * float64(rate))})
+		case open && f.Lo-r.Frames[last].Lo > int(float64(rate)*.4):
+			raw = append(raw, Segment{r.Frames[first].Lo, r.Frames[last].Hi})
 			open = false
 		}
 	}
 	if open {
-		raw = append(raw, Segment{int(float64(first) * .02 * float64(rate)), int(float64(last+1) * .02 * float64(rate))})
+		raw = append(raw, Segment{r.Frames[first].Lo, r.Frames[last].Hi})
 	}
 	pad := int(float64(rate) * .15)
 	for _, s := range raw {

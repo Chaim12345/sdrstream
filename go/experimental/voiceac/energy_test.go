@@ -100,3 +100,31 @@ func TestDeveloperFiniteAndNativeTiming(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeTimingNoIndexAccumulation(t *testing.T) {
+	for _, rate := range []int{7119, 11999, 44100, 48000} {
+		x := make([]float64, rate*4)
+		n := int(float64(rate) * .02)
+		first, last := 100, 129
+		for i := first * n; i < (last+1)*n; i++ {
+			x[i] = .1 * math.Sin(float64(i)*.4)
+		}
+		r, e := Analyze(x, rate)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if len(r.Segments) != 1 {
+			t.Fatalf("rate%d segments%v", rate, r.Segments)
+		}
+		pad := int(float64(rate) * .15)
+		wantLo, wantHi := first*n-pad, (last+1)*n+pad
+		if r.Segments[0] != (Segment{wantLo, wantHi}) {
+			t.Fatalf("rate%d got%v want[%d,%d)", rate, r.Segments[0], wantLo, wantHi)
+		}
+		for _, s := range r.Segments {
+			if s.Lo < 0 || s.Hi > len(x) || s.Hi <= s.Lo {
+				t.Fatal("out of source")
+			}
+		}
+	}
+}
