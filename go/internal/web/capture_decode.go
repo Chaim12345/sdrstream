@@ -69,6 +69,9 @@ func (s *Server) handleCaptureDecode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+	if s.previewRemoteControlDenied(w) {
+		return
+	}
 	if !sameOriginPOST(r) {
 		http.Error(w, "same-origin required", http.StatusForbidden)
 		return
