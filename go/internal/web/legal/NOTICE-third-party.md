@@ -87,3 +87,12 @@ recordings under `go/internal/decode/testdata` are third-party material. Their
 sources and open licence questions are in `tests/data/NOTICE`; `ft8_lib.LICENSE`
 covers the ft8_lib port only. The test harness fetches
 recordings when explicitly requested.
+
+## UberSDR client code (go/internal/ubersdr)
+
+Adapted from `clients/hpsdr-go` in https://github.com/madpsy/ka9q_ubersdr
+(commit 7192bfd615830eab26bda0fa3863fcf26265c8ee), licensed GPL-3.0. Taken: the
+`/connection` precheck, IQ websocket client, public-directory parser, and the
+`pcmv4` protocol-4 decoder (with the encoder used only by tests). Dropped: the
+mDNS LAN discovery (needs an extra dependency). Changed: import paths, the
+User-Agent string, and a loopback fake-server test.
