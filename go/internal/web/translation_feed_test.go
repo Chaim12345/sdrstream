@@ -86,3 +86,40 @@ func TestActivityFeedNoTranslationNoField(t *testing.T) {
 		}
 	}
 }
+
+func TestTranslationIdentityBoundaries(t *testing.T) {
+	s := &Server{}
+	start := time.Unix(1700000000, 0)
+	a := monitor.Activity{ID: 1, Started: start, FrequencyHz: 3855000, Kind: "voice", Mode: "speech", Detail: "texte original"}
+	r := translate.Result{Original: a.Detail, Status: translate.StatusTranslated, Translated: "original text", TargetLang: "en", Machine: true}
+	s.RecordTranslation(a, r)
+	key := activityDedupeKey(a.Started.UnixNano(), int64(a.FrequencyHz), "voice", a.Mode, a.Detail)
+	if len(s.translations) != 1 || s.translations[key].Original != a.Detail {
+		t.Fatal("translation missing")
+	}
+	for _, other := range []monitor.Activity{
+		{Started: start.Add(time.Nanosecond), FrequencyHz: a.FrequencyHz, Kind: a.Kind, Mode: a.Mode, Detail: a.Detail},
+		{Started: start, FrequencyHz: a.FrequencyHz + 1, Kind: a.Kind, Mode: a.Mode, Detail: a.Detail},
+		{Started: start, FrequencyHz: a.FrequencyHz, Kind: a.Kind, Mode: "other", Detail: a.Detail},
+		{Started: start, FrequencyHz: a.FrequencyHz, Kind: a.Kind, Mode: a.Mode, Detail: "different text"},
+	} {
+		k := activityDedupeKey(other.Started.UnixNano(), int64(other.FrequencyHz), "voice", other.Mode, other.Detail)
+		if _, ok := s.translations[k]; ok {
+			t.Fatalf("unrelated activity matched %+v", other)
+		}
+	}
+	// Gallery reassigns IDs; identity deliberately does not depend on ID.
+	twin := a
+	twin.ID = 999
+	s.RecordTranslation(twin, r)
+	if len(s.translations) != 1 {
+		t.Fatal("gallery twin duplicated")
+	}
+	wrong := r
+	wrong.Original = "another transcript"
+	wrong.Translated = "incorrect attachment"
+	s.RecordTranslation(a, wrong)
+	if s.translations[key].Translated != r.Translated {
+		t.Fatal("mismatched original overwrote result")
+	}
+}

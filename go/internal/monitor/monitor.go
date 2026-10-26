@@ -1451,6 +1451,12 @@ var translationQueue = make(chan struct{}, 4)
 // instead of being dropped silently. The detached context keeps a provider
 // call alive after the listen window closes; the timeout bounds it.
 func (m *Monitor) maybeTranslate(activity Activity) {
+	// Only classify's successful guarded-transcript return uses this
+	// exact kind/mode pair with non-empty detail. Other voice details
+	// can be local diagnostics, not content authorized for disclosure.
+	if activity.Kind != "voice" || activity.Mode != "speech" || strings.TrimSpace(activity.Detail) == "" {
+		return
+	}
 	t := m.opts.Translator
 	if t == nil || m.opts.OnTranslation == nil || !t.Active() {
 		return

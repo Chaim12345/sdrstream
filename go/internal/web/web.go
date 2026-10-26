@@ -2289,6 +2289,12 @@ func (s *Server) RecordGate(id int, passed bool, reason string) {
 // original was verified on its own; the translation is derived machine-made
 // display data shown next to it. Bounded to the 256 most recent.
 func (s *Server) RecordTranslation(activity monitor.Activity, res translate.Result) {
+	// A callback must belong to this exact transcript. Do not attach a
+	// provider/caller result whose original differs from the activity.
+	if res.Original != activity.Detail {
+		return
+	}
+
 	key := activityDedupeKey(activity.Started.UnixNano(), int64(activity.FrequencyHz), activityKindClass(activity.Kind, activity.Mode, activity.Detail), activity.Mode, activity.Detail)
 	s.mu.Lock()
 	defer s.mu.Unlock()
