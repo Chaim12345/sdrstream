@@ -693,3 +693,5 @@ kbd {
 .cat-bar{flex-wrap:wrap;align-items:center}.cat-bar .chip[aria-pressed=true]{outline:1px solid var(--accent)}.cat-ev{font-size:12px;display:inline-flex;gap:4px;align-items:center}.cat-note{flex-basis:100%;font-size:11px}
 .cat-tag{font-size:11px;border:1px solid var(--line);border-radius:10px;padding:1px 7px}
 .cv-panel{margin-bottom:12px}.cv-note{font-size:12px}.cv-chips{flex-wrap:wrap}
+
+.translation{margin-top:6px;padding:6px 8px;border-left:3px solid var(--line);font-size:12px}.translation.tr-translated{border-left-color:var(--accent)}.tr-text{margin-top:4px}.tr-meta{font-size:11px;margin-top:2px}

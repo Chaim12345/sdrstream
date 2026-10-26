@@ -1163,6 +1163,8 @@ function activityCard(a, fresh) {
     const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = a.detail;
     card.appendChild(detail);
   }
+  // Optional machine English translation, always after the original text.
+  if (window.SDRTranslation) { const tr = window.SDRTranslation.render(a); if (tr) card.appendChild(tr); }
   // Verdict precedence matches activityGateVerdict (ui-features): a
   // recorded rejection outranks everything - a repeated RecordGate can
   // leave both fields set, and the card must agree with the filter.
