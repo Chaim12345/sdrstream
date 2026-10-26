@@ -696,19 +696,21 @@ func (c *PredictiveCodec) Decode(payload []byte, count int) ([]int16, error) {
 	if len(payload) < 1 {
 		return nil, fmt.Errorf("predictive codec: empty payload")
 	}
-	if count <= 0 || count%step != 0 {
+	if count <= 0 || count > MaxSampleCount || count%step != 0 {
 		return nil, fmt.Errorf("predictive codec: bad sample count %d for %d-channel profile", count, step)
 	}
 	if got := payload[0] & predProfileMask; got != c.prof.ID {
 		return nil, fmt.Errorf("predictive codec: payload declares profile %d, codec is %d", got, c.prof.ID)
 	}
 
-	out := make([]int16, count)
-
 	if payload[0]&predEscapeFlag != 0 {
 		if len(payload) < 1+count*2 {
 			return nil, fmt.Errorf("predictive codec: escape payload truncated (%d bytes for %d samples)", len(payload), count)
 		}
+	}
+	out := make([]int16, count)
+
+	if payload[0]&predEscapeFlag != 0 {
 		for i := 0; i < count; i++ {
 			out[i] = int16(binary.LittleEndian.Uint16(payload[1+2*i:]))
 		}

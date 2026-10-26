@@ -111,3 +111,20 @@ func TestDialUberRefusals(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+func TestUberSessionTimeEnforced(t *testing.T) {
+	tunes := make(chan map[string]any, 1)
+	ts := fakeUberServer(t, `["iq96"]`, 0, tunes)
+	defer ts.Close()
+	c, err := DialUber(context.Background(), UberConfig{URL: ts.URL, SampleRate: 96000, AllowPrivate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.maxTime = 30 * time.Millisecond // as if the server had announced 30ms
+	time.Sleep(60 * time.Millisecond)
+	buf := make([]complex64, 16)
+	if _, err := c.ReadSamples(buf); err != ErrUberSessionTime {
+		t.Fatalf("err = %v, want ErrUberSessionTime", err)
+	}
+}

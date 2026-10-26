@@ -183,6 +183,9 @@ func (d *PCMv4HeaderDecoder) Decode(pkt []byte) (PCMv4Header, int, error) {
 			return h, 0, fmt.Errorf("pcm v4 header: malformed sample count")
 		}
 		off += n
+		if count == 0 || count > MaxSampleCount {
+			return h, 0, fmt.Errorf("pcm v4 header: sample count %d out of range", count)
+		}
 		d.count = int(count)
 	}
 
@@ -194,6 +197,9 @@ func (d *PCMv4HeaderDecoder) Decode(pkt []byte) (PCMv4Header, int, error) {
 		off += n
 		if len(pkt) < off+1 {
 			return h, 0, fmt.Errorf("pcm v4 header: truncated channel count")
+		}
+		if rate == 0 || rate > 4_000_000 {
+			return h, 0, fmt.Errorf("pcm v4 header: sample rate %d out of range", rate)
 		}
 		d.rate = int(rate)
 		d.channels = int(pkt[off])

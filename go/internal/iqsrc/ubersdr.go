@@ -42,6 +42,10 @@ type UberConfig struct {
 	InsecureTLS bool
 }
 
+// ErrUberSessionTime is returned once the server's announced session limit has
+// elapsed; the caller reconnects (with a fresh session) if it wants more.
+var ErrUberSessionTime = errors.New("ubersdr: server session time limit reached")
+
 // UberClient is one UberSDR IQ session.
 type UberClient struct {
 	srv       *ubersdr.Server
@@ -114,6 +118,9 @@ func DialUber(ctx context.Context, cfg UberConfig) (*UberClient, error) {
 			}
 			return c, nil
 		case ubersdr.MsgIQ:
+			if m.SampleRate <= 0 {
+				continue
+			}
 			c.rate = uint32(m.SampleRate)
 			c.pending = toComplex(m.Samples)
 			return c, nil
@@ -172,12 +179,31 @@ func (c *UberClient) ReadSamples(buf []complex64) (int, error) {
 		return 0, nil
 	}
 	for len(c.pending) == 0 {
-		m, err := c.conn.ReadIdle(15 * time.Second)
+		idle := 15 * time.Second
+		if c.maxTime > 0 {
+			left := c.maxTime - time.Since(c.started)
+			if left <= 0 {
+				return 0, ErrUberSessionTime
+			}
+			if left < idle {
+				idle = left
+			}
+		}
+		m, err := c.conn.ReadIdle(idle)
 		if err != nil {
+			if c.maxTime > 0 && time.Since(c.started) >= c.maxTime {
+				return 0, ErrUberSessionTime
+			}
 			return 0, err
 		}
 		switch m.Kind {
 		case ubersdr.MsgIQ:
+			if m.SampleRate <= 0 {
+				c.mu.Lock()
+				c.bad++
+				c.mu.Unlock()
+				continue
+			}
 			c.mu.Lock()
 			c.rate = uint32(m.SampleRate)
 			c.mu.Unlock()
@@ -195,6 +221,9 @@ func (c *UberClient) ReadSamples(buf []complex64) (int, error) {
 			c.bad++
 			c.mu.Unlock()
 		}
+	}
+	if c.maxTime > 0 && time.Since(c.started) >= c.maxTime {
+		return 0, ErrUberSessionTime
 	}
 	n := copy(buf, c.pending)
 	c.pending = c.pending[n:]
