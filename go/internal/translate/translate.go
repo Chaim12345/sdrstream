@@ -119,7 +119,12 @@ type Config struct {
 
 // Stats are counters for status screens; no content.
 type Stats struct {
-	Sent, Cached, Translated, Skipped, Errors, RateLimited uint64
+	// Sent counts provider calls actually dispatched (budget slot taken, ctx
+	// alive at that moment). A caller that cancels afterwards is still Sent:
+	// the request may have left the machine. Cancelled counts calls that were
+	// never dispatched because the caller's ctx ended first (before or while
+	// waiting for the provider slot); they take no budget and no failure count.
+	Sent, Cached, Translated, Skipped, Errors, RateLimited, Cancelled uint64
 }
 
 // Translator is safe for concurrent use; provider calls are serialized.
@@ -134,7 +139,7 @@ type Translator struct {
 	fails     int
 	pausedTil time.Time
 	stats     Stats
-	callMu    sync.Mutex
+	slot      chan struct{}
 }
 
 // New returns a Translator. A nil provider is allowed and means disabled.
@@ -163,7 +168,7 @@ func New(cfg Config, p Provider) *Translator {
 	if len(cfg.AllowedKinds) == 0 {
 		cfg.AllowedKinds = []Kind{KindTranscript, KindDecodedText}
 	}
-	return &Translator{cfg: cfg, prov: p, cache: map[string]Result{}}
+	return &Translator{cfg: cfg, prov: p, cache: map[string]Result{}, slot: make(chan struct{}, 1)}
 }
 
 // Stats returns a copy of the counters.
@@ -213,27 +218,94 @@ func (t *Translator) Translate(ctx context.Context, kind Kind, text string) Resu
 		r.Cached = true
 		return r
 	}
-	now := t.cfg.Now()
-	if now.Before(t.pausedTil) {
+	if ctx.Err() != nil {
+		t.stats.Cancelled++
+		t.mu.Unlock()
+		return t.result(text, StatusError, "translation cancelled before it was sent")
+	}
+	if t.cfg.Now().Before(t.pausedTil) {
 		t.stats.RateLimited++
 		t.mu.Unlock()
 		return t.result(text, StatusRateLimit, "provider paused after repeated failures; retry later")
 	}
-	if !t.takeSlot(now) {
+	t.mu.Unlock()
+
+	out, dispatched, res, err := t.call(ctx, text)
+	if !dispatched {
+		return res
+	}
+	if err != nil {
+		return t.failed(ctx, text, err)
+	}
+	return t.accept(key, text, out)
+}
+
+// call runs the provider once, serialized, and gives control back when ctx
+// ends even if the provider ignores ctx: the provider call runs in its own
+// goroutine, and a caller waiting for the serialization slot also stops at ctx.
+// A provider that never returns keeps its slot (and one goroutine) until it
+// does, so later calls report an error at their own deadline instead of
+// hanging. A panic in a provider becomes an error: Translate runs on detached
+// goroutines in the monitor, where an unrecovered panic would end the process.
+// errProviderPanic carries no panic payload: it could hold request text or secrets.
+var errProviderPanic = errors.New("translate: provider panicked")
+
+// Order matters: wait for the provider slot (or ctx), then re-check ctx, the
+// pause and the budget under the lock immediately before dispatch, so a
+// cancelled caller never reaches the provider even if the slot is free at the
+// same instant (select picks randomly among ready cases). dispatched is false
+// when nothing was sent; res then holds the labeled outcome.
+func (t *Translator) call(ctx context.Context, text string) (out Output, dispatched bool, res Result, err error) {
+	select {
+	case t.slot <- struct{}{}:
+	case <-ctx.Done():
+		t.mu.Lock()
+		t.stats.Cancelled++
+		t.mu.Unlock()
+		return Output{}, false, t.result(text, StatusError, "translation cancelled before it was sent"), nil
+	}
+	t.mu.Lock()
+	switch {
+	case ctx.Err() != nil:
+		t.stats.Cancelled++
+		t.mu.Unlock()
+		<-t.slot
+		return Output{}, false, t.result(text, StatusError, "translation cancelled before it was sent"), nil
+	case t.cfg.Now().Before(t.pausedTil):
 		t.stats.RateLimited++
 		t.mu.Unlock()
-		return t.result(text, StatusRateLimit, "local request budget used; retry later")
+		<-t.slot
+		return Output{}, false, t.result(text, StatusRateLimit, "provider paused after repeated failures; retry later"), nil
+	case !t.takeSlot(t.cfg.Now()):
+		t.stats.RateLimited++
+		t.mu.Unlock()
+		<-t.slot
+		return Output{}, false, t.result(text, StatusRateLimit, "local request budget used; retry later"), nil
 	}
 	t.stats.Sent++
 	t.mu.Unlock()
 
-	t.callMu.Lock()
-	out, err := t.prov.Translate(ctx, text)
-	t.callMu.Unlock()
-	if err != nil {
-		return t.failed(text, err)
+	type answer struct {
+		out Output
+		err error
 	}
-	return t.accept(key, text, out)
+	done := make(chan answer, 1)
+	go func() {
+		defer func() { <-t.slot }()
+		defer func() {
+			if r := recover(); r != nil {
+				done <- answer{err: errProviderPanic}
+			}
+		}()
+		o, e := t.prov.Translate(ctx, text)
+		done <- answer{o, e}
+	}()
+	select {
+	case a := <-done:
+		return a.out, true, Result{}, a.err
+	case <-ctx.Done():
+		return Output{}, true, Result{}, ctx.Err()
+	}
 }
 
 func (t *Translator) count(r Result) Result {
@@ -260,7 +332,7 @@ func (t *Translator) takeSlot(now time.Time) bool {
 	return true
 }
 
-func (t *Translator) failed(text string, err error) Result {
+func (t *Translator) failed(ctx context.Context, text string, err error) Result {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.cfg.Now()
@@ -279,13 +351,20 @@ func (t *Translator) failed(text string, err error) Result {
 		t.stats.RateLimited++
 		return t.result(text, StatusRateLimit, "provider asked to slow down; paused")
 	}
-	t.fails++
 	t.stats.Errors++
+	if ctx.Err() != nil {
+		// The caller gave up (shutdown, listen window, its own timeout). That
+		// says nothing about the provider, so it does not count toward a pause.
+		// A deadline the provider hit on its own (ctx still alive) is a real
+		// provider failure and counts below.
+		return t.result(text, StatusError, "translation cancelled or timed out")
+	}
+	t.fails++
 	if t.fails >= t.cfg.CooldownAfterFailures {
 		t.pausedTil = now.Add(t.cfg.Cooldown)
 		t.fails = 0
 	}
-	return t.result(text, StatusError, err.Error())
+	return t.result(text, StatusError, "translation provider error")
 }
 
 func (t *Translator) accept(key, text string, out Output) Result {
