@@ -54,3 +54,16 @@ func TestValidateSidecarWarnings(t *testing.T) {
 		t.Errorf("descriptive only-label flagged: %d issues", n)
 	}
 }
+
+// The writer emits source=; the validator must accept it, and flag only
+// unrecognised classes as a warning (the UI still shows them verbatim).
+func TestValidateSidecarSourceKey(t *testing.T) {
+	for _, v := range []string{"live", "test-fixture", "satnogs"} {
+		if is := ValidateSidecar([]byte("source=" + v + "\n")); len(is) != 0 {
+			t.Errorf("source=%s: unexpected issues %v", v, is)
+		}
+	}
+	if !hasIssueAt(ValidateSidecar([]byte("source=mystery\n")), "warning", "source") {
+		t.Error("unrecognised source class should warn")
+	}
+}

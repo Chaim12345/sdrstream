@@ -265,6 +265,36 @@ const fmtDuration = sec => {
   return (m ? m + 'm ' : '') + r + 's';
 };
 
+/* Player for one archived clip. preload=metadata makes the browser read the
+   WAV header so the control shows the real length instead of 0:00 (a range
+   request for the header only, not the whole file). The line under it
+   states what the player actually reported and flags a disagreement with the
+   header-derived length; a load failure is shown, never left silent. Playback
+   itself is only claimed after the browser fires "playing". */
+function captureAudio(url, label, headerSec) {
+  const wrap = document.createElement('div'); wrap.className = 'capture-audio';
+  const audio = document.createElement('audio');
+  audio.controls = true; audio.preload = 'metadata'; audio.src = url;
+  audio.setAttribute('aria-label', 'listen to ' + label);
+  const note = document.createElement('div'); note.className = 'muted capture-audio-note';
+  const hdr = fmtDuration(headerSec);
+  note.textContent = hdr ? 'length from WAV header: ' + hdr + ' (player not yet loaded)' : 'length not recorded in header';
+  audio.addEventListener('loadedmetadata', () => {
+    const d = audio.duration;
+    if (!isFinite(d) || d <= 0) { note.textContent = 'player reports no usable length' + (hdr ? '; WAV header says ' + hdr : ''); return; }
+    const pl = fmtDuration(d);
+    note.textContent = 'player length ' + pl + (hdr && Math.abs(d - headerSec) > 2 ? ' - differs from WAV header (' + hdr + ')' : ' - matches WAV header');
+  });
+  audio.addEventListener('playing', () => { note.dataset.played = '1'; });
+  audio.addEventListener('error', () => {
+    const e = audio.error;
+    note.textContent = 'audio failed to load' + (e && e.message ? ': ' + e.message : (e ? ' (media error ' + e.code + ')' : ''));
+  });
+  wrap.append(audio, note);
+  wrap.audio = audio;
+  return wrap;
+}
+
 // One honest provenance label per capture, shared by the card line
 // and the proof panel: the explicit sidecar class verbatim, unknown
 // stated plainly, never guessed.
@@ -585,11 +615,9 @@ function renderCaptures(status) {
       card.appendChild(prov);
       if (c.decode) { const d=document.createElement('div'); d.className='detail'; d.textContent=c.decode; card.appendChild(d); }
       if (c.url) {
-        const audio = document.createElement('audio');
-        audio.controls = true; audio.preload = 'none'; audio.src = c.url;
-        audio.setAttribute('aria-label', 'listen to ' + (c.satellite || 'capture'));
-        card.appendChild(audio);
-        card.appendChild(recordButtonFor(audio));
+        const player = captureAudio(c.url, c.satellite || 'capture', c.samples && c.rate ? c.samples / c.rate : 0);
+        card.appendChild(player);
+        card.appendChild(recordButtonFor(player.audio));
         const open = document.createElement('div'); open.style.marginTop = '6px';
         open.appendChild(link(c.url, c.path));
         card.appendChild(open);

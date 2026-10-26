@@ -36,7 +36,7 @@ func readCaptureSidecar(dir, wavName string) (CaptureMetadata, error) {
 	if err != nil {
 		return meta, err
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
 		switch {
 		case strings.HasPrefix(line, "frequency_hz="):
 			fmt.Sscanf(strings.TrimPrefix(line, "frequency_hz="), "%g", &meta.FrequencyHz)

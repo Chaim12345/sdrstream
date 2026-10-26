@@ -426,3 +426,23 @@ func TestCapturesListCarriesSourceClass(t *testing.T) {
 		t.Errorf("pre-field capture source %q (present %t), want empty - provenance is never guessed", v, ok)
 	}
 }
+
+// A sidecar saved with CRLF line endings (copied from another machine)
+// must still report its source class, not "source not recorded".
+func TestCapturesListReadsCRLFSidecar(t *testing.T) {
+	s := &Server{capturesDir: t.TempDir(), galleryDir: t.TempDir()}
+	publishWEFAXCapture(t, s, "CAP_crlf.wav", "live")
+	p := filepath.Join(s.capturesDir, "CAP_crlf.txt")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(strings.ReplaceAll(string(b), "\n", "\r\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range s.listCaptures() {
+		if c.Path == "CAP_crlf.wav" && c.Source != "live" {
+			t.Fatalf("CRLF sidecar source %q, want live", c.Source)
+		}
+	}
+}
