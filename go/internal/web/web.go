@@ -38,6 +38,7 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/sources"
 	"github.com/chaim12345/sdrstream/go/internal/tle"
 	"github.com/chaim12345/sdrstream/go/internal/tracking"
+	"github.com/chaim12345/sdrstream/go/internal/translate"
 	"github.com/chaim12345/sdrstream/go/internal/verify"
 )
 
@@ -285,13 +286,20 @@ type ScanMetrics struct {
 }
 
 type Server struct {
-	mu                sync.Mutex
-	decodeMu          sync.Mutex
-	satsched          interface{ StatusesJSON() interface{} }
-	captures          []Capture
-	passes            []PassInfo
-	gallery           []gallery.Item
-	liveGallery       []LiveGalleryItem
+	mu          sync.Mutex
+	decodeMu    sync.Mutex
+	satsched    interface{ StatusesJSON() interface{} }
+	captures    []Capture
+	passes      []PassInfo
+	gallery     []gallery.Item
+	liveGallery []LiveGalleryItem
+	// translations holds labeled machine-translation results for recent
+	// activities, keyed by the same dedupe key the activity feed uses, so a
+	// translation attaches to its original row no matter which monitor or
+	// gallery merge produced it. Bounded; derived display data, never a
+	// replacement for the verified original.
+	translations      map[string]translate.Result
+	translationOrd    []string
 	html              string
 	capturesDir       string
 	galleryDir        string
@@ -2276,20 +2284,56 @@ func (s *Server) RecordGate(id int, passed bool, reason string) {
 }
 
 // handleActivity returns the transmissions the monitor has seen.
+// RecordTranslation attaches one labeled translation result to the activity
+// that carried the original text. It does not re-run the live gate: the
+// original was verified on its own; the translation is derived machine-made
+// display data shown next to it. Bounded to the 256 most recent.
+func (s *Server) RecordTranslation(activity monitor.Activity, res translate.Result) {
+	key := activityDedupeKey(activity.Started.UnixNano(), int64(activity.FrequencyHz), activityKindClass(activity.Kind, activity.Mode, activity.Detail), activity.Mode, activity.Detail)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.translations == nil {
+		s.translations = map[string]translate.Result{}
+	}
+	if _, ok := s.translations[key]; !ok {
+		s.translationOrd = append(s.translationOrd, key)
+		if len(s.translationOrd) > 256 {
+			delete(s.translations, s.translationOrd[0])
+			s.translationOrd = s.translationOrd[1:]
+		}
+	}
+	s.translations[key] = res
+}
+
 func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	instance := s.monitor
 	live := append([]LiveGalleryItem(nil), s.liveGallery...)
+	translations := make(map[string]translate.Result, len(s.translations))
+	for k, v := range s.translations {
+		translations[k] = v
+	}
 	s.mu.Unlock()
 
 	type activityRow struct {
 		monitor.Activity
-		SourceClass string `json:"source_class"`
+		SourceClass string            `json:"source_class"`
+		Translation *translate.Result `json:"translation,omitempty"`
+	}
+	attachTranslation := func(rows []activityRow) {
+		for i := range rows {
+			a := rows[i].Activity
+			key := activityDedupeKey(a.Started.UnixNano(), int64(a.FrequencyHz), activityKindClass(a.Kind, a.Mode, a.Detail), a.Mode, a.Detail)
+			if res, ok := translations[key]; ok {
+				res := res
+				rows[i].Translation = &res
+			}
+		}
 	}
 	items := make([]activityRow, 0)
 	if instance != nil {
 		for _, a := range instance.Activities() {
-			items = append(items, activityRow{a, historyMonitorClass(a)})
+			items = append(items, activityRow{Activity: a, SourceClass: historyMonitorClass(a)})
 		}
 	}
 	// Scanner and feed decodes only live in the gallery, so merge them in
@@ -2352,8 +2396,9 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
-		items = append(items, activityRow{a, historyGalleryClass(it)})
+		items = append(items, activityRow{Activity: a, SourceClass: historyGalleryClass(it)})
 	}
+	attachTranslation(items)
 	sort.SliceStable(items, func(i, j int) bool { return items[i].Started.After(items[j].Started) })
 	writeJSON(w, items)
 }

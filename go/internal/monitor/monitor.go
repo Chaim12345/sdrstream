@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/chaim12345/sdrstream/go/internal/decode"
+	"github.com/chaim12345/sdrstream/go/internal/translate"
 	"github.com/chaim12345/sdrstream/go/internal/verify"
 	"github.com/chaim12345/sdrstream/go/internal/voice"
 )
@@ -114,6 +115,17 @@ type Options struct {
 	// VoiceNIMOptions configures the hosted NVIDIA speech backend, which is
 	// tried first when an API key is set (empty disables it).
 	VoiceNIMOptions voice.NIMOptions
+	// Translator turns guarded voice transcripts into English; nil disables
+	// translation. It is consulted only after the speech guard has kept a
+	// transcript, and only asynchronously: translation never blocks the
+	// receive loop.
+	Translator *translate.Translator
+	// OnTranslation delivers one labeled translation Result for an already
+	// published voice activity, after the fact. The original Detail is
+	// always published first on its own; the Result can also report
+	// ineligible/rate-limited/error instead of a translation, and the
+	// receiver should show those states verbatim, never drop them silently.
+	OnTranslation func(Activity, translate.Result)
 	// MultimonBinary and DirewolfBinary opt in to local external decoders.
 	MultimonBinary string
 	DirewolfBinary string
@@ -1396,6 +1408,9 @@ func (m *Monitor) handleJob(ctx context.Context, work job) {
 	m.mu.Unlock()
 	if best.Kind != "noise" && best.Kind != "silence" && best.Kind != "unknown" {
 		m.publish(best)
+		if best.Kind == "voice" && best.Detail != "" {
+			m.maybeTranslate(best)
+		}
 		if best.Kind == "sstv" && len(bestImage) > 0 && m.opts.OnImage != nil &&
 			verify.SSTVImage(best.Kind, bestImage, best.SSTVReport).Live {
 			m.opts.OnImage(best, bestImage)
@@ -1422,6 +1437,39 @@ func (m *Monitor) publish(activity Activity) {
 	if m.opts.OnActivity != nil {
 		m.opts.OnActivity(activity)
 	}
+}
+
+// translationQueue bounds in-flight translation calls across ALL monitors
+// (a fleet scan runs one Monitor per receiver): a stalled provider can never
+// pile goroutines up behind the receive loops.
+var translationQueue = make(chan struct{}, 4)
+
+// maybeTranslate starts an asynchronous English translation of a published
+// voice transcript. The receive loop never waits: the activity was already
+// published with its original text, and the labeled Result arrives later
+// through OnTranslation. A full local queue is reported as rate-limited
+// instead of being dropped silently. The detached context keeps a provider
+// call alive after the listen window closes; the timeout bounds it.
+func (m *Monitor) maybeTranslate(activity Activity) {
+	t := m.opts.Translator
+	if t == nil || m.opts.OnTranslation == nil || !t.Active() {
+		return
+	}
+	select {
+	case translationQueue <- struct{}{}:
+	default:
+		m.opts.OnTranslation(activity, translate.Result{
+			Original: activity.Detail, TargetLang: "en",
+			Status: translate.StatusRateLimit, Reason: "local translation queue busy; not sent",
+		})
+		return
+	}
+	go func() {
+		defer func() { <-translationQueue }()
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		m.opts.OnTranslation(activity, t.Translate(ctx, translate.KindTranscript, activity.Detail))
+	}()
 }
 
 // classify decides what a recording contains and decodes it.

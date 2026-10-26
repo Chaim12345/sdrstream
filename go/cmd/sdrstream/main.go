@@ -48,6 +48,7 @@ import (
 	"github.com/chaim12345/sdrstream/go/internal/satnogs"
 	"github.com/chaim12345/sdrstream/go/internal/satsched"
 	"github.com/chaim12345/sdrstream/go/internal/sources"
+	"github.com/chaim12345/sdrstream/go/internal/translate"
 	"github.com/chaim12345/sdrstream/go/internal/verify"
 	"github.com/chaim12345/sdrstream/go/internal/voice"
 	"github.com/chaim12345/sdrstream/go/internal/web"
@@ -819,6 +820,32 @@ func cmdRelays(args []string) error {
 // monitorVoiceOptions builds the speech options for the monitor, applying a
 // built-in radio phraseology prompt when the caller does not supply one: the
 // jargon is the part whisper gets wrong on its own.
+var (
+	translatorOnce sync.Once
+	translatorInst *translate.Translator
+)
+
+// monitorTranslator builds the opt-in English translator once per process
+// and logs its status note. The note says exactly why translation is on or
+// off and never carries key material.
+func monitorTranslator() *translate.Translator {
+	translatorOnce.Do(func() {
+		var note string
+		translatorInst, note = translate.FromEnv(os.Getenv)
+		log.Printf("%s", note)
+	})
+	return translatorInst
+}
+
+// monitorOnTranslation records labeled translation results next to their
+// original activity. It never re-runs the live gate: the original text was
+// verified on its own; the translation is derived machine-made display data.
+func monitorOnTranslation(server *web.Server) func(monitor.Activity, translate.Result) {
+	return func(activity monitor.Activity, res translate.Result) {
+		server.RecordTranslation(activity, res)
+	}
+}
+
 // monitorNIMOptions builds the hosted NVIDIA speech backend options from
 // the environment; an empty key disables that backend.
 func monitorNIMOptions() voice.NIMOptions {
@@ -925,10 +952,18 @@ func cmdMonitor(args []string) error {
 		Voice:           *voiceOn,
 		VoiceOptions:    monitorVoiceOptions(*voiceLang, *voiceThreads, *voiceBeam, *voicePrompt),
 		VoiceNIMOptions: monitorNIMOptions(),
-		OutDir:          *out,
-		Name:            *server,
-		Label:           *label,
-		Logf:            func(format string, args ...interface{}) { fmt.Printf(format+"\n", args...) },
+		Translator:      monitorTranslator(),
+		OnTranslation: func(activity monitor.Activity, res translate.Result) {
+			if res.Status == translate.StatusTranslated {
+				fmt.Printf("#%d translation (%s %s, %s->en): %s\n", activity.ID, res.Provider, res.Model, res.SourceLang, res.Translated)
+			} else {
+				fmt.Printf("#%d translation %s: %s\n", activity.ID, res.Status, res.Reason)
+			}
+		},
+		OutDir: *out,
+		Name:   *server,
+		Label:  *label,
+		Logf:   func(format string, args ...interface{}) { fmt.Printf(format+"\n", args...) },
 		OnActivity: func(activity monitor.Activity) {
 			line := fmt.Sprintf("#%d %s %.4f MHz %s",
 				activity.ID, activity.Started.UTC().Format("15:04:05"),
@@ -1832,6 +1867,7 @@ func cmdWeb(args []string) error {
 		Voice:         *monitorVoice,
 		VoiceOptions:  monitorVoiceOptions(*monitorVoiceLang, *monitorVoiceThreads, *monitorVoiceBeam, *monitorVoicePrompt),
 		VoiceNIM:      monitorNIMOptions(),
+		Translator:    monitorTranslator(),
 		Multimon:      *monitorMultimon,
 		Direwolf:      *monitorDirewolf,
 	}
@@ -1945,6 +1981,7 @@ type monitorDefaults struct {
 	Voice         bool
 	VoiceOptions  voice.Options
 	VoiceNIM      voice.NIMOptions
+	Translator    *translate.Translator
 	Multimon      string
 	Direwolf      string
 }
@@ -2053,6 +2090,8 @@ func (m *runtimeMonitor) start(ctx context.Context, spec web.MonitorStartSpec, l
 		Voice:           m.cfg.Voice,
 		VoiceOptions:    m.cfg.VoiceOptions,
 		VoiceNIMOptions: m.cfg.VoiceNIM,
+		Translator:      m.cfg.Translator,
+		OnTranslation:   monitorOnTranslation(m.server),
 		MultimonBinary:  m.cfg.Multimon,
 		DirewolfBinary:  m.cfg.Direwolf,
 		OutDir:          outDir,
@@ -3284,6 +3323,8 @@ func scanOpenWebRXSpectrum(ctx context.Context, server *web.Server, source monit
 		Voice:           true,
 		VoiceOptions:    monitorVoiceOptions("auto", 2, 1, ""),
 		VoiceNIMOptions: monitorNIMOptions(),
+		Translator:      monitorTranslator(),
+		OnTranslation:   monitorOnTranslation(server),
 		MultimonBinary:  multimonPath,
 		DirewolfBinary:  direwolfPath,
 		OutDir:          capturesDir,
