@@ -44,7 +44,7 @@
     const state = document.createElement('span');
     const cls = streamClass(st);
     state.className = 'badge ' + (cls === 'streaming' ? 'board-alive' : cls === 'answered' ? 'board-answered' : 'board-dead');
-    state.textContent = (cls === 'streaming' ? 'streaming' : cls === 'answered' ? 'answered, no stream' : 'no response') + (st.verdict ? ' · ' + clean(st.verdict) : '');
+    state.textContent = (cls === 'streaming' ? 'stream verified' : cls === 'answered' ? 'answered, no stream' : 'no response') + (st.verdict ? ' · ' + clean(st.verdict) : '');
     title.appendChild(state);
     node.appendChild(title);
     if (st.url) {
