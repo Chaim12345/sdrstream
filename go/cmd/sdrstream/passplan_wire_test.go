@@ -26,7 +26,7 @@ const wireTLE = `ISS
 // remain real filesystem reads, with synthetic element text.
 func offlinePlannerWeb(t *testing.T) *web.Server {
 	t.Helper()
-	return web.New(t.TempDir(), t.TempDir(), web.WithTLELoaders(
+	return web.New(t.TempDir(), t.TempDir(), web.WithBackgroundRefresh(false), web.WithTLELoaders(
 		func(string, float64, bool, time.Duration) (string, error) { return "", fmt.Errorf("offline test") },
 		func(int, float64, bool, time.Duration) (string, error) { return "", fmt.Errorf("offline test") },
 	))

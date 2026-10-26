@@ -11,7 +11,7 @@ import (
 // injected loader, New must call it instead of tle.Load.
 func TestWithTLELoadersSeam(t *testing.T) {
 	var groupCalls, catnrCalls atomic.Int32
-	s := New("", "", WithTLELoaders(
+	s := New("", "", WithBackgroundRefresh(false), WithTLELoaders(
 		func(group string, maxAgeHours float64, offline bool, timeout time.Duration) (string, error) {
 			groupCalls.Add(1)
 			return "", errors.New("fixture: no network")
@@ -34,8 +34,9 @@ func TestWithTLELoadersSeam(t *testing.T) {
 
 // Default construction must keep the real loaders (production behavior).
 func TestTLELoadersDefault(t *testing.T) {
-	s := New("", "")
-	t.Cleanup(func() { s.cancel() })
+	s := &Server{} // inspect default loader selection without construction/network
+	s.tleLoad = s.tleLoader()
+	s.tleLoadCatnr = s.tleCatnrLoader()
 	if s.tleLoad == nil || s.tleLoadCatnr == nil {
 		t.Fatal("default TLE loaders not installed")
 	}

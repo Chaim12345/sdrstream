@@ -286,14 +286,15 @@ type ScanMetrics struct {
 }
 
 type Server struct {
-	mu          sync.Mutex
-	decodeMu    sync.Mutex
-	satsched    interface{ StatusesJSON() interface{} }
-	passplan    interface{ TimelineJSON() interface{} }
-	captures    []Capture
-	passes      []PassInfo
-	gallery     []gallery.Item
-	liveGallery []LiveGalleryItem
+	backgroundDisabled bool
+	mu                 sync.Mutex
+	decodeMu           sync.Mutex
+	satsched           interface{ StatusesJSON() interface{} }
+	passplan           interface{ TimelineJSON() interface{} }
+	captures           []Capture
+	passes             []PassInfo
+	gallery            []gallery.Item
+	liveGallery        []LiveGalleryItem
 	// translations holds labeled machine-translation results for recent
 	// activities, keyed by the same dedupe key the activity feed uses, so a
 	// translation attaches to its original row no matter which monitor or
@@ -393,6 +394,13 @@ func CaptureBase(name string) string {
 // silently perform real fetches.
 type Option func(*Server)
 
+// WithBackgroundRefresh disables unsolicited metadata/gallery refresh loops.
+// It does not block explicit API actions or change authentication. Offline
+// tests also inject TLE loaders because the initial pass table load is separate.
+func WithBackgroundRefresh(enabled bool) Option {
+	return func(s *Server) { s.backgroundDisabled = !enabled }
+}
+
 // WithTLELoaders replaces the CelesTrak element-set loaders used for pass
 // prediction (group loader and the per-catalogue-number fallback). Tests
 // inject fixtures; production leaves the defaults (tle.Load / tle.LoadCatnr).
@@ -471,9 +479,13 @@ func New(capturesDir, galleryDir string, opts ...Option) *Server {
 	s.loadScanState()
 	s.loadGallery()
 	s.loadLiveGallery()
-	go s.galleryLoop()
+	if !s.backgroundDisabled {
+		go s.galleryLoop()
+	}
 	s.loadPasses()
-	go s.passesLoop()
+	if !s.backgroundDisabled {
+		go s.passesLoop()
+	}
 	return s
 }
 
