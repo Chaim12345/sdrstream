@@ -59,7 +59,10 @@
       t.appendChild(b); t.appendChild(st);
       var m = document.createElement('div'); m.className = 'card-meta';
       var users = sv.max_clients ? ' \u00b7 ' + (sv.clients || 0) + '/' + sv.max_clients + ' users' : '';
-      var cov = state.cat && state.cat !== 'unknown' ? window.SDRCoverage.describe(window.SDRCoverage.fromSpy(sv), state.cat) : window.SDRCoverage.describe(window.SDRCoverage.fromSpy(sv), 'ham').replace(/Can tune ham.*/, 'Tuning range published');
+      var C = window.SDRCoverage, rr = C.fromSpy(sv), known = C.coverage(rr, 'ham') !== 'unknown';
+      var cov = !known ? 'Tuning range not published (coverage unknown)'
+        : state.cat && state.cat !== 'unknown' ? C.describe(rr, state.cat)
+        : 'Tuning range published (coverage only, not a verified service)';
       m.textContent = rangeText(sv) + users + ' \u00b7 ' + cov;
       card.appendChild(t); card.appendChild(m); list.appendChild(card);
     });
@@ -72,12 +75,13 @@
   }
   function load() {
     if (state.items || state.loading) return;
+    state.error = '';
     state.loading = true;
     fetch('/api/spyservers.json', { credentials: 'same-origin' }).then(function (r) {
       if (!r.ok) throw new Error('SpyServer directory not available (HTTP ' + r.status + ')');
       return r.json();
     }).then(function (j) { state.items = Array.isArray(j) ? j : []; render(); })
-      .catch(function (e) { state.error = String(e.message || e); render(); });
+      .catch(function (e) { state.error = String(e.message || e); state.loading = false; render(); });
   }
   function build() {
     var view = document.getElementById('view-stations');
@@ -91,9 +95,13 @@
       var b = e.target.closest('[data-cv]'); if (!b) return;
       state.cat = b.dataset.cv; state.limit = 40; render();
     });
-    var nav = document.querySelector('[data-view=stations]');
-    if (nav) nav.addEventListener('click', load);
-    if (view.classList.contains('active')) load();
+    // Load whenever the Stations view becomes active, however it was reached
+    // (nav click, direct #stations URL, hashchange, programmatic switch).
+    // load() is idempotent, so repeated activation never refetches.
+    function check() { if (view.classList.contains('active')) load(); }
+    new MutationObserver(check).observe(view, { attributes: true, attributeFilter: ['class'] });
+    window.addEventListener('hashchange', function () { setTimeout(check, 0); });
+    setTimeout(check, 0);
   }
   document.addEventListener('DOMContentLoaded', build);
   window.SDRCoverageView = { state: state, matches: matches };
