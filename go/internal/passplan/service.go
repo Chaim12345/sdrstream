@@ -200,6 +200,10 @@ func (s *Service) Refresh() error {
 	if s.cfg.StatePath != "" {
 		if err := s.P.Save(s.cfg.StatePath); err != nil {
 			s.cfg.Logf("passplan: save state: %v", err)
+			s.mu.Lock()
+			s.info.Error = fmt.Sprintf("plan persistence failed: %v", err)
+			s.mu.Unlock()
+			return fmt.Errorf("save plan: %w", err)
 		}
 	}
 	return gerr

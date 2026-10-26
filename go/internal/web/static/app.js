@@ -190,6 +190,8 @@ setInterval(() => {
 }, 1000);
 
 async function refreshStatus() {
+  // Planner state has its own failure/empty display even when status fails.
+  refreshObservationPlan();
   try {
     const status = await fetchJSON('/api/status.json');
     latestStatus = status;
@@ -200,7 +202,6 @@ async function refreshStatus() {
     renderStatCards(status);
     renderNextPass(status);
     renderPasses(status);
-    refreshObservationPlan();
     renderCaptures(status);
     renderHealth();
   } catch (err) { el('msg').textContent = 'status unavailable: ' + err; }

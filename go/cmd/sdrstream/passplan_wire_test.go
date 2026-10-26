@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,4 +118,47 @@ func TestStartPassplanEmptyCacheHonest(t *testing.T) {
 		t.Fatalf("must be empty without elements: %v info=%v", out, svc.InfoJSON())
 	}
 
+}
+
+// Exercise the real auth-wrapped HTTP handler, not the direct planner method.
+// A fabricated cookie must not expose either saved state or cached geometry.
+func TestPlannerHTTPAuthBoundary(t *testing.T) {
+	t.Setenv("SDRSTREAM_STATE_DIR", t.TempDir())
+	t.Setenv("SDRSTREAM_UI_PASSWORD", "offline-fixture-not-a-service-secret")
+	srv := offlinePlannerWeb(t)
+	svc := passplan.NewService(passplan.Config{Load: func(string) (string, error) { return "", fmt.Errorf("offline") }, LoadCatnr: func(int) (string, error) { return "", fmt.Errorf("offline") }})
+	srv.SetPassplan(svc)
+	handler := srv.Handler()
+	for _, cookie := range []string{"", "invented-token"} {
+		req := httptest.NewRequest("GET", "http://fixture.test/api/passplan.json", nil)
+		if cookie != "" {
+			req.AddCookie(&http.Cookie{Name: "sdrstream_session", Value: cookie})
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("untrusted session got %d", rec.Code)
+		}
+	}
+	login := httptest.NewRequest("POST", "http://fixture.test/login", strings.NewReader("password=offline-fixture-not-a-service-secret"))
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	login.Header.Set("Origin", "http://fixture.test")
+	logged := httptest.NewRecorder()
+	handler.ServeHTTP(logged, login)
+	if logged.Code != http.StatusSeeOther {
+		t.Fatalf("login=%d %s", logged.Code, logged.Body.String())
+	}
+	req := httptest.NewRequest("GET", "http://fixture.test/api/passplan.json", nil)
+	for _, cookie := range logged.Result().Cookies() {
+		req.AddCookie(cookie)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusOK || body["enabled"] != true {
+		t.Fatalf("authenticated planner=%d %s", rec.Code, rec.Body.String())
+	}
 }

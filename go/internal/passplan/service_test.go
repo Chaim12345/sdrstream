@@ -3,7 +3,9 @@ package passplan
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -177,5 +179,25 @@ func TestStationModeUnchangedDefault(t *testing.T) {
 	s := NewService(testCfg(t, issLoader))
 	if s.InfoJSON().(Info).Observer != ObserverStation {
 		t.Fatal("default must stay station mode")
+	}
+}
+
+func TestServicePersistenceFailureIsUnhealthy(t *testing.T) {
+	cfg := testCfg(t, issLoader)
+	// A regular file cannot be a parent directory for the plan state.
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.StatePath = filepath.Join(blocker, "plan.json")
+	s := NewService(cfg)
+	if err := s.Refresh(); err == nil {
+		t.Fatal("persistence failure was reported as successful refresh")
+	}
+	if !strings.Contains(s.InfoJSON().(Info).Error, "persistence failed") {
+		t.Fatalf("missing health error: %+v", s.InfoJSON())
+	}
+	if len(s.P.Timeline()) == 0 {
+		t.Fatal("in-memory plan disappeared; should remain visible with explicit persistence error")
 	}
 }
