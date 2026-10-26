@@ -17,8 +17,10 @@ type fakeSpy struct {
 	ln       net.Listener
 	hello    []byte
 	mu       sync.Mutex
+	wmu      sync.Mutex    // serializes all conn writes (stream goroutine + writeRaw)
 	settings [][2]uint32
 	stream   chan []byte   // raw IQ bodies to send, one message each
+	streamRaw chan []byte  // complete framed messages (header+body), via writeRaw
 	enabled  chan struct{} // closed when STREAMING_ENABLED=1 is recorded
 	info     DeviceInfo
 	sync     ClientSync
@@ -33,7 +35,7 @@ func newFakeSpy(t *testing.T) *fakeSpy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeSpy{ln: ln, stream: make(chan []byte, 4), enabled: make(chan struct{})}
+	f := &fakeSpy{ln: ln, stream: make(chan []byte, 4), streamRaw: make(chan []byte, 4), enabled: make(chan struct{})}
 	f.info = DeviceInfo{DeviceType: 3, DeviceSerial: 0xBEEF, MaximumSampleRate: 10000000, MaximumBandwidth: 8000000, DecimationStageCount: 5, GainStageCount: 22, MaximumGainIndex: 21, MinimumFrequency: 1000, MaximumFrequency: 1800000000, Resolution: 12, MinimumIQDecimation: 2, ForcedIQFormat: 0}
 	f.sync = ClientSync{CanControl: 1, Gain: 10, DeviceCenterFrequency: 145000000, IQCenterFrequency: 144800000}
 	go f.serve()
@@ -102,8 +104,22 @@ func (f *fakeSpy) serve() {
 						m := make([]byte, 20+len(b))
 						putMsg(m[:20], spyMsgUint8IQ|(20<<16), 1, 2, b)
 						copy(m[20:], b)
+						f.wmu.Lock()
 						conn.SetWriteDeadline(time.Now().Add(time.Second))
-						if _, err := conn.Write(m); err != nil {
+						_, err := conn.Write(m)
+						f.wmu.Unlock()
+						if err != nil {
+							return
+						}
+					}
+				}()
+				go func() {
+					for m := range f.streamRaw {
+						f.wmu.Lock()
+						conn.SetWriteDeadline(time.Now().Add(time.Second))
+						_, err := conn.Write(m)
+						f.wmu.Unlock()
+						if err != nil {
 							return
 						}
 					}
@@ -152,11 +168,13 @@ func TestSpyHandshakeAndSettings(t *testing.T) {
 	if c.SampleRate() != 625000 {
 		t.Fatalf("rate %d want 625000", c.SampleRate())
 	}
+	// Reference-client order: format, decimation, frequency, mode, gain,
+	// digital gain, enable.
 	want := [][2]uint32{
-		{spySettingStreamingMode, spyStreamModeIQOnly},
 		{spySettingIQFormat, spyFormatUint8},
-		{spySettingIQFrequency, 144800000},
 		{spySettingIQDecimation, 4},
+		{spySettingIQFrequency, 144800000},
+		{spySettingStreamingMode, spyStreamModeIQOnly},
 		{spySettingGain, 15},
 		{spySettingIQDigitalGain, 12}, // RTLSDR: uint32(4*3.01)=12
 		{spySettingStreamingEnabled, 1},
