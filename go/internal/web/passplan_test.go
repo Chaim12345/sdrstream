@@ -32,3 +32,21 @@ func TestPassplanHandler(t *testing.T) {
 		t.Fatalf("%v", out)
 	}
 }
+
+type fakePlanInfo struct{ fakePlan }
+
+func (fakePlanInfo) InfoJSON() interface{} { return map[string]string{"strategy": "priority"} }
+
+func TestPassplanHandlerServesOptionalInfo(t *testing.T) {
+	s := &Server{}
+	s.SetPassplan(fakePlanInfo{})
+	out := get(t, s)
+	info, _ := out["info"].(map[string]interface{})
+	if info["strategy"] != "priority" {
+		t.Fatalf("%v", out)
+	}
+	s.SetPassplan(fakePlan{})
+	if _, has := get(t, s)["info"]; has {
+		t.Fatal("info must be absent for providers without it")
+	}
+}

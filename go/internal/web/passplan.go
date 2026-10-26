@@ -19,5 +19,11 @@ func (s *Server) handlePassplan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"enabled": false})
 		return
 	}
-	writeJSON(w, map[string]interface{}{"enabled": true, "observations": provider.TimelineJSON()})
+	out := map[string]interface{}{"enabled": true, "observations": provider.TimelineJSON()}
+	// Optional: providers that report refresh status (last refresh, element
+	// count, error, strategy, station) expose it as "info".
+	if ip, ok := provider.(interface{ InfoJSON() interface{} }); ok {
+		out["info"] = ip.InfoJSON()
+	}
+	writeJSON(w, out)
 }
