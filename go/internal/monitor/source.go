@@ -396,6 +396,8 @@ func sourceFor(ctx context.Context, kind, server, profile string, allowPrivate b
 		return dialKiwiIQSource(ctx, server, allowPrivate)
 	case "ubersdr":
 		return dialUberSource(ctx, server, allowPrivate)
+	case "web-888":
+		return dialWeb888Source(ctx, server, allowPrivate)
 	case "spyserver":
 		return dialSpyServer(ctx, server, allowPrivate)
 	}

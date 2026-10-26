@@ -13,7 +13,6 @@ package iqsrc
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -122,7 +121,7 @@ func (c *KiwiIQClient) handle(kind int, data []byte) (int, error) {
 func (c *KiwiIQClient) noteRate(text string) {
 	for _, field := range strings.Fields(text) {
 		if v, ok := strings.CutPrefix(field, "sample_rate="); ok {
-			if r, err := strconv.Atoi(v); err == nil && r > 0 {
+			if r, ok := parseRate(v); ok {
 				c.mu.Lock()
 				c.rate = r
 				c.mu.Unlock()
