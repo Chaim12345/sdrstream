@@ -174,6 +174,24 @@ func TestPassTimelineWired(t *testing.T) {
 	}
 }
 
+// TestBandPlanWired pins the band plan overlay: toggle and script on the
+// page, script served, and app.js draws it on the spectrum canvas.
+func TestBandPlanWired(t *testing.T) {
+	for _, want := range []string{`id="bandplan-toggle"`, "/static/bandplan.js"} {
+		if !strings.Contains(indexPage, want) {
+			t.Fatalf("index page missing %s", want)
+		}
+	}
+	plan, err := staticFS.ReadFile("static/bandplan.js")
+	if err != nil || !strings.Contains(string(plan), "SDRBandPlan") || !strings.Contains(string(plan), "NAVTEX 518") {
+		t.Fatal("bandplan.js missing or incomplete")
+	}
+	app, err := staticFS.ReadFile("static/app.js")
+	if err != nil || !strings.Contains(string(app), "SDRBandPlan.draw(") {
+		t.Fatal("app.js does not draw the band plan")
+	}
+}
+
 // TestMapAPI checks the map payload stays well-formed when no TLE source is
 // reachable: receivers still list, satellites degrade to a flag.
 func TestMapAPI(t *testing.T) {

@@ -96,3 +96,9 @@ recordings when explicitly requested.
   https://github.com/sgoudelis/ground-station at commit 351631d3066b
   (Copyright its authors). Re-implemented as dependency-free SVG; no upstream
   source text was copied.
+- `go/internal/web/static/bandplan.js`: spectrum band-plan overlay. Concept
+  and band table cross-checked against
+  `frontend/src/components/waterfall/bandplan-overlay.jsx` and
+  `bandplans.jsx` of the same upstream commit. Allocation ranges are public
+  facts; extra rows (airband, marine VHF, NOAA weather, NAVTEX) were added
+  here. Canvas code is new; no upstream source text was copied.

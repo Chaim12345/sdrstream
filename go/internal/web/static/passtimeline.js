@@ -36,17 +36,33 @@
   }
   // Sine arc through rise (0 deg), peak time (max el), set (0 deg). Piecewise
   // half-sine each side so an asymmetric peak time is honoured.
-  function arc(p, x0, x1, xOf, yOf) {
+  // Passes come from a prediction that starts at "now". A pass already under
+  // way has its rise clamped to the scan time, and its peak can sit before
+  // that clamped rise. Those are "clipped": the true start and, if the peak is
+  // behind us, the true peak are not in the data. Draw only what is known:
+  // from the clipped start, falling to set (peak <= rise) or rising to peak.
+  function clipped(p) {
+    var r = +new Date(p.rise), pk = p.peak ? +new Date(p.peak) : 0;
+    return !!p.active || (pk && pk <= r) || (r <= Date.now() && +new Date(p.set) >= Date.now());
+  }
+  function peakMs(p) {
     var r = +new Date(p.rise), s = +new Date(p.set);
     var pk = p.peak ? +new Date(p.peak) : (r + s) / 2;
-    if (!(pk > r && pk < s)) pk = (r + s) / 2;
+    return pk;
+  }
+  function arc(p, xOf, yOf) {
+    var r = +new Date(p.rise), s = +new Date(p.set), pk = peakMs(p);
     var max = Math.max(0, Math.min(90, p.max_elevation || 0));
+    var cl = clipped(p), peakBehind = pk <= r;
+    if (!(pk >= r && pk < s) && !peakBehind) pk = (r + s) / 2;
     var pts = [], n = 36;
     for (var i = 0; i <= n; i++) {
       var t = r + (s - r) * i / n, el;
-      if (t <= pk) el = max * Math.sin(Math.PI / 2 * (t - r) / (pk - r));
+      if (peakBehind) el = max * Math.cos(Math.PI / 2 * (t - r) / (s - r));
+      else if (t <= pk) el = max * Math.sin(Math.PI / 2 * (t - r) / (pk - r));
       else el = max * Math.cos(Math.PI / 2 * (t - pk) / (s - pk));
-      pts.push((i ? 'L' : 'M') + xOf(t).toFixed(1) + ' ' + yOf(el).toFixed(1));
+      if (cl && i === 0 && el > 1) pts.push('M' + xOf(t).toFixed(1) + ' ' + yOf(0).toFixed(1) + 'L' + xOf(t).toFixed(1) + ' ' + yOf(el).toFixed(1));
+      else pts.push((i ? 'L' : 'M') + xOf(t).toFixed(1) + ' ' + yOf(el).toFixed(1));
     }
     return pts.join('');
   }
@@ -83,13 +99,14 @@
       seen[key] = 1; shown++;
       var c = colour(p, now);
       var g = svg('g', { class: 'pt-pass', tabindex: 0 });
-      var d = arc(p, 0, 0, xOf, yOf);
+      var d = arc(p, xOf, yOf);
       g.appendChild(svg('path', { d: d + 'L' + xOf(s).toFixed(1) + ' ' + yOf(0) + 'L' + xOf(r).toFixed(1) + ' ' + yOf(0) + 'Z', fill: c, 'fill-opacity': 0.12, stroke: 'none' }));
       g.appendChild(svg('path', { d: d, fill: 'none', stroke: c, 'stroke-width': 2 }));
-      var pk = p.peak ? +new Date(p.peak) : (r + s) / 2;
-      var lab = svg('text', { x: xOf(pk), y: yOf(p.max_elevation || 0) - 4, 'text-anchor': 'middle', fill: c, 'font-size': 10 }, p.satellite);
+      var pk = Math.max(r, peakMs(p));
+      var lx = Math.min(Math.max(xOf(pk), M.l + 18), w - M.r - 18);
+      var lab = svg('text', { x: lx, y: yOf(p.max_elevation || 0) - 4, 'text-anchor': 'middle', fill: c, 'font-size': 10 }, p.satellite);
       if ((p.max_elevation || 0) >= 25 || state.hours <= 4) g.appendChild(lab);
-      g.appendChild(svg('title', {}, p.satellite + ' ' + hhmm(r) + '-' + hhmm(s) + ' max ' + (p.max_elevation || 0).toFixed(1) + '\u00b0'));
+      g.appendChild(svg('title', {}, p.satellite + ' ' + hhmm(r) + '-' + hhmm(s) + ' max ' + (p.max_elevation || 0).toFixed(1) + '\u00b0' + (clipped(p) ? ' (in progress: start clipped to prediction time)' : '')));
       root.appendChild(g);
     });
     if (now >= start && now <= end) {
@@ -99,7 +116,7 @@
     box.textContent = '';
     box.appendChild(root);
     host.querySelector('.pt-note').textContent = shown
-      ? shown + ' pass' + (shown === 1 ? '' : 'es') + ' in window. Curves are approximated from rise, peak, set and max elevation.'
+      ? shown + ' pass' + (shown === 1 ? '' : 'es') + ' in window. Curves are approximated from rise, peak, set and max elevation. Passes already under way start at the prediction time.'
       : 'No passes in this window.';
     host.dataset.shown = String(shown);
     host.querySelector('.pt-hours').textContent = state.hours + ' h';

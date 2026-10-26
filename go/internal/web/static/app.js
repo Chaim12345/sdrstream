@@ -998,6 +998,8 @@ function drawSpectrum(bins, centre, span) {
     }
   }
   drawBookmarkFlags(ctx, w, centre, span, ratio);
+  if (window.SDRBandPlan) window.SDRBandPlan.draw(ctx, w, h, centre, span, ratio);
+  window.redrawSpectrum = () => drawSpectrum(bins, centre, span);
   el('spec-lo').textContent = mhz(centre - span / 2);
   el('spec-mid').textContent = mhz(centre);
   el('spec-hi').textContent = mhz(centre + span / 2);

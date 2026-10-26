@@ -688,3 +688,4 @@ kbd {
 #pass-timeline .pt-pass:focus{outline:none}#pass-timeline .pt-pass:focus path{stroke-width:3}
 #pass-timeline .pt-ctl .chip{min-width:0;padding:4px 10px;min-height:32px}
 #pass-timeline .pt-chart{overflow:hidden}
+#bandplan-toggle[aria-pressed=false]{opacity:.5;text-decoration:line-through}
