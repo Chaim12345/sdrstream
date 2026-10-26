@@ -6,14 +6,10 @@ import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
 
-import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
-import java.security.SecureRandom;
 
-import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
-import javax.crypto.spec.GCMParameterSpec;
 
 /**
  * Android-Keystore-backed storage for hosted-provider API keys (NVIDIA NIM,
@@ -38,9 +34,6 @@ final class SecretStore {
 
     private static final String ANDROID_KEYSTORE = "AndroidKeyStore";
     private static final String WRAP_KEY = "sdrstream_secret_wrap";
-    private static final String TRANSFORM = "AES/GCM/NoPadding";
-    private static final int GCM_TAG_BITS = 128;
-    private static final int IV_BYTES = 12;
 
     private SecretStore() {}
 
@@ -73,14 +66,10 @@ final class SecretStore {
     static boolean put(Context ctx, String prefKey, String secret) {
         if (secret == null || secret.isEmpty()) return false;
         try {
-            byte[] iv = new byte[IV_BYTES];
-            new SecureRandom().nextBytes(iv);
-            Cipher c = Cipher.getInstance(TRANSFORM);
-            c.init(Cipher.ENCRYPT_MODE, getOrCreateWrapKey(), new GCMParameterSpec(GCM_TAG_BITS, iv));
-            byte[] enc = c.doFinal(secret.getBytes(StandardCharsets.UTF_8));
+            SecretCrypto.Sealed sealed = SecretCrypto.encrypt(getOrCreateWrapKey(), secret);
             SharedPreferences.Editor e = Prefs.prefs(ctx).edit();
-            e.putString(prefKey + "_enc", Base64.encodeToString(enc, Base64.NO_WRAP));
-            e.putString(prefKey + "_iv", Base64.encodeToString(iv, Base64.NO_WRAP));
+            e.putString(prefKey + "_enc", Base64.encodeToString(sealed.ciphertext, Base64.NO_WRAP));
+            e.putString(prefKey + "_iv", Base64.encodeToString(sealed.iv, Base64.NO_WRAP));
             e.apply();
             DiagRedact.addSecretValue(secret);
             return true;
@@ -96,10 +85,8 @@ final class SecretStore {
         String ivB64 = p.getString(prefKey + "_iv", null);
         if (encB64 == null || ivB64 == null) return null;
         try {
-            Cipher c = Cipher.getInstance(TRANSFORM);
-            c.init(Cipher.DECRYPT_MODE, getOrCreateWrapKey(),
-                    new GCMParameterSpec(GCM_TAG_BITS, Base64.decode(ivB64, Base64.NO_WRAP)));
-            String secret = new String(c.doFinal(Base64.decode(encB64, Base64.NO_WRAP)), StandardCharsets.UTF_8);
+            String secret = SecretCrypto.decrypt(getOrCreateWrapKey(),
+                    Base64.decode(ivB64, Base64.NO_WRAP), Base64.decode(encB64, Base64.NO_WRAP));
             DiagRedact.addSecretValue(secret);
             return secret;
         } catch (Throwable t) {
