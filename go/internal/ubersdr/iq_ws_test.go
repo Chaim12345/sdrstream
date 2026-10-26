@@ -2,6 +2,8 @@ package ubersdr
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -116,5 +118,45 @@ func TestDialIQOffline(t *testing.T) {
 	m := <-tunes
 	if m["type"] != "tune" || m["mode"] != "iq48" || m["frequency"].(float64) != 7_200_000 {
 		t.Fatalf("tune message %v", m)
+	}
+}
+
+func TestDialHookAndRedirectAndRedaction(t *testing.T) {
+	tunes := make(chan map[string]any, 4)
+	q := make(chan string, 1)
+	ts := fakeUber(t, tunes, q)
+	defer ts.Close()
+	host := strings.TrimPrefix(ts.URL, "http://")
+
+	// A refusing dial hook blocks both the precheck and the socket, and the
+	// password never appears in the error.
+	var calls int
+	s, _ := NewServer(host, "s3cret-pw")
+	s.NetDialContext = func(ctx context.Context, n, a string) (net.Conn, error) {
+		calls++
+		return nil, errors.New("refused by guard for s3cret-pw")
+	}
+	if _, err := s.Check(context.Background(), NewSessionID()); err == nil || strings.Contains(err.Error(), "s3cret-pw") {
+		t.Fatalf("check err = %v", err)
+	}
+	if _, err := s.DialIQ(context.Background(), NewSessionID(), 7_000_000, 48, 0); err == nil || strings.Contains(err.Error(), "s3cret-pw") {
+		t.Fatalf("dial err = %v", err)
+	}
+	if calls < 2 {
+		t.Fatalf("hook called %d times", calls)
+	}
+
+	// A redirect is not followed.
+	hit := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true }))
+	defer target.Close()
+	rd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer rd.Close()
+	s2, _ := NewServer(strings.TrimPrefix(rd.URL, "http://"), "")
+	_, _ = s2.Check(context.Background(), NewSessionID())
+	if hit {
+		t.Fatal("redirect was followed")
 	}
 }

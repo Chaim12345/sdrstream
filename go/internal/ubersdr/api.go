@@ -1,6 +1,8 @@
 // Package ubersdr is the bridge's side of the UberSDR HTTP and WebSocket API:
 // the /connection precheck, the receiver's description, the public directory,
 // and the IQ socket itself.
+// Portions adapted from github.com/madpsy/ka9q_ubersdr clients/hpsdr-go (GPL-3.0; upstream
+// files carry no per-file headers). See NOTICE-third-party.md.
 package ubersdr
 
 import (
@@ -11,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -71,6 +74,23 @@ type Server struct {
 	// HTTP is the client for the API calls; nil uses a default with the
 	// timeouts and TLS policy below.
 	HTTP *http.Client
+
+	// NetDialContext, when set, makes every TCP connection this server makes
+	// (the /connection precheck and the IQ websocket) through it, with the
+	// environment proxy off. It is the seam for a pinned, public-IP-only dialer
+	// when the receiver address came from an untrusted directory: the guard
+	// resolves and checks the address at connect time and refuses private,
+	// loopback and link-local targets.
+	NetDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+}
+
+// redact removes the session password from text that may reach a log or an
+// error: the password travels in the websocket query string.
+func (s *Server) redact(msg string) string {
+	if s.Password == "" {
+		return msg
+	}
+	return strings.ReplaceAll(msg, s.Password, "***")
 }
 
 // NewServer normalises a URL as an operator might type it and returns the
@@ -134,14 +154,29 @@ func (s *Server) client() *http.Client {
 	if s.HTTP != nil {
 		return s.HTTP
 	}
+	if s.NetDialContext != nil {
+		return &http.Client{
+			Timeout:       10 * time.Second,
+			CheckRedirect: noRedirect,
+			Transport: &http.Transport{
+				DialContext:     s.NetDialContext,
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+			},
+		}
+	}
 	return defaultHTTP
 }
+
+// noRedirect: a receiver's API never needs a redirect, and following one would
+// send the session password to wherever it points.
+func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // defaultHTTP skips certificate verification, as the C bridge does
 // (LCCSCF_ALLOW_SELFSIGNED and no hostname check): receivers behind
 // self-signed certificates are common in this project's deployments.
 var defaultHTTP = &http.Client{
-	Timeout: 10 * time.Second,
+	Timeout:       10 * time.Second,
+	CheckRedirect: noRedirect,
 	Transport: &http.Transport{
 		Proxy:           http.ProxyFromEnvironment,
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
@@ -199,7 +234,7 @@ func (s *Server) Check(ctx context.Context, sessionID string) (ConnResult, error
 
 	resp, err := s.client().Do(req)
 	if err != nil {
-		return ConnResult{}, fmt.Errorf("cannot reach %s: %w", s.Host(), err)
+		return ConnResult{}, fmt.Errorf("cannot reach %s: %s", s.Host(), s.redact(err.Error()))
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
