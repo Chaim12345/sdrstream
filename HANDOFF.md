@@ -454,13 +454,17 @@ receiver):
   `ImportLedger` upserts verbatim (1 unreachable = one recorded
   observation, idempotent re-import, no transition events); live probes
   still increment through `Update` (`43f2180`).
-- Offline replay evidence (`15665b5`, `587863b`, `2b07f03`): upstream's
-  hash-pinned recorded PCM4 stream replays pcmv4 -> complex IQ -> iqdemod
-  (structural assertions only; content unknown); the first 100s of the
-  user's real Oostende NAVTEX capture (testdata, sha256-pinned in the
-  decoder manifest with provenance) replays through NAVTEXDecode
-  reproducing the recorded message text; gate pins message count at the
-  recorded 1700 Hz FSK centre.
+- Offline replay evidence: upstream's hash-pinned recorded PCM4 stream
+  replays pcmv4 -> complex IQ -> iqdemod (structural assertions only;
+  content unknown) - `15665b5`, unaffected. The NAVTEX replay fixture
+  (`15665b5`/`587863b`/`2b07f03`) was REMOVED from the public branch:
+  the Oostende 490 kHz capture was made from the public Twente WebSDR,
+  not the user's own receiver as its provenance file and manifest entry
+  mislabeled it, and the code push grant does not cover publishing
+  capture files. The replay test now skips unless the private 100s trim
+  is supplied via `NAVTEX_REPLAY_WAV` (or dropped into testdata). The
+  blob remains reachable in branch history at `15665b5`; a history
+  rewrite was NOT done (needs review).
 
 Catalog scope honesty: the station catalog carries ONLY the 70 newly
 tested results (Batch C 40 + UberSDR 15 + Web-888 15), not the 308

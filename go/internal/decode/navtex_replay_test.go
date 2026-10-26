@@ -44,11 +44,15 @@ func readReplayWAV(t *testing.T, path string) ([]float64, int) {
 }
 
 // Offline replay of a REAL recorded NAVTEX capture (Oostende 490 kHz,
-// 2026-10-26 08:10 UTC, the user's own receiver - provenance in
-// testdata/navtex_oostende_490.provenance.md). Asserts the decoder
-// reproduces the message text recorded at capture time. This is real-signal
-// evidence for the decoder stage; it says nothing about live receiver
-// reachability.
+// 2026-10-26 08:10 UTC). The capture was made from the public Twente
+// WebSDR (websdr.ewi.utwente.nl:8901); an earlier version of this comment
+// and the fixture provenance mislabeled it as the user's own receiver.
+// The fixture bytes are NOT in this repository: publishing capture files
+// needs the user's explicit authorization. Keep the 100s trim privately
+// and point NAVTEX_REPLAY_WAV at it (or drop it in testdata) to run this
+// test; it skips when the fixture is absent. Asserts the decoder
+// reproduces the message text recorded at capture time. Real-signal
+// evidence for the decoder stage; not live receiver reachability proof.
 func TestNAVTEXReplayRecordedCapture(t *testing.T) {
 	path := os.Getenv("NAVTEX_REPLAY_WAV")
 	if path == "" {
