@@ -165,3 +165,32 @@ func TestStopCleansEverything(t *testing.T) {
 		t.Fatalf("banks %d", len(h.vfos))
 	}
 }
+
+func TestRoleAndActive(t *testing.T) {
+	h := NewHub()
+	h.Start("a", "c", cfg(), false)
+	h.Join("a", "j")
+	if s, r := h.Role("c"); s != "a" || r != "controller" {
+		t.Fatal(s, r)
+	}
+	if s, r := h.Role("j"); s != "a" || r != "listener" {
+		t.Fatal(s, r)
+	}
+	if s, r := h.Role("x"); s != "" || r != "" {
+		t.Fatal(s, r)
+	}
+	if a := h.Active(); len(a) != 1 || len(a["a"]) != 2 {
+		t.Fatal(a)
+	}
+}
+
+func TestReleaseSkipsWorkerStop(t *testing.T) {
+	h := NewHub()
+	n := 0
+	h.OnWorkerStop = func(string) { n++ }
+	h.Start("a", "c", cfg(), false)
+	h.Release("c")
+	if n != 0 || len(h.Active()) != 0 {
+		t.Fatalf("n=%d active=%v", n, h.Active())
+	}
+}

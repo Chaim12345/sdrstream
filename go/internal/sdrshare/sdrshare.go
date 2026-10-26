@@ -209,7 +209,13 @@ func (h *Hub) Leave(sourceID, session string) error {
 // joiners remain, the oldest-sorted joiner is not promoted: the source keeps
 // its last config and has no controller until someone takes over, so a
 // departure never hands settings to a listener.
-func (h *Hub) Stop(session string) {
+func (h *Hub) Stop(session string) { h.stop(session, true) }
+
+// Release is Stop without the OnWorkerStop callback, for a caller that is
+// about to replace the worker itself (restart) and must not close it twice.
+func (h *Hub) Release(session string) { h.stop(session, false) }
+
+func (h *Hub) stop(session string, notify bool) {
 	h.mu.Lock()
 	var stopped []string
 	for id, s := range h.sources {
@@ -223,6 +229,9 @@ func (h *Hub) Stop(session string) {
 	}
 	delete(h.vfos, session)
 	cb := h.OnWorkerStop
+	if !notify {
+		cb = nil
+	}
 	h.mu.Unlock()
 	for _, id := range stopped {
 		if cb != nil {
@@ -375,4 +384,32 @@ func clone(m map[string]any) map[string]any {
 		o[k] = v
 	}
 	return o
+}
+
+// Role reports where a session sits: the source it is on and whether it is
+// the "controller" or a "listener". Empty source means it is on none.
+func (h *Hub) Role(session string) (sourceID, role string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for id, s := range h.sources {
+		if s.controller == session {
+			return id, "controller"
+		}
+		if s.joiners[session] {
+			return id, "listener"
+		}
+	}
+	return "", ""
+}
+
+// Active returns every source with its members, for callers that run a
+// single global receiver and must not replace it under other sessions.
+func (h *Hub) Active() map[string][]string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := map[string][]string{}
+	for id, s := range h.sources {
+		out[id] = s.members()
+	}
+	return out
 }

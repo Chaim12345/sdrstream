@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/chaim12345/sdrstream/go/internal/sdrshare"
 	"io"
 	"log"
 	"net"
@@ -307,6 +308,8 @@ type Server struct {
 	galleryAt         time.Time
 	monitor           *monitor.Monitor
 	monitorHooks      MonitorHooks
+	hubOnce           sync.Once
+	hub               *sdrshare.Hub
 	networkOK         *bool
 	networkDetail     string
 	logRing           *LogRing
@@ -1130,6 +1133,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/scanlog.json", s.handleScanLog)
 	mux.HandleFunc("/api/scans/control", s.handleScanControl)
 	mux.HandleFunc("/api/monitor/control", s.handleMonitorControl)
+	mux.HandleFunc("/api/monitor/join", s.handleMonitorJoin)
+	mux.HandleFunc("/api/monitor/leave", s.handleMonitorLeave)
 	mux.HandleFunc("/api/activity.json", s.handleActivity)
 	mux.HandleFunc("/api/spectrum.json", s.handleSpectrum)
 	mux.HandleFunc("/api/live.json", s.handleLive)
@@ -1985,7 +1990,10 @@ func (s *Server) handleMonitorControl(w http.ResponseWriter, r *http.Request) {
 		s.handleMonitorStart(w, r)
 		return
 	case "stop":
-		s.handleMonitorStop(w)
+		s.handleMonitorStop(w, r)
+		return
+	}
+	if !s.mayControl(w, r) {
 		return
 	}
 	s.mu.Lock()
@@ -2055,7 +2063,13 @@ func (s *Server) handleMonitorStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if !s.claimStart(w, r, spec) {
+		return
+	}
 	if err := hooks.Start(spec); err != nil {
+		if sess, ok := s.principal(r); ok {
+			s.sharedHub().Release(sess) // unwind the claim; the receiver never opened
+		}
 		http.Error(w, "monitor failed to start: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -2064,12 +2078,29 @@ func (s *Server) handleMonitorStart(w http.ResponseWriter, r *http.Request) {
 
 // handleMonitorStop detaches the running monitor. It is idempotent so a
 // double tap never reports an error.
-func (s *Server) handleMonitorStop(w http.ResponseWriter) {
+func (s *Server) handleMonitorStop(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	hooks := s.monitorHooks
 	s.mu.Unlock()
 	if hooks.Stop == nil {
 		http.Error(w, "stopping a monitor from the UI is not supported by this build", http.StatusNotImplemented)
+		return
+	}
+	if sess, ok := s.principal(r); !ok {
+		http.Error(w, "access denied", http.StatusUnauthorized)
+		return
+	} else if hub := s.sharedHub(); len(hub.Active()) > 0 {
+		// Shared receiver: Stop means "leave". The receiver closes only when
+		// the last session leaves (hub.OnWorkerStop calls hooks.Stop).
+		if src, role := hub.Role(sess); role == "" {
+			http.Error(w, "you are not on the running receiver", http.StatusForbidden)
+			return
+		} else if role == "listener" {
+			_ = hub.Leave(src, sess)
+		} else {
+			hub.Stop(sess)
+		}
+		writeJSON(w, map[string]interface{}{"running": len(hub.Active()) > 0})
 		return
 	}
 	if err := hooks.Stop(); err != nil {
@@ -2469,6 +2500,9 @@ func (s *Server) handleTune(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.previewRemoteControlDenied(w) {
+		return
+	}
+	if !s.mayControl(w, r) {
 		return
 	}
 	hz, err := strconv.ParseFloat(r.FormValue("frequency_hz"), 64)
