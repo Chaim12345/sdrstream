@@ -229,7 +229,7 @@ func (t *Translator) Translate(ctx context.Context, kind Kind, text string) Resu
 
 	out, err := t.call(ctx, text)
 	if err != nil {
-		return t.failed(text, err)
+		return t.failed(ctx, text, err)
 	}
 	return t.accept(key, text, out)
 }
@@ -241,6 +241,9 @@ func (t *Translator) Translate(ctx context.Context, kind Kind, text string) Resu
 // does, so later calls report an error at their own deadline instead of
 // hanging. A panic in a provider becomes an error: Translate runs on detached
 // goroutines in the monitor, where an unrecovered panic would end the process.
+// errProviderPanic carries no panic payload: it could hold request text or secrets.
+var errProviderPanic = errors.New("translate: provider panicked")
+
 func (t *Translator) call(ctx context.Context, text string) (Output, error) {
 	select {
 	case t.slot <- struct{}{}:
@@ -256,7 +259,7 @@ func (t *Translator) call(ctx context.Context, text string) (Output, error) {
 		defer func() { <-t.slot }()
 		defer func() {
 			if r := recover(); r != nil {
-				done <- answer{err: fmt.Errorf("translate: provider panicked: %v", r)}
+				done <- answer{err: errProviderPanic}
 			}
 		}()
 		out, err := t.prov.Translate(ctx, text)
@@ -294,7 +297,7 @@ func (t *Translator) takeSlot(now time.Time) bool {
 	return true
 }
 
-func (t *Translator) failed(text string, err error) Result {
+func (t *Translator) failed(ctx context.Context, text string, err error) Result {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.cfg.Now()
@@ -314,9 +317,11 @@ func (t *Translator) failed(text string, err error) Result {
 		return t.result(text, StatusRateLimit, "provider asked to slow down; paused")
 	}
 	t.stats.Errors++
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if ctx.Err() != nil {
 		// The caller gave up (shutdown, listen window, its own timeout). That
 		// says nothing about the provider, so it does not count toward a pause.
+		// A deadline the provider hit on its own (ctx still alive) is a real
+		// provider failure and counts below.
 		return t.result(text, StatusError, "translation cancelled or timed out")
 	}
 	t.fails++
@@ -324,7 +329,7 @@ func (t *Translator) failed(text string, err error) Result {
 		t.pausedTil = now.Add(t.cfg.Cooldown)
 		t.fails = 0
 	}
-	return t.result(text, StatusError, err.Error())
+	return t.result(text, StatusError, "translation provider error")
 }
 
 func (t *Translator) accept(key, text string, out Output) Result {

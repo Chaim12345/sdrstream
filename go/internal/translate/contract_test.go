@@ -3,6 +3,8 @@ package translate
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -177,5 +179,71 @@ func TestUncooperativeProviderDoesNotHangCallers(t *testing.T) {
 		if time.Since(start) > 2*time.Second || r.Status != StatusError || r.Original != txt {
 			t.Fatalf("call %d: %v %+v", i, time.Since(start), r)
 		}
+	}
+}
+
+type failWith struct {
+	err   error
+	panic any
+	calls *int
+}
+
+func (failWith) Name() string  { return "gemini" }
+func (failWith) Model() string { return "f" }
+func (f failWith) Translate(context.Context, string) (Output, error) {
+	*f.calls++
+	if f.panic != nil {
+		panic(f.panic)
+	}
+	return Output{}, f.err
+}
+
+// Neither a panic payload nor a provider error string may reach Result
+// (and so the UI/JSON): both can hold request text or secrets.
+func TestFailureReasonsExposeNoPayload(t *testing.T) {
+	const secret = "SECRET-PAYLOAD-AIzaFAKE"
+	for name, p := range map[string]failWith{
+		"panic": {panic: secret + french, calls: new(int)},
+		"error": {err: errors.New("gemini: " + secret + french), calls: new(int)},
+	} {
+		tr := on(p, nil)
+		r := tr.Translate(context.Background(), KindTranscript, french)
+		b, _ := json.Marshal(r)
+		if r.Status != StatusError || strings.Contains(string(b), secret) || strings.Contains(r.Reason, "Attention") || r.Original != french {
+			t.Fatalf("%s: %s", name, b)
+		}
+	}
+}
+
+// A deadline the provider hits itself while the caller's ctx is alive is a
+// provider failure: it must count toward the failure pause. A caller's own
+// cancel must not.
+func TestProviderDeadlineCountsCallerCancelDoesNot(t *testing.T) {
+	n := 0
+	tr := on(failWith{err: context.DeadlineExceeded, calls: &n}, func(c *Config) {
+		c.RequestsPerMinute = 100
+		c.CooldownAfterFailures = 2
+	})
+	for i := 0; i < 2; i++ {
+		tr.Translate(context.Background(), KindTranscript, fmt.Sprintf("%s %d", french, i))
+	}
+	before := n
+	r := tr.Translate(context.Background(), KindTranscript, french+" next")
+	if n != before || r.Status == StatusTranslated {
+		t.Fatalf("provider-side deadlines did not pause: calls %d->%d %+v", before, n, r)
+	}
+	m := 0
+	tr2 := on(failWith{err: context.Canceled, calls: &m}, func(c *Config) {
+		c.RequestsPerMinute = 100
+		c.CooldownAfterFailures = 2
+	})
+	for i := 0; i < 4; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		tr2.Translate(ctx, KindTranscript, fmt.Sprintf("%s %d", french, i))
+	}
+	r = tr2.Translate(context.Background(), KindTranscript, french+" later")
+	if strings.Contains(r.Reason, "paused") || r.Status == StatusRateLimit {
+		t.Fatalf("caller cancels paused provider: %+v", r)
 	}
 }
