@@ -67,3 +67,36 @@ func TestRecordURLPrefersCandidateScheme(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// Re-importing the same ledger (every server restart re-imports) must be
+// idempotent: the historical row is one observation, so the failure counter
+// must stay 1 and no reachability-transition events may appear. The old
+// path routed imports through Update(), which incremented the counter each
+// time and fabricated "N consecutive failures".
+func TestImportLedgerIdempotentNoFakeHistory(t *testing.T) {
+	ledger := `{"family":"Web-888","endpoint":"w.example:8073","started_at":"2026-10-26T09:00:00Z","dial_ok":false,"outcome":"skipped-status-unreadable"}
+`
+	p := filepath.Join(t.TempDir(), "ledger.jsonl")
+	if err := os.WriteFile(p, []byte(ledger), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := NewCatalog()
+	for i := 0; i < 5; i++ {
+		if _, err := c.ImportLedger(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w, _ := c.Get("w.example:8073")
+	if w.ConsecFailures != 1 {
+		t.Fatalf("after 5 imports ConsecFailures = %d, want 1 (one observation)", w.ConsecFailures)
+	}
+	if n := len(c.Snapshot().Events); n != 0 {
+		t.Fatalf("imports emitted %d transition events, want 0", n)
+	}
+	// A later live probe failure increments from the imported baseline.
+	c.Update(Record{Key: "w.example:8073", Kind: "web-888", Reachable: false, Verdict: "ws-fail"})
+	w, _ = c.Get("w.example:8073")
+	if w.ConsecFailures != 2 {
+		t.Fatalf("after live probe failure ConsecFailures = %d, want 2", w.ConsecFailures)
+	}
+}
