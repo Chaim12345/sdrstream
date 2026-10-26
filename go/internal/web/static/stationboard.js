@@ -6,6 +6,15 @@
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
+  // streamClass separates a mere transport answer from a usable IQ/audio
+  // stream. A station that answered but delivered no frames is not a
+  // working stream, and counting it as one would overstate the catalog.
+  function streamClass(st) {
+    if (!st.reachable) return 'silent';
+    const v = String(st.verdict || '').toLowerCase();
+    if (v.includes('-decoded') || v.includes('frames-received') || v.includes('samples-received') || v.includes('stream-received')) return 'streaming';
+    return 'answered';
+  }
   const KINDS = { kiwi: 'KiwiSDR', openwebrx: 'OpenWebRX', websdr: 'WebSDR' };
   const BANDS = [
     ['LF', 30e3, 300e3], ['MF', 300e3, 3e6], ['HF', 3e6, 30e6],
@@ -33,8 +42,9 @@
     kind.textContent = KINDS[st.kind] || clean(st.kind) || 'unknown type';
     title.appendChild(kind);
     const state = document.createElement('span');
-    state.className = 'badge ' + (st.reachable ? 'board-alive' : 'board-dead');
-    state.textContent = (st.reachable ? 'alive' : 'dead') + (st.verdict ? ' · ' + clean(st.verdict) : '');
+    const cls = streamClass(st);
+    state.className = 'badge ' + (cls === 'streaming' ? 'board-alive' : cls === 'answered' ? 'board-answered' : 'board-dead');
+    state.textContent = (cls === 'streaming' ? 'streaming' : cls === 'answered' ? 'answered, no stream' : 'no response') + (st.verdict ? ' · ' + clean(st.verdict) : '');
     title.appendChild(state);
     node.appendChild(title);
     if (st.url) {
@@ -124,15 +134,17 @@
     if (!data && !error) return; // nothing fetched yet; static shell stays
     const stations = (data && data.stations) || [];
     if (data) {
-      const alive = stations.filter(s => s.reachable).length;
+      let streaming = 0, answered = 0;
+      stations.forEach(s => { const c = streamClass(s); if (c === 'streaming') streaming++; else if (c === 'answered') answered++; });
       $('board-total').textContent = String(stations.length);
-      $('board-alive').textContent = String(alive);
-      $('board-dead').textContent = String(stations.length - alive);
+      $('board-streaming').textContent = String(streaming);
+      $('board-answered').textContent = String(answered);
+      $('board-silent').textContent = String(stations.length - streaming - answered);
       $('board-updated').textContent = data.updated_at ? 'catalog updated ' + fmtDate(data.updated_at) : '';
     }
     const filtered = stations.filter(s =>
       (!filterKind || s.kind === filterKind) &&
-      (!filterReach || (filterReach === 'alive') === !!s.reachable));
+      (!filterReach || streamClass(s) === filterReach));
     const shown = filtered.slice(0, limit);
     const box = $('board-list'); box.textContent = '';
     shown.forEach(st => box.appendChild(card(st)));

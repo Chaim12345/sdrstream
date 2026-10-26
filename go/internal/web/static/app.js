@@ -172,6 +172,10 @@ function renderNextPass(status) {
   card.hidden = false;
   el('np-sat').textContent = nextPass.satellite;
   el('np-receiver').textContent = shortURL(nextPass.receiver);
+  let rxcav = el('np-rxcaveat');
+  if (!rxcav) { rxcav = document.createElement('div'); rxcav.id = 'np-rxcaveat'; rxcav.className = 'pass-warn'; card.appendChild(rxcav); }
+  rxcav.hidden = !nextPass.receiver;
+  rxcav.textContent = 'receiver pairing from published coverage - not a verified service for this satellite';
   el('np-meta').textContent = 'rise ' + fmtTime(nextPass.rise) + ' · peak ' + fmtTime(nextPass.peak) + ' · max el ' + (nextPass.max_elevation || 0).toFixed(1) + '°';
   let warn = el('np-warn');
   if (!warn) { warn = document.createElement('div'); warn.id = 'np-warn'; warn.className = 'pass-warn'; card.appendChild(warn); }
@@ -223,7 +227,7 @@ function renderPasses(status) {
     else { cd.textContent = 'done'; cd.classList.add('muted'); }
     title.appendChild(b); title.appendChild(cd);
     const meta = document.createElement('div'); meta.className = 'card-meta';
-    meta.textContent = shortURL(p.receiver) + ' · rise ' + fmtTime(p.rise) + ' · peak ' + fmtTime(p.peak) + ' · set ' + fmtTime(p.set) + ' · max el ' + (p.max_elevation || 0).toFixed(1) + '°';
+    meta.textContent = shortURL(p.receiver) + ' · rise ' + fmtTime(p.rise) + ' · peak ' + fmtTime(p.peak) + ' · set ' + fmtTime(p.set) + ' · max el ' + (p.max_elevation || 0).toFixed(1) + '°' + (p.receiver ? ' · pairing from coverage, unverified' : '');
     card.appendChild(title); card.appendChild(meta);
     if (p.status && p.status !== 'active') {
       const w = document.createElement('div'); w.className = 'pass-warn';
