@@ -22,6 +22,10 @@ type LedgerRow struct {
 	StartedAt string `json:"started_at"`
 	DialOK    bool   `json:"dial_ok"`
 	Outcome   string `json:"outcome"`
+	// URL is optional provenance from the candidate list (https endpoints
+	// such as the UberSDR fleet); when absent the record falls back to
+	// http://endpoint.
+	URL string `json:"url,omitempty"`
 }
 
 // importKind maps a ledger family onto the catalog's receiver kinds.
@@ -35,9 +39,22 @@ func importKind(family string) string {
 		return "websdr"
 	case "spyserver":
 		return "spyserver"
+	case "ubersdr":
+		return "ubersdr"
+	case "web-888", "web888":
+		return "web-888"
 	default:
 		return strings.ToLower(family)
 	}
+}
+
+// recordURL keeps the candidate-list scheme when the ledger carries it so
+// https receivers are not mislabeled http.
+func recordURL(row LedgerRow) string {
+	if u := strings.TrimSpace(row.URL); u != "" {
+		return u
+	}
+	return "http://" + row.Endpoint
 }
 
 // importReachable reports whether the outcome proves the station answered.
@@ -79,7 +96,7 @@ func (c *Catalog) ImportLedger(path string) (int, error) {
 			Key:       strings.ToLower(row.Endpoint),
 			Kind:      importKind(row.Family),
 			Name:      row.Endpoint,
-			URL:       "http://" + row.Endpoint,
+			URL:       recordURL(row),
 			Reachable: importReachable(row),
 			Verdict:   row.Outcome,
 		}
