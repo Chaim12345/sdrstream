@@ -1412,3 +1412,31 @@ func TestSpyServersEmptyDirectory(t *testing.T) {
 		t.Errorf("body = %q, want an empty list", got)
 	}
 }
+
+// A shared preview build refuses monitor start with an explicit reason so
+// a visitor cannot make the demo engine dial a real receiver.
+func TestMonitorStartPreviewGate(t *testing.T) {
+	t.Setenv("SDRSTREAM_PREVIEW_NO_START", "1")
+	s := &Server{}
+	req := httptest.NewRequest("POST", "http://example.test/api/monitor/start", strings.NewReader("kind=openwebrx&server=x"))
+	rec := httptest.NewRecorder()
+	s.handleMonitorStart(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("preview gate: got %d, want 403", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "preview demo") {
+		t.Fatalf("preview gate: body %q should name the reason", rec.Body.String())
+	}
+}
+
+// Without the preview env the gate stays out of the way (the existing
+// not-supported path proves the request reached the normal handler).
+func TestMonitorStartPreviewGateOff(t *testing.T) {
+	s := &Server{}
+	req := httptest.NewRequest("POST", "http://example.test/api/monitor/start", strings.NewReader("kind=openwebrx&server=x"))
+	rec := httptest.NewRecorder()
+	s.handleMonitorStart(rec, req)
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("gate off: got 403, want the normal handler path")
+	}
+}

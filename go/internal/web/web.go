@@ -1941,6 +1941,13 @@ var monitorKinds = map[string]bool{"openwebrx": true, "websdr": true, "kiwi": tr
 // refused connection) come back as errors so the UI can show an honest
 // "failed" state instead of pretending an empty panel is success.
 func (s *Server) handleMonitorStart(w http.ResponseWriter, r *http.Request) {
+	// Shared preview builds set SDRSTREAM_PREVIEW_NO_START so a visitor
+	// cannot make the demo engine dial a real receiver. Browsing stays
+	// fully live; only monitor start is refused, with an explicit reason.
+	if os.Getenv("SDRSTREAM_PREVIEW_NO_START") != "" {
+		http.Error(w, "preview demo: starting a receiver is disabled on this shared preview", http.StatusForbidden)
+		return
+	}
 	s.mu.Lock()
 	hooks := s.monitorHooks
 	s.mu.Unlock()
