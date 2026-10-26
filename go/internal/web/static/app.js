@@ -1115,6 +1115,7 @@ function activityCard(a, fresh) {
     level.textContent = a.level_db.toFixed(0) + ' dB' + (a.bandwidth_hz ? ' · ' + (a.bandwidth_hz / 1000).toFixed(0) + ' kHz' : '');
     rowEl.appendChild(level);
   }
+  if (window.SDRCategory) { const t = window.SDRCategory.tag(a); if (t) rowEl.appendChild(t); }
   card.appendChild(rowEl);
   // Provenance is stated on every card: the receiver a decode came from,
   // or that no source was recorded - never guessed or silently omitted.
@@ -1236,7 +1237,7 @@ function renderActivity() {
   const active = [];
   if (activityKind) active.push('kind ' + activityKind);
   if (window.SDRCategory && window.SDRCategory.state.cat) active.push('category ' + window.SDRCategory.state.cat);
-  if (window.SDRCategory && window.SDRCategory.state.evidenceOnly) active.push('evidence-only categories');
+  if (window.SDRCategory && window.SDRCategory.state.hideGuesses) active.push('frequency guesses hidden');
   if (activityMode) active.push('decoder ' + activityMode);
   if (activityWindowSec) active.push('time window');
   if (activitySearch.trim()) active.push('search');

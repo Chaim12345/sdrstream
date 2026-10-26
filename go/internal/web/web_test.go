@@ -202,7 +202,7 @@ func TestCategoryFilterWired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"SDRCategory", "basis: 'decoder'", "basis: 'frequency'", "evidence only"} {
+	for _, want := range []string{"SDRCategory", "basis: 'decoder'", "basis: 'frequency'", "Hide frequency guesses"} {
 		if !strings.Contains(string(cat), want) {
 			t.Fatalf("categories.js missing %q", want)
 		}

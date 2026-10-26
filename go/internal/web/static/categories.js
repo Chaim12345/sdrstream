@@ -8,7 +8,7 @@
  *                the monitor was aimed there, not that the decode proves it.
  *   frequency  - inferred only from where the signal sits in a reference band
  *                plan. A guess: a signal at 121.5 MHz may be anything.
- * "Evidence only" hides frequency-inferred items. Items that match nothing are
+ * "Hide frequency guesses" hides frequency-inferred items; target-based items stay and are tagged as a target, not a verified decode. Items that match nothing are
  * "unclassified", not forced into a bucket.
  */
 (function () {
@@ -18,7 +18,7 @@
     ['marine', 'Marine'], ['weather', 'Weather'], ['ham', 'Ham'], ['broadcast', 'Broadcast'],
     ['unclassified', 'Unclassified']
   ];
-  var state = { cat: '', evidenceOnly: false };
+  var state = { cat: '', hideGuesses: false };
   function inb(hz, lo, hi) { return hz >= lo && hz <= hi; }
   function classify(a) {
     var mode = String(a.mode || '').toLowerCase();
@@ -43,10 +43,10 @@
     return { id: 'unclassified', basis: '' };
   }
   function match(a) {
-    if (!state.cat && !state.evidenceOnly) return true;
+    if (!state.cat && !state.hideGuesses) return true;
     var c = classify(a);
     if (state.cat && c.id !== state.cat) return false;
-    if (state.evidenceOnly && c.basis !== 'decoder' && c.basis !== 'target') return false;
+    if (state.hideGuesses && c.basis !== 'decoder' && c.basis !== 'target') return false;
     return true;
   }
   var bar, counts = {};
@@ -58,7 +58,7 @@
       b.setAttribute('aria-pressed', id === state.cat ? 'true' : 'false');
       b.querySelector('.n').textContent = n;
     });
-    var cb = bar.querySelector('input'); if (cb) cb.checked = state.evidenceOnly;
+    var cb = bar.querySelector('input'); if (cb) cb.checked = state.hideGuesses;
   }
   function update(items) {
     counts = { _all: (items || []).length };
@@ -66,7 +66,18 @@
     paint();
   }
   function rerender() { paint(); if (window.renderActivity) window.renderActivity(); }
-  function reset() { state.cat = ''; state.evidenceOnly = false; paint(); }
+  function reset() { state.cat = ''; state.hideGuesses = false; paint(); }
+  var LABEL = {}; CATS.forEach(function (c) { LABEL[c[0]] = c[1]; });
+  var BASIS = { decoder: 'decoder', target: 'target, not a verified decode', frequency: 'frequency guess' };
+  function tag(a) {
+    var c = classify(a);
+    if (c.id === 'unclassified') return null;
+    var t = document.createElement('span');
+    t.className = 'muted cat-tag';
+    t.textContent = LABEL[c.id] + ' \u00b7 ' + BASIS[c.basis];
+    t.title = c.basis === 'frequency' ? 'Guessed from the frequency band only' : c.basis === 'target' ? 'The monitor was aimed at this named service; the decode itself does not prove it' : 'The decoder that produced this item names the service';
+    return t;
+  }
   function build() {
     var kinds = document.querySelector('#view-activity [data-kind]');
     if (!kinds || bar) return;
@@ -76,16 +87,16 @@
     bar.innerHTML = all.map(function (c) {
       return '<button type="button" class="chip" data-cat="' + c[0] + '">' + c[1] + ' <span class="n muted">0</span></button>';
     }).join('') +
-      '<label class="cat-ev" title="Hide items whose category is only guessed from frequency"><input type="checkbox"> evidence only</label>' +
-      '<span class="muted cat-note">Category comes from the decoder or target when known; otherwise it is a guess from the frequency band (reference ranges vary by country).</span>';
+      '<label class="cat-ev" title="Hide items whose category is only guessed from where the signal sits in a band plan"><input type="checkbox"> Hide frequency guesses</label>' +
+      '<span class="muted cat-note">Each item is tagged by basis: decoder (the decoder named the service), target (the monitor was aimed at a named service; not a verified decode) or frequency guess (band position only; reference ranges vary by country).</span>';
     kinds.parentNode.after(bar);
     bar.addEventListener('click', function (e) {
       var b = e.target.closest('[data-cat]'); if (!b) return;
       state.cat = b.dataset.cat; rerender();
     });
-    bar.querySelector('input').addEventListener('change', function (e) { state.evidenceOnly = e.target.checked; rerender(); });
+    bar.querySelector('input').addEventListener('change', function (e) { state.hideGuesses = e.target.checked; rerender(); });
     paint();
   }
   document.addEventListener('DOMContentLoaded', build);
-  window.SDRCategory = { classify: classify, match: match, update: update, reset: reset, state: state };
+  window.SDRCategory = { tag: tag, classify: classify, match: match, update: update, reset: reset, state: state };
 })();

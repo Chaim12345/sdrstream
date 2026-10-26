@@ -691,3 +691,4 @@ kbd {
 #bandplan-toggle[aria-pressed=false]{opacity:.5;text-decoration:line-through}
 .bandplan-note{font-size:11px;margin:4px 0}
 .cat-bar{flex-wrap:wrap;align-items:center}.cat-bar .chip[aria-pressed=true]{outline:1px solid var(--accent)}.cat-ev{font-size:12px;display:inline-flex;gap:4px;align-items:center}.cat-note{flex-basis:100%;font-size:11px}
+.cat-tag{font-size:11px;border:1px solid var(--line);border-radius:10px;padding:1px 7px}
