@@ -2085,16 +2085,27 @@ func parseMonitorStartSpec(r *http.Request) (MonitorStartSpec, error) {
 		spec.Kind = "openwebrx"
 	}
 	if !monitorKinds[spec.Kind] {
-		return spec, fmt.Errorf("kind must be openwebrx, websdr, kiwi or spyserver")
+		return spec, fmt.Errorf("kind must be openwebrx, websdr, kiwi, kiwi-iq, spyserver or ubersdr")
 	}
+	// ubersdr keeps its scheme: TLS endpoints (wss upgrade over https)
+	// must not be downgraded to plain http. Other kinds dial host:port.
+	scheme := ""
 	if strings.HasPrefix(spec.Server, "http://") {
+		scheme = "http://"
 		spec.Server = strings.TrimPrefix(spec.Server, "http://")
 	} else if strings.HasPrefix(spec.Server, "https://") {
+		scheme = "https://"
 		spec.Server = strings.TrimPrefix(spec.Server, "https://")
 	}
 	spec.Server = strings.TrimSuffix(spec.Server, "/")
 	if !monitorServerPattern.MatchString(spec.Server) {
 		return spec, fmt.Errorf("server must be a receiver host[:port], e.g. jukebox.spdns.eu:8073")
+	}
+	if spec.Kind == "ubersdr" {
+		if scheme == "" {
+			scheme = "http://"
+		}
+		spec.Server = scheme + spec.Server
 	}
 	if len(spec.Profile) > 64 || strings.ContainsAny(spec.Profile, " \t\r\n\"'\\") {
 		return spec, fmt.Errorf("invalid profile name")
