@@ -119,3 +119,20 @@ scheduling rules of ground-station (pinned 351631d3066b,
 filter, task window from elevation crossing, +/-5 min overlap tolerance,
 shared-resource conflicts, priority/skip/force strategies, status lifecycle.
 No upstream source text was copied. Upstream is GPL-3.0; sdrstream is AGPL-3.0.
+
+## ground-station (sgoudelis/ground-station) - semantics reference only
+
+- Upstream: https://github.com/sgoudelis/ground-station, pinned at commit
+  351631d3066b3012216024005439326323c57b84. Licence: GPL-3.0 (LICENSE; README
+  "License" section).
+- Used in: `go/internal/sdrshare`, a Go reimplementation of shared-SDR
+  session rules (one controller, listeners that join without sending
+  settings, takeover conflict, per-session VFO banks of 4 user / 10 internal,
+  worker lifetime while any session remains).
+- No upstream source code, tests or data were copied. Behaviour was read from
+  `backend/handlers/entities/sdr.py`, `backend/session/service.py`,
+  `backend/vfos/state.py` and `backend/pipeline/orchestration/processlifecycle.py`.
+- Not taken from upstream: demotion of a displaced controller to listener on
+  takeover (upstream behaviour not verified; this project's own choice).
+- Whether a semantics-only port needs further attribution is a maintainer
+  decision; this entry records provenance so it can be made.
