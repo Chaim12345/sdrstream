@@ -861,7 +861,7 @@ func monitorVoiceOptions(language string, threads, beam int, prompt string) voic
 func cmdMonitor(args []string) error {
 	fs := flag.NewFlagSet("monitor", flag.ExitOnError)
 	server := fs.String("server", "", "receiver URL")
-	kind := fs.String("kind", "openwebrx", "receiver protocol: openwebrx, websdr or kiwi")
+	kind := fs.String("kind", "openwebrx", "receiver protocol: openwebrx, websdr, kiwi, kiwi-iq, spyserver or ubersdr")
 	profile := fs.String("profile", "", "OpenWebRX profile to use (a wide one shows more)")
 	strategy := fs.String("strategy", "sweep", "sweep (listen across the band) or spectrum (use the receiver's FFT)")
 	startHz := fs.Float64("start", 144000000, "sweep start frequency in Hz")
