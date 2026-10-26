@@ -391,3 +391,34 @@ list.
 5. Live-verify against real receivers only when the current task's
    owner approves the poll; never claim verification without real
    receivers or real feeds.
+
+## 2026-10-26 addition - remote-IQ line and ground-station assembly
+
+Recorded at `feat/remote-iq-input` tip `1362f84`. Branch line: off
+`integration/nonphone-decoders` @ `299cdb0`.
+
+| Branch | Tip (prefix) | State |
+| --- | --- | --- |
+| `feat/remote-iq-input` | `1362f84` | rtl_tcp groundwork, SpyServer client (protocol pinned to SDR++ master `f10fb98`), iqdemod AM/NBFM/USB/LSB, monitor spySource, web kind `spyserver` with SSRF-guarded dial, receiver dropdown + public SpyServer directory (`/api/spyservers.json`) + datalist autocomplete, stream Stats, ControlTruth UI text, `SDRSTREAM_PREVIEW_NO_START` demo gate, deterministic AFSK in-flight cancellation test |
+| `feat/gs-ui-pass-timeline` | `58d3d4d` (+ unwired `c08f6bc4` coverage.js) | Pass timeline, band plan with region caveats, Activity category chips with decoder/target/frequency-guess basis + "Hide frequency guesses" |
+| `feat/pass-plan-rebased` | `a980eb7` | passplan state + approved web seam `/api/passplan.json` (enabled:false until cmd wires a provider) |
+| `feat/gs-decoder-deframers` | `a59f20c` (freeze) | G3RUH/ASM/PN/RS-CCSDS/AX100/FM-MPX; Tal verified via libfec oracle, rest synthetic |
+| `feat/multivfo-shared-sdr` | `31266df` | Shared-source join/takeover state, unwired |
+
+Live validation (labeled): SpyServer handshake + IQ streaming + carrier-level
+reception proven on one public receiver; audio decode, frequency-axis
+accuracy on CanControl=0 servers, and zero-stall streaming NOT proven
+(26% of real-time observed, cause unknown; instrumentation landed, no
+re-measurement without owner go).
+
+Integration facts:
+- `/api/stations.json` serves only type/name/url/lat/lon (no RF metadata at
+  the source). `/api/spyservers.json` serves host/port/device_type/
+  min_frequency/max_frequency (int64 Hz)/clients/max_clients/full_control/
+  lat/lon/online. Receiver coverage filtering uses the SpyServer range
+  fields only; stations are "coverage unknown" - never inferred from protocol.
+- passplan plans, satsched executes; no planner->execution wiring yet.
+- Trial assembly `feat/remote-iq-input` + UI `58d3d4d` builds and tests
+  green and ran the authenticated preview (Activity chips pixel-verified).
+- Preview evidence (IQ snippet, probe notes) lives in the owner's private
+  Drive, hash-verified; not in this repo.
