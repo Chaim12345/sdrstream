@@ -40,7 +40,7 @@ public class SecretStoreInstrumentedTest {
         assertTrue("put must succeed on a real AndroidKeyStore", SecretStore.put(ctx, TEST_KEY, "dummy-not-a-real-key-0001"));
         assertTrue(SecretStore.has(ctx, TEST_KEY));
         assertEquals("dummy-not-a-real-key-0001", SecretStore.get(ctx, TEST_KEY));
-        assertTrue(SecretStore.put(ctx, TEST_KEY, "dummy-not-a-real-key-0002"));
+        assertTrue("put must succeed on a real AndroidKeyStore", SecretStore.put(ctx, TEST_KEY, "dummy-not-a-real-key-0002"));
         assertEquals("dummy-not-a-real-key-0002", SecretStore.get(ctx, TEST_KEY));
         SecretStore.clear(ctx, TEST_KEY);
         assertFalse(SecretStore.has(ctx, TEST_KEY));
@@ -49,7 +49,7 @@ public class SecretStoreInstrumentedTest {
 
     @Test
     public void plaintextNeverInPrefs() {
-        assertTrue(SecretStore.put(ctx, TEST_KEY, "dummy-not-a-real-key-0003"));
+        assertTrue("put must succeed on a real AndroidKeyStore", SecretStore.put(ctx, TEST_KEY, "dummy-not-a-real-key-0003"));
         for (Object v : Prefs.prefs(ctx).getAll().values()) {
             assertFalse(String.valueOf(v).contains("dummy-not-a-real-key-0003"));
         }
