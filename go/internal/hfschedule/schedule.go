@@ -57,7 +57,12 @@ var validityRE = regexp.MustCompile(`Valid (.+?) - (.+)$`)
 
 // ParseEiBi reads the frequency-sorted fixed-width eibi.txt format, not CSV.
 // Unknown/irregular day codes are retained but never automatically scheduled.
-func ParseEiBi(r io.Reader) ([]Entry, error) {
+func ParseEiBi(r io.Reader) ([]Entry, error) { return ParseEiBiSource(r, EiBiURL) }
+
+// ParseEiBiSource parses EiBi-format rows and stamps each entry with the actual
+// origin (remote URL or local file), so ledger and audit records cite the
+// source the rows really came from.
+func ParseEiBiSource(r io.Reader, source string) ([]Entry, error) {
 	var entries []Entry
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 4096), 1024*1024)
@@ -138,7 +143,7 @@ func ParseEiBi(r io.Reader) ([]Entry, error) {
 		if strings.HasPrefix(lang, "-") && t.Kind == "broadcast" {
 			continue
 		}
-		entries = append(entries, Entry{ID: id(line), Source: EiBiURL, Target: t, StartMinute: start, EndMinute: end, Days: days, ValidFrom: from, ValidUntil: until})
+		entries = append(entries, Entry{ID: id(line), Source: source, Target: t, StartMinute: start, EndMinute: end, Days: days, ValidFrom: from, ValidUntil: until})
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
