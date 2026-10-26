@@ -145,8 +145,8 @@ func TestLiveSpyBatch(t *testing.T) {
 		if maxRatio > 20 {
 			carrier++
 		}
-		t.Logf("%s OK: rate=%d CanControl=%d center=%d coverage=%.0f%% gaps=%d peakCarrier=+%.1fdB wall=%.1fs",
-			addr, rate, c.Sync.CanControl, c.Sync.DeviceCenterFrequency, coverage, st.IQSeqGaps, maxRatio, wall.Seconds())
+		t.Logf("%s OK: rate=%d haveSync=%v CanControl=%d center=%d coverage=%.0f%% gaps=%d peakCarrier=+%.1fdB wall=%.1fs",
+			addr, rate, c.HaveSync, c.Sync.CanControl, c.Sync.DeviceCenterFrequency, coverage, st.IQSeqGaps, maxRatio, wall.Seconds())
 	}
 	t.Logf("BATCH COUNTS: attempted=%d reachable=%d streaming=%d strongCarrier(>20dB)=%d (candidates listed %d)", attempted, reachable, streaming, carrier, len(candidates))
 }

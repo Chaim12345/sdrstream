@@ -63,8 +63,8 @@ func abPass(t *testing.T, addr string, freq uint32, wantRate uint32, secs int, m
 	}
 	defer c.Close()
 	rate = int(c.SampleRate())
-	t.Logf("[%s] handshake: negotiated=%dHz max=%d CanControl=%d DeviceCenter=%d IQCenter=%d (requested %d) ForcedIQFormat=%d DeviceType=%d",
-		tag, rate, c.Info.MaximumSampleRate, c.Sync.CanControl, c.Sync.DeviceCenterFrequency, c.Sync.IQCenterFrequency, freq, c.Info.ForcedIQFormat, c.Info.DeviceType)
+	t.Logf("[%s] handshake: negotiated=%dHz max=%d haveSync=%v CanControl=%d DeviceCenter=%d IQCenter=%d (requested %d) ForcedIQFormat=%d DeviceType=%d",
+		tag, rate, c.Info.MaximumSampleRate, c.HaveSync, c.Sync.CanControl, c.Sync.DeviceCenterFrequency, c.Sync.IQCenterFrequency, freq, c.Info.ForcedIQFormat, c.Info.DeviceType)
 	dem := iqdemod.New(rate, 48000, 0, mode)
 	buf := make([]complex64, 65536)
 	out := make([]float64, 0, 8192)
