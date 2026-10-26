@@ -153,3 +153,29 @@ func TestFilterDoesNotRefuseOrdinaryRadioNumbers(t *testing.T) {
 		}
 	}
 }
+
+type stuck struct{ release chan struct{} }
+
+func (stuck) Name() string  { return "gemini" }
+func (stuck) Model() string { return "s" }
+func (s stuck) Translate(context.Context, string) (Output, error) {
+	<-s.release // ignores ctx on purpose
+	return Output{}, nil
+}
+
+// A provider that ignores its context must not hang callers: each call returns
+// at its own deadline, the one waiting for the slot too.
+func TestUncooperativeProviderDoesNotHangCallers(t *testing.T) {
+	s := stuck{release: make(chan struct{})}
+	defer close(s.release)
+	tr := on(s, func(c *Config) { c.RequestsPerMinute = 100 })
+	for i, txt := range []string{french, french + " bis"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		start := time.Now()
+		r := tr.Translate(ctx, KindTranscript, txt)
+		cancel()
+		if time.Since(start) > 2*time.Second || r.Status != StatusError || r.Original != txt {
+			t.Fatalf("call %d: %v %+v", i, time.Since(start), r)
+		}
+	}
+}

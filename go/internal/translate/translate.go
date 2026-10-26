@@ -134,7 +134,7 @@ type Translator struct {
 	fails     int
 	pausedTil time.Time
 	stats     Stats
-	callMu    sync.Mutex
+	slot      chan struct{}
 }
 
 // New returns a Translator. A nil provider is allowed and means disabled.
@@ -163,7 +163,7 @@ func New(cfg Config, p Provider) *Translator {
 	if len(cfg.AllowedKinds) == 0 {
 		cfg.AllowedKinds = []Kind{KindTranscript, KindDecodedText}
 	}
-	return &Translator{cfg: cfg, prov: p, cache: map[string]Result{}}
+	return &Translator{cfg: cfg, prov: p, cache: map[string]Result{}, slot: make(chan struct{}, 1)}
 }
 
 // Stats returns a copy of the counters.
@@ -234,18 +234,40 @@ func (t *Translator) Translate(ctx context.Context, kind Kind, text string) Resu
 	return t.accept(key, text, out)
 }
 
-// call runs the provider once, serialized. A panic in a provider becomes an
-// error: Translate runs on detached goroutines in the monitor, where an
-// unrecovered panic would end the whole process.
-func (t *Translator) call(ctx context.Context, text string) (out Output, err error) {
-	t.callMu.Lock()
-	defer t.callMu.Unlock()
-	defer func() {
-		if r := recover(); r != nil {
-			out, err = Output{}, fmt.Errorf("translate: provider panicked: %v", r)
-		}
+// call runs the provider once, serialized, and gives control back when ctx
+// ends even if the provider ignores ctx: the provider call runs in its own
+// goroutine, and a caller waiting for the serialization slot also stops at ctx.
+// A provider that never returns keeps its slot (and one goroutine) until it
+// does, so later calls report an error at their own deadline instead of
+// hanging. A panic in a provider becomes an error: Translate runs on detached
+// goroutines in the monitor, where an unrecovered panic would end the process.
+func (t *Translator) call(ctx context.Context, text string) (Output, error) {
+	select {
+	case t.slot <- struct{}{}:
+	case <-ctx.Done():
+		return Output{}, ctx.Err()
+	}
+	type answer struct {
+		out Output
+		err error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		defer func() { <-t.slot }()
+		defer func() {
+			if r := recover(); r != nil {
+				done <- answer{err: fmt.Errorf("translate: provider panicked: %v", r)}
+			}
+		}()
+		out, err := t.prov.Translate(ctx, text)
+		done <- answer{out, err}
 	}()
-	return t.prov.Translate(ctx, text)
+	select {
+	case a := <-done:
+		return a.out, a.err
+	case <-ctx.Done():
+		return Output{}, ctx.Err()
+	}
 }
 
 func (t *Translator) count(r Result) Result {
