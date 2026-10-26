@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -91,5 +92,42 @@ func TestServiceRunInjectedTick(t *testing.T) {
 	<-done
 	if len(s.P.Timeline()) == 0 {
 		t.Fatal("run produced no timeline")
+	}
+}
+
+func TestServiceConcurrentRefreshAndReads(t *testing.T) {
+	s := NewService(testCfg(t, issLoader))
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 5; j++ {
+				_ = s.Refresh()
+			}
+		}()
+	}
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					_ = s.TimelineJSON()
+					_ = s.InfoJSON()
+					_ = s.P.Next()
+				}
+			}
+		}()
+	}
+	// stop readers after refreshers finish
+	go func() { time.Sleep(3 * time.Second); close(done) }()
+	wg.Wait()
+	if len(s.P.Timeline()) == 0 {
+		t.Fatal("empty after concurrent refresh")
 	}
 }

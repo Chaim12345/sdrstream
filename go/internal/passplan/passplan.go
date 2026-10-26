@@ -318,3 +318,10 @@ func (p *Planner) Timeline() []Observation {
 // TimelineJSON lets the web package serve the plan through a structural
 // interface (web cannot import this package's consumers).
 func (p *Planner) TimelineJSON() interface{} { return p.Timeline() }
+
+// SetFinder swaps the pass source under the planner lock.
+func (p *Planner) SetFinder(f Finder) {
+	p.mu.Lock()
+	p.finder = f
+	p.mu.Unlock()
+}

@@ -48,10 +48,11 @@ type Config struct {
 // Service owns a Planner, rebuilds it from cached elements and persists it.
 // It plans only: it never starts a capture or contacts a receiver.
 type Service struct {
-	cfg  Config
-	P    *Planner
-	mu   sync.Mutex
-	info Info
+	cfg       Config
+	P         *Planner
+	refreshMu sync.Mutex // serialises Refresh; mu guards info
+	mu        sync.Mutex
+	info      Info
 }
 
 // Info is the last refresh outcome, served alongside the timeline.
@@ -106,6 +107,8 @@ func (s *Service) priorityOf(name string, idx int) int {
 
 // Refresh recomputes the plan from the element cache and saves it.
 func (s *Service) Refresh() error {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
 	trackers := map[int]*tracking.Tracker{}
 	var mons []Monitored
 	groups := map[string]string{}
@@ -159,7 +162,7 @@ func (s *Service) Refresh() error {
 		s.mu.Unlock()
 		return err
 	}
-	s.P.finder = TrackerFinder{Trackers: trackers, Lat: s.cfg.Lat, Lon: s.cfg.Lon}
+	s.P.SetFinder(TrackerFinder{Trackers: trackers, Lat: s.cfg.Lat, Lon: s.cfg.Lon})
 	_, gerr := s.P.Generate(mons)
 	if gerr != nil {
 		s.mu.Lock()
