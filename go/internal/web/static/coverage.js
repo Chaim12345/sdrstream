@@ -39,5 +39,9 @@
     if (c === 'no') return 'Tuning range does not reach ' + category + ' frequencies';
     return 'Tuning range not published (coverage unknown)';
   }
-  window.SDRCoverage = { coverage: coverage, describe: describe, bands: CATEGORY_BANDS };
+  // SpyServer directory entry (min_frequency/max_frequency in Hz) -> receiver.
+  function fromSpy(sv) {
+    return { minHz: sv && sv.min_frequency, maxHz: sv && sv.max_frequency };
+  }
+  window.SDRCoverage = { coverage: coverage, describe: describe, fromSpy: fromSpy, bands: CATEGORY_BANDS };
 })();
