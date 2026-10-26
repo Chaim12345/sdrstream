@@ -105,7 +105,14 @@ func (c *Catalog) ImportLedger(path string) (int, error) {
 		} else {
 			rec.CheckedAt = time.Now().UTC()
 		}
-		c.Update(rec)
+		// An imported row is ONE historical observation, not a fresh sweep:
+		// an unreachable verdict is a single recorded failure. Update()
+		// would increment the counter on every re-import (each restart),
+		// fabricating "N consecutive failures" that never happened.
+		if !rec.Reachable {
+			rec.ConsecFailures = 1
+		}
+		c.importUpsert(rec)
 		n++
 	}
 	if err := sc.Err(); err != nil {
@@ -115,4 +122,25 @@ func (c *Catalog) ImportLedger(path string) (int, error) {
 		c.Touch(time.Now().UTC())
 	}
 	return n, nil
+}
+
+// importUpsert merges an imported historical row without probe semantics:
+// no failure-counter increment, no reachability-transition event. The
+// counter comes from the row itself (1 for unreachable, 0 for reachable),
+// so re-importing the same ledger on every restart is idempotent, and a
+// stale polluted counter self-heals on the next import. Capability is
+// still kept from the previous record when the verdict did not answer.
+func (c *Catalog) importUpsert(rec Record) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Records == nil {
+		c.Records = map[string]*Record{}
+	}
+	if prev, ok := c.Records[rec.Key]; ok {
+		if !rec.Reachable {
+			rec.Capability = prev.Capability
+		}
+	}
+	r := rec
+	c.Records[rec.Key] = &r
 }
