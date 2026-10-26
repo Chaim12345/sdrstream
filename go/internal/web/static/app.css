@@ -679,3 +679,4 @@ kbd {
 /* station board: probe catalog liveness */
 .badge.board-alive { color: var(--good); border-color: #14532d; }
 .badge.board-dead { color: var(--bad); border-color: #7f1d1d; }
+.badge.board-answered { color: var(--warn, #eab308); border-color: #713f12; }

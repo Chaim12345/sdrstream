@@ -362,7 +362,7 @@
 
   <section id="view-stationboard" class="view" aria-label="Station board">
     <h2>Station board</h2>
-    <p class="muted">Public SDR receivers from the server probe catalog: who is alive, what each one can hear. The server sweeps; this page only reads the catalog and never contacts a station itself.</p>
+    <p class="muted">Public SDR receivers from the server probe catalog: who actually delivered a usable IQ/audio stream versus who only answered. The server sweeps; this page only reads the catalog and never contacts a station itself.</p>
     <div id="board-disabled" class="panel" hidden>
       <b>Station probing is not enabled on this server.</b>
       <p class="muted">The catalog endpoint answers, but no probe sweep is running. Start the server with --probe-directory to build the station catalog.</p>
@@ -370,8 +370,9 @@
     <div id="board-enabled">
       <div class="stat-cards">
         <div class="stat"><div class="stat-value" id="board-total">&ndash;</div><div class="stat-label">stations</div></div>
-        <div class="stat good"><div class="stat-value" id="board-alive">&ndash;</div><div class="stat-label">alive</div></div>
-        <div class="stat"><div class="stat-value" id="board-dead">&ndash;</div><div class="stat-label">dead</div></div>
+        <div class="stat good"><div class="stat-value" id="board-streaming">&ndash;</div><div class="stat-label">stream verified</div></div>
+        <div class="stat"><div class="stat-value" id="board-answered">&ndash;</div><div class="stat-label">answered, no stream</div></div>
+        <div class="stat"><div class="stat-value" id="board-silent">&ndash;</div><div class="stat-label">no response</div></div>
       </div>
       <p class="muted" id="board-updated"></p>
       <div class="toolbar" role="group" aria-label="Filter by receiver type">
@@ -382,8 +383,9 @@
       </div>
       <div class="toolbar" role="group" aria-label="Filter by reachability">
         <button class="chip on" data-breach="">all</button>
-        <button class="chip" data-breach="alive">alive</button>
-        <button class="chip" data-breach="dead">dead</button>
+        <button class="chip" data-breach="streaming">stream verified</button>
+        <button class="chip" data-breach="answered">answered only</button>
+        <button class="chip" data-breach="silent">no response</button>
         <button id="board-refresh" class="chip" type="button">refresh</button>
       </div>
       <p id="board-state" role="status" aria-live="polite"></p>
