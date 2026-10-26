@@ -18,7 +18,7 @@
     ['weather', 'Weather'], ['ham', 'Ham'], ['broadcast', 'Broadcast'], ['unknown', 'Coverage unknown']];
   var state = { cat: '', items: null, error: '', limit: 40 };
   var root;
-  function mhz(hz) { return hz >= 1e6 ? (hz / 1e6).toFixed(hz % 1e6 ? 1 : 0) : (hz / 1e3).toFixed(0) + 'k'; }
+  function mhz(hz) { return hz <= 0 ? '0' : hz >= 1e6 ? (hz / 1e6).toFixed(hz % 1e6 ? 1 : 0) : (hz / 1e3).toFixed(0) + 'k'; }
   function rangeText(sv) {
     return sv.min_frequency > 0 || sv.max_frequency > 0 ? mhz(sv.min_frequency) + '-' + mhz(sv.max_frequency) + ' MHz' : 'range not published';
   }

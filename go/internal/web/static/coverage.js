@@ -33,10 +33,11 @@
     if (!bands || !r) return 'unknown';
     return bands.some(function (b) { return b[1] >= r[0] && b[0] <= r[1]; }) ? 'covers' : 'no';
   }
+  var LABEL = { atc: 'airband (ATC)', satellite: 'satellite-band', weather: 'weather', marine: 'marine', broadcast: 'broadcast', ham: 'amateur' };
   function describe(receiver, category) {
-    var c = coverage(receiver, category);
-    if (c === 'covers') return 'Can tune ' + category + ' frequencies (coverage only, not a verified service)';
-    if (c === 'no') return 'Tuning range does not reach ' + category + ' frequencies';
+    var c = coverage(receiver, category), name = LABEL[category] || category;
+    if (c === 'covers') return 'Can tune ' + name + ' frequencies (coverage only, not a verified service)';
+    if (c === 'no') return 'Tuning range does not reach ' + name + ' frequencies';
     return 'Tuning range not published (coverage unknown)';
   }
   // SpyServer directory entry (min_frequency/max_frequency in Hz) -> receiver.
