@@ -161,6 +161,26 @@ public class EngineService extends Service {
         if (password != null && !password.isEmpty()) {
             env.put("SDRSTREAM_UI_PASSWORD", password);
         }
+        // Hosted-provider keys: Keystore-encrypted at rest (SecretStore),
+        // injected into the engine environment ONLY when the matching
+        // consent flag is set (both default false; no menu toggle exists
+        // yet). With no flag the engine behaves exactly as before: no
+        // audio or text leaves the device for a provider.
+        if (Prefs.getHostedSpeechConsent(this)) {
+            String nimKey = SecretStore.get(this, SecretStore.KEY_NIM);
+            if (nimKey != null && !nimKey.isEmpty()) {
+                env.put("SDRSTREAM_NIM_API_KEY", nimKey);
+            }
+        }
+        if (Prefs.getTranslateConsent(this)) {
+            String geminiKey = SecretStore.get(this, SecretStore.KEY_GEMINI);
+            if (geminiKey != null && !geminiKey.isEmpty()) {
+                env.put("SDRSTREAM_GEMINI_API_KEY", geminiKey);
+                env.put("SDRSTREAM_TRANSLATE", "on");
+                env.put("SDRSTREAM_TRANSLATE_PROVIDER", "gemini");
+                env.put("SDRSTREAM_TRANSLATE_CONSENT", "gemini");
+            }
+        }
         pb.redirectErrorStream(true);
         // Last chance before any new lines land: pre-redaction logs from an
         // older build must not survive into a share (no-op once done).

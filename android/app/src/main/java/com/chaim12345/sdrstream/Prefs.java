@@ -10,6 +10,8 @@ final class Prefs {
     private static final String NAME = "sdrstream";
     private static final String KEY_PASSWORD = "ui_password";
     private static final String KEY_TAILNET_ADDR = "tailnet_address";
+    private static final String KEY_HOSTED_SPEECH_CONSENT = "hosted_speech_consent";
+    private static final String KEY_TRANSLATE_CONSENT = "translate_consent";
 
     private Prefs() {}
 
@@ -44,6 +46,28 @@ final class Prefs {
 
     static void setTailnetAddress(Context ctx, String addr) {
         prefs(ctx).edit().putString(KEY_TAILNET_ADDR, addr == null ? "" : addr.trim()).apply();
+    }
+
+    /**
+     * Consent flags, both DEFAULT FALSE and deliberately without a menu
+     * toggle yet: the disclosure wording the user agrees to is settled
+     * before any switch exists. While false, EngineService injects no
+     * provider keys and the engine sends no audio or text anywhere.
+     */
+    static boolean getHostedSpeechConsent(Context ctx) {
+        return prefs(ctx).getBoolean(KEY_HOSTED_SPEECH_CONSENT, false);
+    }
+
+    static void setHostedSpeechConsent(Context ctx, boolean on) {
+        prefs(ctx).edit().putBoolean(KEY_HOSTED_SPEECH_CONSENT, on).apply();
+    }
+
+    static boolean getTranslateConsent(Context ctx) {
+        return prefs(ctx).getBoolean(KEY_TRANSLATE_CONSENT, false);
+    }
+
+    static void setTranslateConsent(Context ctx, boolean on) {
+        prefs(ctx).edit().putBoolean(KEY_TRANSLATE_CONSENT, on).apply();
     }
 
     private static String generate() {

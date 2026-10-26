@@ -66,6 +66,8 @@ public class MainActivity extends Activity {
     private static final int MENU_AUTOSEND = 9;
     private static final int MENU_DIAG_PW = 11;
     private static final int MENU_SEND_DIAG = 10;
+    private static final int MENU_NIM_KEY = 12;
+    private static final int MENU_GEMINI_KEY = 13;
 
     private WebView webView;
     private AlertDialog batteryDialog;
@@ -160,6 +162,8 @@ public class MainActivity extends Activity {
                 .setChecked(DiagUploadAndroid.uploader(this).optedIn());
         popup.getMenu().add(0, MENU_DIAG_PW, 8, "Crash-report password");
         popup.getMenu().add(0, MENU_SEND_DIAG, 8, "Send diagnostics now");
+        popup.getMenu().add(0, MENU_NIM_KEY, 9, "NVIDIA speech key");
+        popup.getMenu().add(0, MENU_GEMINI_KEY, 9, "Gemini translation key");
         popup.setOnMenuItemClickListener(item -> {
             handleMenuAction(item.getItemId());
             return true;
@@ -453,6 +457,8 @@ public class MainActivity extends Activity {
                 .setCheckable(true)
                 .setChecked(DiagUploadAndroid.uploader(this).optedIn());
         menu.add(0, MENU_DIAG_PW, 8, "Crash-report password");
+        menu.add(0, MENU_NIM_KEY, 9, "NVIDIA speech key");
+        menu.add(0, MENU_GEMINI_KEY, 9, "Gemini translation key");
         menu.add(0, MENU_SEND_DIAG, 8, "Send diagnostics now");
         return true;
     }
@@ -599,6 +605,21 @@ public class MainActivity extends Activity {
                         .show();
                 return true;
             }
+            case MENU_NIM_KEY:
+                showKeyDialog("NVIDIA speech key", SecretStore.KEY_NIM,
+                        "Key for NVIDIA's hosted speech recognition (transcribes non-English "
+                                + "voice). Stored AES-encrypted in Android Keystore on this device; "
+                                + "never written to logs or files in plain text. Sending audio to "
+                                + "NVIDIA stays OFF until you explicitly consent - that switch does "
+                                + "not exist yet.");
+                return true;
+            case MENU_GEMINI_KEY:
+                showKeyDialog("Gemini translation key", SecretStore.KEY_GEMINI,
+                        "Key for Google's Gemini translation (English translations of non-English "
+                                + "text). Stored AES-encrypted in Android Keystore on this device; "
+                                + "never written to logs or files in plain text. Translation stays "
+                                + "OFF until you explicitly consent - that switch does not exist yet.");
+                return true;
             case MENU_SOURCE:
                 startActivity(new Intent(Intent.ACTION_VIEW,
                         Uri.parse("https://github.com/Chaim12345/sdrstream")));
@@ -620,6 +641,38 @@ public class MainActivity extends Activity {
             default:
                 return false;
         }
+    }
+
+    private void showKeyDialog(String title, String prefKey, String explainer) {
+        boolean stored = SecretStore.has(this, prefKey);
+        final EditText input = new EditText(this);
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        input.setHint(stored ? "stored (encrypted) - paste to replace" : "paste key");
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage((stored ? "A key is stored (encrypted).\n\n" : "No key stored.\n\n") + explainer)
+                .setView(input)
+                .setPositiveButton("Save", (d, w) -> {
+                    String key = input.getText().toString().trim();
+                    if (key.isEmpty()) return;
+                    if (SecretStore.put(this, prefKey, key)) {
+                        Toast.makeText(this, title + " stored (encrypted)", Toast.LENGTH_SHORT).show();
+                        restartEngine();
+                    } else {
+                        Toast.makeText(this, "Could not store key - device Keystore unavailable",
+                                Toast.LENGTH_LONG).show();
+                    }
+                })
+                .setNegativeButton("Cancel", null);
+        if (stored) {
+            b.setNeutralButton("Clear", (d, w) -> {
+                SecretStore.clear(this, prefKey);
+                Toast.makeText(this, title + " cleared", Toast.LENGTH_SHORT).show();
+                restartEngine();
+            });
+        }
+        b.show();
     }
 
     @Override
