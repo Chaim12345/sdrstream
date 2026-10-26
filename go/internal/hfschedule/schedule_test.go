@@ -227,3 +227,24 @@ func TestFallbackAfterHostRefusal(t *testing.T) {
 		t.Fatal(used)
 	}
 }
+
+func TestParseEiBiSourceStampsActualOrigin(t *testing.T) {
+	text := "Valid March 29, 2026 - November 1, 2026\n" + row("4583", "0000-2400", "", "DWD 1 Pinneberg RTTY", "E")
+	entries, err := ParseEiBiSource(strings.NewReader(text), "file:examples/hfschedule/extra.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	if entries[0].Source != "file:examples/hfschedule/extra.txt" {
+		t.Fatalf("source = %q, want file: origin", entries[0].Source)
+	}
+	def, err := ParseEiBi(strings.NewReader(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def[0].Source != EiBiURL {
+		t.Fatalf("default source = %q, want %q", def[0].Source, EiBiURL)
+	}
+}

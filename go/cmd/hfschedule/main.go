@@ -105,7 +105,7 @@ func main() {
 			if err != nil {
 				return nil, err
 			}
-			v, err := hfschedule.ParseEiBi(strings.NewReader(string(b)))
+			v, err := hfschedule.ParseEiBiSource(strings.NewReader(string(b)), "file:"+*extra)
 			if err != nil {
 				return nil, fmt.Errorf("extra schedule: %w", err)
 			}
