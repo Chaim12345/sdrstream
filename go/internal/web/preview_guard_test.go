@@ -65,7 +65,7 @@ func TestPreviewModeScanControl(t *testing.T) {
 	mk := func(body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("POST", "http://example.test/api/scans/control", strings.NewReader(body))
 		req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		rec := httptest.NewRecorder()
 		s.handleScanControl(rec, req)
 		return rec
