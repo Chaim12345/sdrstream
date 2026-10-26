@@ -299,7 +299,7 @@ function captureAudio(url, label, headerSec) {
 // and the proof panel: the explicit sidecar class verbatim, unknown
 // stated plainly, never guessed.
 function captureProvenance(c) {
-  return c.source === 'live' ? 'recorded by this receiver'
+  return c.source === 'live' ? 'live capture recorded by this sdrstream (from the receiver named above)'
     : c.source === 'test-fixture' ? 'test fixture (synthetic - not a reception)'
     : c.source ? c.source
     : 'source not recorded';
