@@ -292,6 +292,13 @@
    "kind": "ft8",
    "sha256": "7458b37a31559b20e7d09dade3b7057dd8970d5d84ffbc33ce0bec129bdbc0e1",
    "provenance": "live capture by the sdrstream team from the public Twente WebSDR (websdr.ewi.utwente.nl:8901), 7074 kHz USB, 2026-10-22 05:28:41 UTC; own recording, no reference list"
+  },
+  {
+   "name": "navtex_oostende_490",
+   "kind": "navtex",
+   "sha256": "6f1940ef5169ac93604f9c80e657335207b1af2695d348dec9552a3588e5766b",
+   "provenance": "real capture: user's own receiver, Oostende NAVTEX 490 kHz, 2026-10-26 08:10Z (capture 5ad1a4b706652ca4-20261026T0810Z), first 100s / 2 complete messages; see navtex_oostende_490.provenance.md",
+   "messages": 2
   }
  ]
 }
