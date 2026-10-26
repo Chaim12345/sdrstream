@@ -39,6 +39,10 @@ const (
 	StrategyPriority = "priority" // higher peak elevation wins
 	StrategySkip     = "skip"     // new conflicting pass is dropped
 	StrategyForce    = "force"    // schedule anyway
+	// StrategyRank is an sdrstream design (not upstream): lower Priority wins any
+	// conflict, then higher peak elevation, then earlier AOS. It matches satsched's
+	// priority-wins-overlap behaviour. Pending owner/lead acceptance.
+	StrategyRank = "rank"
 )
 
 // OverlapTolerance widens every window when checking overlap.
@@ -206,12 +210,17 @@ func (p *Planner) place(m Monitored, ps Pass, now time.Time, st *Stats) {
 	}
 	st.Conflicts++
 	replace := false
-	if p.Strategy == StrategyPriority {
+	if p.Strategy == StrategyPriority || p.Strategy == StrategyRank {
 		replace = true
 		for _, b := range blockers {
 			// A running observation is never pre-empted; equal elevation keeps the incumbent.
 			win := cand.PeakEl > b.PeakEl ||
 				(cand.PeakEl == b.PeakEl && cand.Priority < b.Priority) // tie-break only
+			if p.Strategy == StrategyRank {
+				win = cand.Priority < b.Priority ||
+					(cand.Priority == b.Priority && (cand.PeakEl > b.PeakEl ||
+						(cand.PeakEl == b.PeakEl && cand.AOS.Before(b.AOS))))
+			}
 			if b.Status == StatusRunning || !win {
 				replace = false
 			}
@@ -305,3 +314,7 @@ func (p *Planner) Timeline() []Observation {
 	sort.Slice(out, func(i, j int) bool { return out[i].TaskStart.Before(out[j].TaskStart) })
 	return out
 }
+
+// TimelineJSON lets the web package serve the plan through a structural
+// interface (web cannot import this package's consumers).
+func (p *Planner) TimelineJSON() interface{} { return p.Timeline() }
