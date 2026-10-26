@@ -63,6 +63,7 @@ type WEFAXReport struct {
 	StartToneEndSec float64 // IOC start-tone alternation end
 	StartToneIOC    int     // IOC signalled by the start tone (576/288), 0 when absent
 	ClockVotes      float64 // line pairs that contributed a clock vote
+	KeyingEndSec    float64 // where sustained FSK keying ends, 0 when keying reaches the trace end
 	DeskewCorr      float64 // mean adjacent-row correlation of the render (slant honesty)
 	Lines           int     // rendered lines
 	Width           int
@@ -125,6 +126,18 @@ func WEFAXImageDetailed(samples []float64, rate int, linesPerMinute float64, ioc
 	lineHops := int(math.Round(lineSec / wefaxHopSec))
 	if lineHops < 20 {
 		return nil, rep, fmt.Errorf("wefax: line period %.3f s too short for hop grid", lineSec)
+	}
+
+	// A capture often runs past the end of the transmission into
+	// static or a rekeyed carrier. That dead tail is not chart
+	// content: it adds noise rows to the render and its junk line
+	// "votes" poison the drift statistics the verifier gates on.
+	// Crop the trace at the end of sustained FSK keying so the
+	// tracker, the render and the drift report cover only the
+	// actual transmission.
+	if endHop, ok := tr.keyingEndHop(lineHops); ok {
+		tr.truncate(endHop)
+		rep.KeyingEndSec = float64(endHop) * wefaxHopSec
 	}
 
 	// IOC start tone: the 300/675 Hz alternation before the phasing
@@ -348,6 +361,95 @@ type wefaxTrace struct {
 	raw   []float64 // ratio before pedestal subtraction (alignment truth)
 	pb    []float64 // black tone power per hop
 	pw    []float64 // white tone power per hop
+}
+
+// keyingEndHop finds where FSK keying stops. A keyed window alternates
+// between the two tones, so the brightness ratio sweeps a wide range;
+// after the content ends the transmitter either drops (energy falls to
+// the noise floor) or holds one tone (on DWD 3855, 2026-10-26, the
+// white tone held at full amplitude for 7+ minutes after the chart). A
+// window counts as keyed only when it has BOTH near-transmission
+// energy (15% of the 90th percentile) and a wide ratio range (0.4;
+// measured chart windows sweep 0.84-1.0, a held tone 0.06-0.18). The
+// end is the end of the last keyed window, and it only counts when
+// keying stays absent for at least 5 s after it - short mid-chart
+// fades must not crop the image. ok is false when keying reaches the
+// end of the trace (capture cut mid-transmission).
+func (t *wefaxTrace) keyingEndHop(lineHops int) (endHop int, ok bool) {
+	n := len(t.ratio)
+	win := int(1.0 / wefaxHopSec) // 1 s windows
+	if n < 5*win {
+		return n, false
+	}
+	// Range runs on the pre-pedestal ratio: pedestal subtraction
+	// normalizes a held tone away to 0/0 noise, faking keying.
+	raw := t.raw
+	if raw == nil {
+		raw = t.ratio
+	}
+	// Per-hop tone-pair energy, prefix-summed for window means.
+	pre := make([]float64, n+1)
+	for h := 0; h < n; h++ {
+		pre[h+1] = pre[h] + t.pb[h] + t.pw[h]
+	}
+	var eAll []float64
+	nw := n / win
+	eWin := make([]float64, nw)
+	for w := 0; w < nw; w++ {
+		eWin[w] = (pre[(w+1)*win] - pre[w*win]) / float64(win)
+		eAll = append(eAll, eWin[w])
+	}
+	sort.Float64s(eAll)
+	eFloor := eAll[int(0.90*float64(len(eAll)-1))] * 0.15
+	const rangeMin = 0.4
+	keyed := make([]bool, nw)
+	for w := 0; w < nw; w++ {
+		if eWin[w] < eFloor {
+			continue
+		}
+		lo, hi := 1.0, 0.0
+		for h := w * win; h < (w+1)*win; h++ {
+			if raw[h] < lo {
+				lo = raw[h]
+			}
+			if raw[h] > hi {
+				hi = raw[h]
+			}
+		}
+		keyed[w] = hi-lo >= rangeMin
+	}
+	lastKey := -1
+	for w := 0; w < nw; w++ {
+		if keyed[w] {
+			lastKey = w
+		}
+	}
+	if lastKey < 0 || lastKey+1 >= nw {
+		return n, false
+	}
+	const minSilenceSec = 5.0
+	if float64(nw-1-lastKey)*float64(win)*wefaxHopSec < minSilenceSec {
+		return n, false
+	}
+	end := (lastKey + 1) * win
+	// Keep a margin past the last keyed window so the final chart
+	// lines survive the window quantization.
+	end += 4 * lineHops
+	if end > n {
+		end = n
+	}
+	return end, true
+}
+
+// truncate crops all per-hop arrays to endHop hops.
+func (t *wefaxTrace) truncate(endHop int) {
+	if endHop >= len(t.ratio) {
+		return
+	}
+	t.ratio = t.ratio[:endHop]
+	t.raw = t.raw[:endHop]
+	t.pb = t.pb[:endHop]
+	t.pw = t.pw[:endHop]
 }
 
 // wefaxDemodRatio computes per-hop Goertzel powers at the two locked
