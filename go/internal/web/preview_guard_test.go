@@ -81,6 +81,20 @@ func TestPreviewModeScanControl(t *testing.T) {
 	}
 }
 
+// Re-decode is CPU work anyone could queue on a shared demo: denied too.
+func TestPreviewModeDeniesCaptureDecode(t *testing.T) {
+	s := previewServer()
+	t.Cleanup(func() { s.cancel() })
+	req := httptest.NewRequest("POST", "http://example.test/api/captures/decode", strings.NewReader("name=x.wav&target=navtex"))
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleCaptureDecode(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("preview capture decode: got %d, want 403", rec.Code)
+	}
+}
+
 // Non-preview servers keep the ordinary behavior (request reaches the
 // normal handler path, here failing later for lack of a running monitor).
 func TestNonPreviewTuneNotGuarded(t *testing.T) {
