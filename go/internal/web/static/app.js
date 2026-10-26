@@ -196,7 +196,7 @@ async function refreshStatus() {
     el('pass-count').textContent = (status.passes || []).length;
     el('capture-count').textContent = (status.captures || []).length;
     el('receiver-count').textContent = status.receivers ?? '–';
-    el('msg').textContent = 'updated ' + fmtTime(status.updated_at) + ' — ' + status.receivers + ' receivers in the catalogue';
+    el('msg').textContent = 'updated ' + fmtTime(status.updated_at) + ' — ' + status.receivers + ' receivers in the directory';
     renderStatCards(status);
     renderNextPass(status);
     renderPasses(status);
@@ -272,7 +272,7 @@ const fmtDuration = sec => {
 // and the proof panel: the explicit sidecar class verbatim, unknown
 // stated plainly, never guessed.
 function captureProvenance(c) {
-  return c.source === 'live' ? 'recorded by this receiver'
+  return c.source === 'live' ? 'recorded live from the listed receiver (not synthetic)'
     : c.source === 'test-fixture' ? 'test fixture (synthetic - not a reception)'
     : c.source ? c.source
     : 'source not recorded';
