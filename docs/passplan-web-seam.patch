@@ -1,0 +1,89 @@
+diff --git a/go/internal/web/passplan.go b/go/internal/web/passplan.go
+new file mode 100644
+index 0000000..1b39453
+--- /dev/null
++++ b/go/internal/web/passplan.go
+@@ -0,0 +1,23 @@
++package web
++
++import "net/http"
++
++// SetPassplan registers the multi-pass observation planner (read-only).
++// Structural interface so web does not import passplan.
++func (s *Server) SetPassplan(provider interface{ TimelineJSON() interface{} }) {
++	s.mu.Lock()
++	s.passplan = provider
++	s.mu.Unlock()
++}
++
++// handlePassplan serves GET /api/passplan.json: the planned observations.
++func (s *Server) handlePassplan(w http.ResponseWriter, r *http.Request) {
++	s.mu.Lock()
++	provider := s.passplan
++	s.mu.Unlock()
++	if provider == nil {
++		writeJSON(w, map[string]interface{}{"enabled": false})
++		return
++	}
++	writeJSON(w, map[string]interface{}{"enabled": true, "observations": provider.TimelineJSON()})
++}
+diff --git a/go/internal/web/passplan_test.go b/go/internal/web/passplan_test.go
+new file mode 100644
+index 0000000..757ea56
+--- /dev/null
++++ b/go/internal/web/passplan_test.go
+@@ -0,0 +1,34 @@
++package web
++
++import (
++	"encoding/json"
++	"net/http/httptest"
++	"testing"
++)
++
++type fakePlan struct{}
++
++func (fakePlan) TimelineJSON() interface{} { return []map[string]string{{"satellite": "ISS"}} }
++
++func get(t *testing.T, s *Server) map[string]interface{} {
++	rec := httptest.NewRecorder()
++	s.handlePassplan(rec, httptest.NewRequest("GET", "/api/passplan.json", nil))
++	var out map[string]interface{}
++	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
++		t.Fatal(err, rec.Body.String())
++	}
++	return out
++}
++
++func TestPassplanHandler(t *testing.T) {
++	s := &Server{}
++	if get(t, s)["enabled"] != false {
++		t.Fatal("expected disabled")
++	}
++	s.SetPassplan(fakePlan{})
++	out := get(t, s)
++	obs, _ := out["observations"].([]interface{})
++	if out["enabled"] != true || len(obs) != 1 {
++		t.Fatalf("%v", out)
++	}
++}
+diff --git a/go/internal/web/web.go b/go/internal/web/web.go
+index dee3524..4056fc6 100644
+--- a/go/internal/web/web.go
++++ b/go/internal/web/web.go
+@@ -284,6 +284,7 @@ type Server struct {
+ 	mu                sync.Mutex
+ 	decodeMu          sync.Mutex
+ 	satsched          interface{ StatusesJSON() interface{} }
++	passplan          interface{ TimelineJSON() interface{} }
+ 	captures          []Capture
+ 	passes            []PassInfo
+ 	gallery           []gallery.Item
+@@ -1022,6 +1023,7 @@ func (s *Server) Handler() http.Handler {
+ 	mux.HandleFunc("/api/satellites.json", s.handleSatellites)
+ 	mux.HandleFunc("/api/passes.json", s.handlePasses)
+ 	mux.HandleFunc("/api/satfollow.json", s.handleSatfollow)
++	mux.HandleFunc("/api/passplan.json", s.handlePassplan)
+ 	mux.HandleFunc("/api/observations.json", s.handleObservations)
+ 	mux.HandleFunc("/api/gallery.json", s.handleGallery)
+ 	mux.HandleFunc("/api/test-fixtures.json", s.handleTestFixtures)
