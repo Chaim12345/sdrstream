@@ -87,3 +87,18 @@ recordings under `go/internal/decode/testdata` are third-party material. Their
 sources and open licence questions are in `tests/data/NOTICE`; `ft8_lib.LICENSE`
 covers the ft8_lib port only. The test harness fetches
 recordings when explicitly requested.
+
+## sgoudelis/ground-station (GPL-3.0-only) - UI design reference
+
+- `go/internal/web/static/passtimeline.js`: pass timeline chart. Layout,
+  axes and colour thresholds follow
+  `frontend/src/components/passes/timeline/` of
+  https://github.com/sgoudelis/ground-station at commit 351631d3066b
+  (Copyright its authors). Re-implemented as dependency-free SVG; no upstream
+  source text was copied.
+- `go/internal/web/static/bandplan.js`: spectrum band-plan overlay. Concept
+  and band table cross-checked against
+  `frontend/src/components/waterfall/bandplan-overlay.jsx` and
+  `bandplans.jsx` of the same upstream commit. Allocation ranges are public
+  facts; extra rows (airband, marine VHF, NOAA weather, NAVTEX) were added
+  here. Canvas code is new; no upstream source text was copied.

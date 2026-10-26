@@ -205,11 +205,13 @@
     <div class="panel">
       <div class="panel-head">
         <h2>Spectrum</h2>
+        <button class="linklike" id="bandplan-toggle" type="button" aria-pressed="true" title="Show or hide band allocations on the spectrum">band plan</button>
         <button class="linklike" id="bookmark-add" title="Bookmark the tuned frequency">+ bookmark</button>
       </div>
       <canvas id="spectrum" height="120" role="img" aria-label="Live spectrum of the monitored receiver"></canvas>
       <canvas id="waterfall" height="160" role="img" aria-label="Scrolling waterfall of recent spectrum history"></canvas>
       <div class="axis"><span id="spec-lo">—</span><span id="spec-mid">—</span><span id="spec-hi">—</span></div>
+      <p class="muted bandplan-note" id="bandplan-note">Band plan: reference ranges vary by country (R1 = ITU Region 1, R2 = Region 2; * = differs by country). Check your local allocation.</p>
       <div class="bookmark-bar" id="bookmark-bar"></div>
       <div class="muted tune-hint">click the spectrum or waterfall to listen at that frequency</div>
     </div>
@@ -310,6 +312,7 @@
   </section>
 
   <section id="view-passes" class="view" aria-label="Passes">
+    <div id="pass-timeline"></div>
     <div id="passes-list" class="cards"><div class="empty">no passes predicted</div></div>
   </section>
 
@@ -515,6 +518,9 @@
 </div>
 
 <script src="/static/vendor/leaflet/leaflet.js"></script>
+<script src="/static/passtimeline.js"></script>
+<script src="/static/bandplan.js"></script>
+<script src="/static/categories.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/msglog.js"></script>
 <script src="/static/history.js"></script>

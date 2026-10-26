@@ -206,6 +206,7 @@ function renderPasses(status) {
   const box = el('passes-list');
   const passes = (status.passes || []).slice().sort((a, b) => new Date(a.rise) - new Date(b.rise));
   box.textContent = '';
+  if (window.renderPassTimeline) window.renderPassTimeline(passes);
   if (!passes.length) { setEmpty(box, 'no passes predicted'); return; }
   const now = Date.now();
   passes.slice(0, 60).forEach(p => {
@@ -997,6 +998,8 @@ function drawSpectrum(bins, centre, span) {
     }
   }
   drawBookmarkFlags(ctx, w, centre, span, ratio);
+  if (window.SDRBandPlan) window.SDRBandPlan.draw(ctx, w, h, centre, span, ratio);
+  window.redrawSpectrum = () => drawSpectrum(bins, centre, span);
   el('spec-lo').textContent = mhz(centre - span / 2);
   el('spec-mid').textContent = mhz(centre);
   el('spec-hi').textContent = mhz(centre + span / 2);
@@ -1112,6 +1115,7 @@ function activityCard(a, fresh) {
     level.textContent = a.level_db.toFixed(0) + ' dB' + (a.bandwidth_hz ? ' · ' + (a.bandwidth_hz / 1000).toFixed(0) + ' kHz' : '');
     rowEl.appendChild(level);
   }
+  if (window.SDRCategory) { const t = window.SDRCategory.tag(a); if (t) rowEl.appendChild(t); }
   card.appendChild(rowEl);
   // Provenance is stated on every card: the receiver a decode came from,
   // or that no source was recorded - never guessed or silently omitted.
@@ -1172,6 +1176,7 @@ activityReset.type = 'button'; activityReset.className = 'chip'; activityReset.t
 verdictFilter.after(activityReset);
 activityReset.addEventListener('click', () => {
   activityKind = ''; activityMode = ''; activitySearch = ''; activityWindowSec = 0; activityVerdict = ''; activityLimit = 0;
+  if (window.SDRCategory) window.SDRCategory.reset();
   el('activity-search').value = ''; el('activity-mode').value = ''; el('activity-window').value = ''; verdictFilter.value = '';
   document.querySelectorAll('[data-kind]').forEach(b => b.classList.toggle('on', b.dataset.kind === ''));
   renderActivity();
@@ -1186,6 +1191,7 @@ function filteredActivity() {
   const cutoff = activityWindowSec ? Date.now() - activityWindowSec * 1000 : 0;
   return activityItems.filter(a => {
     if (activityKind && a.kind !== activityKind) return false;
+    if (window.SDRCategory && !window.SDRCategory.match(a)) return false;
     if (activityMode && (a.mode || '') !== activityMode) return false;
     if (activityVerdict && activityGateVerdict(a) !== activityVerdict) return false;
     if (cutoff && !(new Date(a.started).getTime() >= cutoff)) return false;
@@ -1214,6 +1220,7 @@ function renderModeOptions() {
 }
 function renderActivity() {
   renderModeOptions();
+  if (window.SDRCategory) window.SDRCategory.update(activityItems);
   const full = filteredActivity();
   const limit = activityLimit || +settings.pageSize || DEFAULT_SETTINGS.pageSize;
   const feed = el('feed');
@@ -1229,6 +1236,8 @@ function renderActivity() {
   if (!more.hidden) more.textContent = 'show ' + Math.min(limit, full.length - limit) + ' more of ' + full.length;
   const active = [];
   if (activityKind) active.push('kind ' + activityKind);
+  if (window.SDRCategory && window.SDRCategory.state.cat) active.push('category ' + window.SDRCategory.state.cat);
+  if (window.SDRCategory && window.SDRCategory.state.hideGuesses) active.push('frequency guesses hidden');
   if (activityMode) active.push('decoder ' + activityMode);
   if (activityWindowSec) active.push('time window');
   if (activitySearch.trim()) active.push('search');

@@ -679,3 +679,16 @@ kbd {
 /* station board: probe catalog liveness */
 .badge.board-alive { color: var(--good); border-color: #14532d; }
 .badge.board-dead { color: var(--bad); border-color: #7f1d1d; }
+/* pass timeline (static/passtimeline.js) */
+#pass-timeline{margin:0 0 12px;padding:10px;border:1px solid var(--line);border-radius:8px}
+#pass-timeline .pt-bar{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+#pass-timeline .pt-ctl{display:flex;align-items:center;gap:4px}
+#pass-timeline .pt-hours{min-width:34px;text-align:center}
+#pass-timeline .pt-note{margin:6px 0 0;font-size:12px}
+#pass-timeline .pt-pass:focus{outline:none}#pass-timeline .pt-pass:focus path{stroke-width:3}
+#pass-timeline .pt-ctl .chip{min-width:0;padding:4px 10px;min-height:32px}
+#pass-timeline .pt-chart{overflow:hidden}
+#bandplan-toggle[aria-pressed=false]{opacity:.5;text-decoration:line-through}
+.bandplan-note{font-size:11px;margin:4px 0}
+.cat-bar{flex-wrap:wrap;align-items:center}.cat-bar .chip[aria-pressed=true]{outline:1px solid var(--accent)}.cat-ev{font-size:12px;display:inline-flex;gap:4px;align-items:center}.cat-note{flex-basis:100%;font-size:11px}
+.cat-tag{font-size:11px;border:1px solid var(--line);border-radius:10px;padding:1px 7px}
