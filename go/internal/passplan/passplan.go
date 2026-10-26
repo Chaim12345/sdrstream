@@ -59,7 +59,7 @@ type Monitored struct {
 	MinElevation       float64 // peak must reach this (default 20)
 	TaskStartElevation float64 // record only above this (default 10; 0 = whole pass)
 	LookaheadHours     float64 // default 24
-	Priority           int     // lower number wins ties on equal elevation
+	Priority           int     // sdrstream extension (not upstream): lower number wins ONLY when peak elevations are exactly equal; it never overrides a higher peak
 	Enabled            bool
 }
 
@@ -210,7 +210,9 @@ func (p *Planner) place(m Monitored, ps Pass, now time.Time, st *Stats) {
 		replace = true
 		for _, b := range blockers {
 			// A running observation is never pre-empted; equal elevation keeps the incumbent.
-			if b.Status == StatusRunning || cand.PeakEl <= b.PeakEl {
+			win := cand.PeakEl > b.PeakEl ||
+				(cand.PeakEl == b.PeakEl && cand.Priority < b.Priority) // tie-break only
+			if b.Status == StatusRunning || !win {
 				replace = false
 			}
 		}

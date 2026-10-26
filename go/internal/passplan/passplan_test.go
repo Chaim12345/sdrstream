@@ -211,7 +211,7 @@ func TestTrackerFinderRealGeometry(t *testing.T) {
 		}
 		for _, edge := range []time.Time{s, e} {
 			la, _ := tr.LookAngle(edge, f.Lat, f.Lon, 0)
-			if la.Elevation < 4 || la.Elevation > 7 {
+			if la.Elevation < 4.5 || la.Elevation > 5.5 {
 				t.Fatalf("edge elevation %.2f not near 5", la.Elevation)
 			}
 		}
@@ -232,5 +232,28 @@ func TestTrackerFinderRealGeometry(t *testing.T) {
 	}
 	if _, err := f.Passes(Monitored{NoradID: 1}, start, 1); err == nil {
 		t.Fatal("expected missing tracker error")
+	}
+}
+
+func TestPriorityOnlyBreaksExactElevationTies(t *testing.T) {
+	// equal peak: lower Priority number wins even when it arrives later
+	f := fake{map[int][]Pass{1: {pass(60, 10, 40)}}}
+	p := newP(f, StrategyPriority)
+	p.Generate([]Monitored{mon("low", 1, "rx", 5)})
+	f.passes[2] = []Pass{pass(62, 10, 40)}
+	p.Generate([]Monitored{mon("low", 1, "rx", 5), mon("high", 2, "rx", 1)})
+	for _, o := range p.Timeline() {
+		if o.Satellite == "low" && o.Status != StatusCancelled || o.Satellite == "high" && o.Status != StatusScheduled {
+			t.Fatalf("tie not broken by priority: %+v", p.Timeline())
+		}
+	}
+	// higher peak beats better priority number
+	f = fake{map[int][]Pass{1: {pass(60, 10, 40)}, 2: {pass(62, 10, 41)}}}
+	p = newP(f, StrategyPriority)
+	p.Generate([]Monitored{mon("prio", 1, "rx", 0), mon("tall", 2, "rx", 9)})
+	for _, o := range p.Timeline() {
+		if o.Satellite == "tall" && o.Status != StatusScheduled {
+			t.Fatalf("priority overrode higher peak: %+v", p.Timeline())
+		}
 	}
 }
