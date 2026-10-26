@@ -17,7 +17,6 @@ import (
 
 	"github.com/chaim12345/sdrstream/go/internal/catalogue"
 	"github.com/chaim12345/sdrstream/go/internal/satellites"
-	"github.com/chaim12345/sdrstream/go/internal/tle"
 	"github.com/chaim12345/sdrstream/go/internal/tracking"
 )
 
@@ -129,7 +128,7 @@ func (s *Server) buildMapData() *MapData {
 		data.Passes = append(data.Passes, out)
 	}
 
-	text, err := tle.Load("amateur", 24, false, 60*time.Second)
+	text, err := s.tleLoader()("amateur", 24, false, 60*time.Second)
 	if err != nil {
 		// No TLE source (offline, upstream down): the map still gets
 		// receivers and passes, and the UI says the satellite layer is
