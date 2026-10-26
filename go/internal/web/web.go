@@ -1939,7 +1939,7 @@ func (s *Server) handleMonitorControl(w http.ResponseWriter, r *http.Request) {
 }
 
 // monitorKinds are the receiver types the UI can start.
-var monitorKinds = map[string]bool{"openwebrx": true, "websdr": true, "kiwi": true, "kiwisdr": true, "spyserver": true}
+var monitorKinds = map[string]bool{"openwebrx": true, "websdr": true, "kiwi": true, "kiwisdr": true, "kiwi-iq": true, "spyserver": true}
 
 // handleMonitorStart starts a live monitor from UI-provided receiver
 // details. Construction failures (bad kind, unreachable receiver,

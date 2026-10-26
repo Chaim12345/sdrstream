@@ -392,6 +392,8 @@ func sourceFor(ctx context.Context, kind, server, profile string, allowPrivate b
 		return icecast.NewSource(server), nil
 	case "kiwi", "kiwisdr":
 		return dialKiwi(ctx, server, allowPrivate)
+	case "kiwi-iq":
+		return dialKiwiIQSource(ctx, server, allowPrivate)
 	case "spyserver":
 		return dialSpyServer(ctx, server, allowPrivate)
 	}

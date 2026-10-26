@@ -1521,6 +1521,7 @@ func cmdWeb(args []string) error {
 	scanOpenDirectory := fs.Bool("scan-open-directory", false, "scan OpenWebRX and WebSDR entries from receiverbook")
 	scanKiwiDirectory := fs.Bool("scan-kiwi-directory", false, "scan free-slot KiwiSDR entries from cached public directory")
 	probeDirectory := fs.Bool("probe-directory", false, "sweep public receiver directories into a persistent station capability catalog (state dir probe-catalog.json, served at /api/station-catalog.json)")
+	catalogImport := fs.String("catalog-import", "", "import an rxprobe JSONL test ledger into the station catalog at startup (verdicts verbatim; no new receiver contacts)")
 	scanDirectoryRefresh := fs.Duration("scan-directory-refresh", time.Hour, "re-fetch receiver directories this often; 0 disables refresh")
 	scanRecordAll := fs.Bool("scan-record-all", false, "archive audio for every detected activity, including unverified/noise/carrier clips")
 	scanState := fs.String("scan-state", defaultRotationStatePath(), "file that carries HF target / OpenWebRX profile rotation across restarts (empty disables)")
@@ -1668,13 +1669,28 @@ func cmdWeb(args []string) error {
 		defer feedsCancel()
 		feeds.Start(feedsCtx, feedsManager, *feedsLat, *feedsLon, *aisKey)
 	}
-	if *probeDirectory {
-		catalogPath := web.StateFile("probe-catalog.json")
-		catalog, err := probe.Load(catalogPath)
+	var catalog *probe.Catalog
+	catalogPath := web.StateFile("probe-catalog.json")
+	if *catalogImport != "" || *probeDirectory {
+		var err error
+		catalog, err = probe.Load(catalogPath)
 		if err != nil {
 			log.Printf("probe: catalog unreadable, starting empty (%v)", err)
 			catalog = probe.NewCatalog()
 		}
+	}
+	if *catalogImport != "" {
+		n, err := catalog.ImportLedger(*catalogImport)
+		if err != nil {
+			return fmt.Errorf("catalog-import: %w", err)
+		}
+		if err := catalog.Save(catalogPath); err != nil {
+			return fmt.Errorf("catalog-import: save: %w", err)
+		}
+		server.SetProbeCatalog(catalog)
+		log.Printf("probe: imported %d verified test record(s) from %s", n, *catalogImport)
+	}
+	if *probeDirectory {
 		probeCacheDir := filepath.Join(os.Getenv("HOME"), ".cache", "sdrstream")
 		if stateDir := os.Getenv("SDRSTREAM_STATE_DIR"); stateDir != "" {
 			probeCacheDir = filepath.Join(stateDir, "cache")

@@ -104,9 +104,14 @@ type SpyConfig struct {
 
 // SpyClient is one SpyServer connection streaming uint8 I/Q.
 type SpyClient struct {
-	conn    net.Conn
-	Info    DeviceInfo
-	Sync    ClientSync
+	conn net.Conn
+	Info DeviceInfo
+	// HaveSync reports whether the server volunteered CLIENT_SYNC during the
+	// handshake. The reference client never requires it; when false, Sync is
+	// zero-valued and its facts (CanControl, center frequencies) are UNKNOWN,
+	// not zero.
+	HaveSync bool
+	Sync     ClientSync
 	rate    uint32
 	mu      sync.Mutex
 	closed  bool
@@ -119,6 +124,25 @@ type SpyClient struct {
 	iqSeqGaps   uint64
 	lastIQSeq   int64
 	skippedMsgs uint64
+	// settingsEcho holds the server's READ_SETTING echoes (setting ->
+	// applied value), the closest thing the protocol has to an ACK.
+	settingsEcho map[uint32]uint32
+}
+
+// SettingEcho returns the server's last echoed applied value for a setting.
+func (c *SpyClient) SettingEcho(setting uint32) (uint32, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.settingsEcho[setting]
+	return v, ok
+}
+
+// SyncSnapshot returns the latest server-reported sync state (updated on
+// every CLIENT_SYNC, not only at handshake).
+func (c *SpyClient) SyncSnapshot() (ClientSync, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Sync, c.HaveSync
 }
 
 // SpyStats is a point-in-time snapshot of stream accounting.
@@ -164,16 +188,29 @@ func DialSpy(ctx context.Context, cfg SpyConfig) (*SpyClient, error) {
 		return nil, err
 	}
 
-	// Await DEVICE_INFO and CLIENT_SYNC (arrive in either order, possibly
-	// interleaved with READ_SETTING/PONG).
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	// Await DEVICE_INFO (required, as in the reference client, which waits
+	// 3s for it and nothing else) and CLIENT_SYNC (optional: the reference
+	// never requires it, so a server that omits it must not fail the
+	// handshake). Once DEVICE_INFO arrives, allow a short grace for
+	// CLIENT_SYNC, then proceed with HaveSync=false.
+	deadline := time.Now().Add(5 * time.Second)
+	const syncGrace = 500 * time.Millisecond
+	conn.SetReadDeadline(deadline)
 	haveInfo, haveSync := false, false
-	for !(haveInfo && haveSync) {
+	msgs := 0
+	for !(haveInfo && (haveSync || time.Now().After(deadline))) {
 		mtype, mbody, err := c.readMessage()
 		if err != nil {
+			if haveInfo && !haveSync && isTimeout(err) {
+				break // proceed without CLIENT_SYNC
+			}
 			conn.Close()
-			return nil, fmt.Errorf("iqsrc: handshake: %w", err)
+			if msgs == 0 && isTimeout(err) {
+				return nil, fmt.Errorf("iqsrc: handshake: no response from server within 5s (0 messages received)")
+			}
+			return nil, fmt.Errorf("iqsrc: handshake: %w (after %d messages, device_info=%v client_sync=%v)", err, msgs, haveInfo, haveSync)
 		}
+		msgs++
 		switch mtype {
 		case spyMsgDeviceInfo:
 			// Older servers trail the reference struct (48 bytes / 12
@@ -194,6 +231,11 @@ func DialSpy(ctx context.Context, cfg SpyConfig) (*SpyClient, error) {
 			}
 			c.Info = di
 			haveInfo = true
+			// CLIENT_SYNC, if the server volunteers one, follows promptly;
+			// do not hold the whole handshake deadline open for it.
+			if grace := time.Now().Add(syncGrace); grace.Before(deadline) {
+				conn.SetReadDeadline(grace)
+			}
 		case spyMsgClientSync:
 			// Same trailing-extension tolerance: 40 bytes / 10 fields
 			// today, older servers observed at 36. 20 bytes covers
@@ -215,6 +257,7 @@ func DialSpy(ctx context.Context, cfg SpyConfig) (*SpyClient, error) {
 		}
 	}
 	conn.SetReadDeadline(time.Time{})
+	c.HaveSync = haveSync
 
 	// Choose decimation: largest rate <= requested (rates are MaxSampleRate/2^d).
 	rate := c.Info.MaximumSampleRate >> c.Info.MinimumIQDecimation
@@ -230,14 +273,23 @@ func DialSpy(ctx context.Context, cfg SpyConfig) (*SpyClient, error) {
 	c.rate = rate
 
 	if cfg.Frequency == 0 {
+		if !c.HaveSync {
+			conn.Close()
+			return nil, fmt.Errorf("iqsrc: spyserver: no frequency configured and server sent no CLIENT_SYNC to inherit one from")
+		}
 		cfg.Frequency = c.Sync.IQCenterFrequency
 	}
+	// Settings in the reference client's order (SDR++ start(): format,
+	// decimation, frequency, mode, gain, digital gain, then enable). A
+	// previous order sent STREAMING_MODE first; some servers may apply or
+	// lock the channel pipeline at that point, silently ignoring a later
+	// frequency. Order parity removes that variable.
 	type kv struct{ k, v uint32 }
 	settings := []kv{
-		{spySettingStreamingMode, spyStreamModeIQOnly},
 		{spySettingIQFormat, spyFormatUint8},
-		{spySettingIQFrequency, cfg.Frequency},
 		{spySettingIQDecimation, decim},
+		{spySettingIQFrequency, cfg.Frequency},
+		{spySettingStreamingMode, spyStreamModeIQOnly},
 	}
 	if cfg.Gain > 0 {
 		g := cfg.Gain
@@ -291,6 +343,11 @@ func (c *SpyClient) command(cmd uint32, body []byte) error {
 		return fmt.Errorf("iqsrc: spyserver command %d: %w", cmd, err)
 	}
 	return nil
+}
+
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // readMessage reads one 20-byte message header + body. Returns the low 16
@@ -353,7 +410,37 @@ func (c *SpyClient) ReadSamples(buf []complex64) (int, error) {
 				buf[i] = complex((float32(body[2*i])-128)*scale, (float32(body[2*i+1])-128)*scale)
 			}
 			return n, nil
-		case spyMsgPong, spyMsgReadSetting, spyMsgClientSync:
+		case spyMsgClientSync:
+			// Mid-stream sync: the server is reporting applied state
+			// (e.g. the center frequency it actually uses). Keep c.Sync
+			// current so callers can read back control truth instead of
+			// trusting what they requested.
+			if len(body) >= 20 {
+				c.mu.Lock()
+				fields := []*uint32{&c.Sync.CanControl, &c.Sync.Gain, &c.Sync.DeviceCenterFrequency, &c.Sync.IQCenterFrequency, &c.Sync.FFTCenterFrequency, &c.Sync.MinimumIQCenterFrequency, &c.Sync.MaximumIQCenterFrequency, &c.Sync.MinimumFFTCenterFrequency, &c.Sync.MaximumFFTCenterFrequency}
+				for i, fp := range fields {
+					if 4*i+4 > len(body) {
+						break
+					}
+					*fp = binary.LittleEndian.Uint32(body[4*i:])
+				}
+				c.HaveSync = true
+				c.skippedMsgs++
+				c.mu.Unlock()
+			}
+			continue
+		case spyMsgReadSetting:
+			if len(body) >= 8 {
+				c.mu.Lock()
+				if c.settingsEcho == nil {
+					c.settingsEcho = map[uint32]uint32{}
+				}
+				c.settingsEcho[binary.LittleEndian.Uint32(body[0:4])] = binary.LittleEndian.Uint32(body[4:8])
+				c.skippedMsgs++
+				c.mu.Unlock()
+			}
+			continue
+		case spyMsgPong:
 			c.mu.Lock()
 			c.skippedMsgs++
 			c.mu.Unlock()
