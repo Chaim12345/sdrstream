@@ -87,3 +87,12 @@ recordings under `go/internal/decode/testdata` are third-party material. Their
 sources and open licence questions are in `tests/data/NOTICE`; `ft8_lib.LICENSE`
 covers the ft8_lib port only. The test harness fetches
 recordings when explicitly requested.
+
+## sgoudelis/ground-station (design reference, GPL-3.0)
+
+`go/internal/passplan` re-implements, independently in Go, the pass-observation
+scheduling rules of ground-station (pinned 351631d3066b,
+`backend/observations/{constants,conflicts,generator}.py`): peak-elevation
+filter, task window from elevation crossing, +/-5 min overlap tolerance,
+shared-resource conflicts, priority/skip/force strategies, status lifecycle.
+No upstream source text was copied. Upstream is GPL-3.0; sdrstream is AGPL-3.0.
