@@ -111,3 +111,12 @@ func (s *spySource) Listen(ctx context.Context, hz float64, mode string, dur tim
 
 // Close shuts the connection.
 func (s *spySource) Close() error { return s.client.Close() }
+
+// ControlTruth reports what the server said about control at handshake:
+// canControl is the CLIENT_SYNC CanControl flag and centerHz the server's
+// own IQCenterFrequency. When canControl is false the frequency we asked
+// for may not be what the server is actually serving, so callers must show
+// centerHz as the truth and our requests as requests.
+func (s *spySource) ControlTruth() (canControl bool, centerHz uint32) {
+	return s.client.Sync.CanControl == 1, s.client.Sync.IQCenterFrequency
+}

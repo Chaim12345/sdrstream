@@ -46,8 +46,9 @@ func TestLiveSpyCarrierSurvey(t *testing.T) {
 	}
 	defer c.Close()
 	rate := int(c.SampleRate())
-	t.Logf("negotiated rate %d Hz (max %d), device type %d, sync CanControl=%d",
-		rate, c.Info.MaximumSampleRate, c.Info.DeviceType, c.Sync.CanControl)
+	t.Logf("negotiated rate %d Hz (max %d), device type %d", rate, c.Info.MaximumSampleRate, c.Info.DeviceType)
+	t.Logf("sync: CanControl=%d DeviceCenterFrequency=%d IQCenterFrequency=%d (requested %d; if CanControl=0 the tuned frequency is unconfirmed)",
+		c.Sync.CanControl, c.Sync.DeviceCenterFrequency, c.Sync.IQCenterFrequency, freq)
 
 	const nfft = 8192
 	bands := 100 // ~25 kHz bands at 2.5 MHz
@@ -59,9 +60,14 @@ func TestLiveSpyCarrierSurvey(t *testing.T) {
 		window[i] = 0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(nfft)))
 	}
 	var snippet []complex64
+	var arrivals []time.Duration
+	last := time.Now()
 	deadline := time.Now().Add(time.Duration(secs) * time.Second)
 	for time.Now().Before(deadline) {
 		n, err := c.ReadSamples(buf)
+		now := time.Now()
+		arrivals = append(arrivals, now.Sub(last))
+		last = now
 		if n > 0 {
 			if len(snippet) < 65536 {
 				snippet = append(snippet, buf[:min(n, 65536-len(snippet))]...)
@@ -105,6 +111,12 @@ func TestLiveSpyCarrierSurvey(t *testing.T) {
 		f.Close()
 		t.Logf("raw IQ snippet: %d samples -> /tmp/spy-live-iq-snippet.f32 (PRIVATE evidence)", len(snippet))
 	}
+	// Inter-arrival gaps expose stall structure that an average hides.
+	gaps := append([]time.Duration(nil), arrivals...)
+	sort.Slice(gaps, func(i, j int) bool { return gaps[i] < gaps[j] })
+	stats := c.Stats()
+	t.Logf("arrival gaps: min=%v p50=%v p95=%v max=%v over %d reads", gaps[0], gaps[len(gaps)/2], gaps[len(gaps)*95/100], gaps[len(gaps)-1], len(arrivals))
+	t.Logf("stream stats: iq_msgs=%d seq_discontinuities=%d skipped_non_iq=%d", stats.IQMessages, stats.IQSeqGaps, stats.SkippedNonIQ)
 	sorted := make([]float64, bands)
 	for b := range power {
 		power[b] /= float64(chunks)

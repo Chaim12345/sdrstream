@@ -255,3 +255,80 @@ func TestSpyHandshakeToleratesOlderServerShapes(t *testing.T) {
 		t.Fatal("present fields not parsed")
 	}
 }
+
+// TestSpyStatsSequenceAccounting: a gap in IQ sequence numbers and skipped
+// non-IQ messages are counted.
+func TestSpyStatsSequenceAccounting(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		hdr := make([]byte, 8)
+		for {
+			if _, err := io.ReadFull(conn, hdr); err != nil {
+				return
+			}
+			cmd := binary.LittleEndian.Uint32(hdr[0:4])
+			size := binary.LittleEndian.Uint32(hdr[4:8])
+			body := make([]byte, size)
+			if _, err := io.ReadFull(conn, body); err != nil {
+				return
+			}
+			switch cmd {
+			case spyCmdHello:
+				di := make([]byte, 48)
+				var msg [68]byte
+				putMsg(msg[:20], spyMsgDeviceInfo, 0, 0, di)
+				conn.Write(msg[:68])
+				cs := make([]byte, 40)
+				var m2 [60]byte
+				putMsg(m2[:20], spyMsgClientSync, 0, 1, cs)
+				conn.Write(m2[:60])
+			case spyCmdSetSetting:
+				if binary.LittleEndian.Uint32(body[0:4]) == spySettingStreamingEnabled && binary.LittleEndian.Uint32(body[4:8]) == 1 {
+					var pong [20]byte
+					putMsg(pong[:20], spyMsgPong, 0, 0, nil)
+					conn.Write(pong[:20])
+					iq := make([]byte, 64)
+					for i := range iq {
+						iq[i] = 128
+					}
+					for _, seq := range []uint32{7, 9} {
+						var m [84]byte
+						putMsg(m[:20], spyMsgUint8IQ|(0<<16), 1, seq, iq)
+						conn.Write(m[:84])
+					}
+				}
+			}
+		}
+	}()
+	c, err := DialSpy(context.Background(), SpyConfig{Addr: ln.Addr().String(), Frequency: 1000000, SampleRate: 1000000, AllowPrivate: true})
+	if err != nil {
+		t.Fatalf("DialSpy: %v", err)
+	}
+	defer c.Close()
+	buf := make([]complex64, 32)
+	if _, err := c.ReadSamples(buf); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if _, err := c.ReadSamples(buf); err != nil {
+		t.Fatalf("second read: %v", err)
+	}
+	stats := c.Stats()
+	if stats.IQMessages != 2 {
+		t.Fatalf("IQMessages = %d, want 2", stats.IQMessages)
+	}
+	if stats.IQSeqGaps != 1 {
+		t.Fatalf("IQSeqGaps = %d, want 1 (seq 7 -> 9)", stats.IQSeqGaps)
+	}
+	if stats.SkippedNonIQ < 1 {
+		t.Fatalf("SkippedNonIQ = %d, want at least the pong", stats.SkippedNonIQ)
+	}
+}

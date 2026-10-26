@@ -336,7 +336,17 @@ type LiveInfo struct {
 	StepHz       float64     `json:"step_hz,omitempty"`
 	TunedHz      float64     `json:"tuned_hz,omitempty"`
 	OnAir        []OnAirPeak `json:"on_air"`
-	UpdatedAt    time.Time   `json:"updated_at"`
+	// Control, when the source reports it (SpyServer), tells the UI
+	// whether this client holds control of the shared tuner. Absent on
+	// receiver types that are exclusively ours anyway.
+	Control   *ControlTruth `json:"control,omitempty"`
+	UpdatedAt time.Time     `json:"updated_at"`
+}
+
+// ControlTruth is the server-reported shared-tuner state.
+type ControlTruth struct {
+	CanControl bool   `json:"can_control"`
+	CenterHz   uint32 `json:"center_hz"`
 }
 
 // Live snapshots the monitor's current view for the live UI: receiver
@@ -352,6 +362,10 @@ func (m *Monitor) Live() LiveInfo {
 		SpectrumOK: ok, CentreHz: centre, SpanHz: span,
 		ThresholdDB: m.thresholdDB(), Mode: m.listenMode(), StepHz: m.dialStepHz(), TunedHz: tuned, UpdatedAt: time.Now(),
 		OnAir: []OnAirPeak{},
+	}
+	if src, yes := m.opts.Source.(interface{ ControlTruth() (bool, uint32) }); yes {
+		canControl, center := src.ControlTruth()
+		info.Control = &ControlTruth{CanControl: canControl, CenterHz: center}
 	}
 	if !ok || len(bins) == 0 {
 		return info

@@ -175,3 +175,50 @@ func TestSourceForSpyserverRejectsLoopback(t *testing.T) {
 		t.Fatalf("guarded SourceFor did not reject loopback spyserver: %v", err)
 	}
 }
+
+// TestSpySourceControlTruth: the monitor must surface what the server said
+// about control, so the UI can label tuned frequencies as unconfirmed when
+// CanControl=0.
+func TestSpySourceControlTruth(t *testing.T) {
+	f := newFakeSpyServer(t)
+	defer f.close()
+	src, err := SpyServerSource(context.Background(), f.ln.Addr().String(), 144800000, 250000, 0)
+	if err != nil {
+		t.Fatalf("SpyServerSource: %v", err)
+	}
+	defer src.Close()
+	ct, ok := src.(interface{ ControlTruth() (bool, uint32) })
+	if !ok {
+		t.Fatal("spySource does not expose ControlTruth")
+	}
+	canControl, center := ct.ControlTruth()
+	if center != 144800000 { // the fake's CLIENT_SYNC carries this center
+		t.Fatalf("center = %d, want the fake's 144800000", center)
+	}
+	if !canControl { // fake sends CanControl=1
+		t.Fatal("fake sends CanControl=1; truth must be true")
+	}
+}
+
+// TestMonitorLiveIncludesControlTruth: Live() passes the source's control
+// truth through so handleLive serves it to the UI.
+func TestMonitorLiveIncludesControlTruth(t *testing.T) {
+	f := newFakeSpyServer(t)
+	defer f.close()
+	src, err := SpyServerSource(context.Background(), f.ln.Addr().String(), 144800000, 250000, 0)
+	if err != nil {
+		t.Fatalf("SpyServerSource: %v", err)
+	}
+	defer src.Close()
+	m := New(Options{Source: src, StartHz: 144800000, EndHz: 144900000, StepHz: 25000, Logf: func(string, ...interface{}) {}})
+	info := m.Live()
+	if info.Control == nil {
+		t.Fatal("Live() dropped the source control truth")
+	}
+	if !info.Control.CanControl {
+		t.Fatal("CanControl false, want true (fake sends 1)")
+	}
+	if info.Control.CenterHz != 144800000 {
+		t.Fatalf("CenterHz = %d, want 144800000 from the fake's sync", info.Control.CenterHz)
+	}
+}

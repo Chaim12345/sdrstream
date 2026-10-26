@@ -1415,7 +1415,9 @@ function renderReceivers(live) {
   state.textContent = !online ? 'offline' : hot ? 'ON AIR' : 'listening';
   const meta = document.createElement('div'); meta.className = 'card-meta';
   meta.textContent = online
-    ? (live.strategy || '') + (live.spectrum_ok ? ' · spectrum live' : ' · no spectrum') + (hot ? ' · ' + live.on_air.length + ' signal' + (live.on_air.length > 1 ? 's' : '') : '')
+    ? (live.strategy || '') + (live.spectrum_ok ? ' · spectrum live' : ' · no spectrum') +
+      (live.control && !live.control.can_control ? ' · shared tuner - frequency unconfirmed' : '') +
+      (hot ? ' · ' + live.on_air.length + ' signal' + (live.on_air.length > 1 ? 's' : '') : '')
     : 'no monitor attached';
   const head = document.createElement('div'); head.className = 'card-title';
   head.appendChild(dot); head.appendChild(name); head.appendChild(state);

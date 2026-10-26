@@ -111,6 +111,21 @@ type SpyClient struct {
 	mu      sync.Mutex
 	closed  bool
 	readBuf []byte
+	// Stream accounting, written by the single ReadSamples consumer and
+	// read via Stats. Sequence semantics are as observed on the wire (per
+	// IQ message, incrementing); gap counting treats any discontinuity as
+	// lost-or-reordered messages without claiming which.
+	iqMsgs      uint64
+	iqSeqGaps   uint64
+	lastIQSeq   int64
+	skippedMsgs uint64
+}
+
+// SpyStats is a point-in-time snapshot of stream accounting.
+type SpyStats struct {
+	IQMessages   uint64
+	IQSeqGaps    uint64 // count of sequence discontinuities between IQ messages (lost, reordered, or server restart; cause not claimed)
+	SkippedNonIQ uint64 // PONG/READ_SETTING/CLIENT_SYNC/other messages consumed while waiting for IQ
 }
 
 // DialSpy connects, handshakes, waits for DEVICE_INFO/CLIENT_SYNC, programs
@@ -137,7 +152,7 @@ func DialSpy(ctx context.Context, cfg SpyConfig) (*SpyClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("iqsrc: dial spyserver %s: %w", cfg.Addr, err)
 	}
-	c := &SpyClient{conn: conn}
+	c := &SpyClient{conn: conn, lastIQSeq: -1}
 
 	// HELLO: protocol version + app name.
 	app := []byte(cfg.AppName)
@@ -282,25 +297,33 @@ func (c *SpyClient) command(cmd uint32, body []byte) error {
 // bits of MessageType (the message type; high bits are per-message flags)
 // and the body. The flags are returned via out param when non-nil.
 func (c *SpyClient) readMessage() (uint32, []byte, error) {
-	mtype, _, body, err := c.readMessageFlags()
+	mtype, _, _, body, err := c.readMessageFlags()
 	return mtype, body, err
 }
 
-func (c *SpyClient) readMessageFlags() (uint32, uint32, []byte, error) {
+func (c *SpyClient) readMessageFlags() (uint32, uint32, uint32, []byte, error) {
 	var hdr [20]byte
 	if _, err := io.ReadFull(c.conn, hdr[:]); err != nil {
-		return 0, 0, nil, err
+		return 0, 0, 0, nil, err
 	}
 	size := binary.LittleEndian.Uint32(hdr[16:20])
 	if size > 1<<20 {
-		return 0, 0, nil, fmt.Errorf("iqsrc: spyserver message too large: %d", size)
+		return 0, 0, 0, nil, fmt.Errorf("iqsrc: spyserver message too large: %d", size)
 	}
 	body := make([]byte, size)
 	if _, err := io.ReadFull(c.conn, body); err != nil {
-		return 0, 0, nil, err
+		return 0, 0, 0, nil, err
 	}
 	mt := binary.LittleEndian.Uint32(hdr[4:8])
-	return mt & 0xFFFF, mt >> 16, body, nil
+	seq := binary.LittleEndian.Uint32(hdr[12:16])
+	return mt & 0xFFFF, mt >> 16, seq, body, nil
+}
+
+// Stats snapshots the stream accounting.
+func (c *SpyClient) Stats() SpyStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return SpyStats{IQMessages: c.iqMsgs, IQSeqGaps: c.iqSeqGaps, SkippedNonIQ: c.skippedMsgs}
 }
 
 // ReadSamples fills buf from the next UINT8 IQ message, transparently
@@ -308,12 +331,19 @@ func (c *SpyClient) readMessageFlags() (uint32, uint32, []byte, error) {
 // reference client: (v-128) / (128 * 10^(flags/20)).
 func (c *SpyClient) ReadSamples(buf []complex64) (int, error) {
 	for {
-		mtype, flags, body, err := c.readMessageFlags()
+		mtype, flags, seq, body, err := c.readMessageFlags()
 		if err != nil {
 			return 0, err
 		}
 		switch mtype {
 		case spyMsgUint8IQ:
+			c.mu.Lock()
+			if c.lastIQSeq >= 0 && seq != uint32(c.lastIQSeq)+1 {
+				c.iqSeqGaps++ // discontinuity event; direction/cause not claimed
+			}
+			c.lastIQSeq = int64(seq)
+			c.iqMsgs++
+			c.mu.Unlock()
 			n := len(body) / 2
 			if n > len(buf) {
 				n = len(buf)
@@ -324,8 +354,14 @@ func (c *SpyClient) ReadSamples(buf []complex64) (int, error) {
 			}
 			return n, nil
 		case spyMsgPong, spyMsgReadSetting, spyMsgClientSync:
+			c.mu.Lock()
+			c.skippedMsgs++
+			c.mu.Unlock()
 			continue
 		default:
+			c.mu.Lock()
+			c.skippedMsgs++
+			c.mu.Unlock()
 			continue // FFT/status/other streams: not subscribed, tolerate
 		}
 	}
