@@ -112,3 +112,74 @@ func TestWEFAXHeldToneTailTruncation(t *testing.T) {
 		t.Errorf("height %d includes the held-tone tail (want ~140)", h)
 	}
 }
+
+// insertGap splices sec seconds of receiver noise into the signal at
+// the given line boundary (line count after the start tone), modelling
+// a mid-chart fade with keying resuming afterwards.
+func insertGap(samples []float64, rate float64, lineSec float64, startToneSec float64, atLine int, sec float64) []float64 {
+	lineSamplesF := lineSec * rate
+	cut := int(math.Round(startToneSec*rate)) + int(math.Round(float64(atLine)*lineSamplesF))
+	gap := appendNoise(nil, rate, sec)
+	out := make([]float64, 0, len(samples)+len(gap))
+	out = append(out, samples[:cut]...)
+	out = append(out, gap...)
+	out = append(out, samples[cut:]...)
+	return out
+}
+
+// Negative control: a long mid-chart fade (>= 5 s without keying) with
+// keying resuming afterwards is NOT an end of transmission. The crop
+// must not fire at the fade, and the content after the fade must
+// decode. The guard is structural: the crop point is the end of the
+// LAST keyed window, so a mid-chart fade can never become the crop
+// point while later keying exists. Teeth check: a first-unkeyed-run
+// detector variant fails this test (crops at the fade, loses the
+// post-fade content).
+func TestWEFAXMidChartFadeNoTruncation(t *testing.T) {
+	const rate = 8000
+	full := synthWEFAXExactLines(rate, 60, 80, 3)      // 140 lines
+	samples := insertGap(full, rate, 0.5, 3, 60+40, 8) // fade after 40 image lines
+	pngData, rep, err := WEFAXImageDetailed(samples, rate, 120, 576)
+	if err != nil {
+		t.Fatalf("decode failed: %v (report %+v)", err, rep)
+	}
+	if rep.KeyingEndSec != 0 {
+		t.Errorf("KeyingEndSec = %.1f: cropped at the mid-chart fade (keying resumed afterwards)", rep.KeyingEndSec)
+	}
+	img, err := png.Decode(bytes.NewReader(pngData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 140 content lines + ~16 fade lines; the post-fade image lines
+	// (40 of them) must all be present.
+	if h := img.Bounds().Dy(); h < 140+14 {
+		t.Errorf("height %d: content after the mid-chart fade lost (want ~156)", h)
+	}
+}
+
+// Negative control: with a mid-chart fade AND a dead tail, the crop
+// lands at the true end of keying, not at the fade, and the content
+// between fade and tail survives.
+func TestWEFAXMidChartFadeTailCropsAtTrueEnd(t *testing.T) {
+	const rate = 8000
+	full := synthWEFAXExactLines(rate, 60, 80, 3)
+	gapped := insertGap(full, rate, 0.5, 3, 60+40, 8)
+	txSec := 3.0 + float64(60+80)*0.5 + 8
+	samples := appendHeldTone(gapped, rate, 30)
+	pngData, rep, err := WEFAXImageDetailed(samples, rate, 120, 576)
+	if err != nil {
+		t.Fatalf("decode failed: %v (report %+v)", err, rep)
+	}
+	if rep.KeyingEndSec <= 0 || math.Abs(rep.KeyingEndSec-txSec) > 3 {
+		t.Errorf("KeyingEndSec = %.1f s, want within 3 s of the true keying end %.0f s (crop must skip the mid-chart fade)", rep.KeyingEndSec, txSec)
+	}
+	img, err := png.Decode(bytes.NewReader(pngData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fade sits after line 100; cropping there would give ~100
+	// rows. The true end gives ~140 content + ~16 fade rows.
+	if h := img.Bounds().Dy(); h < 140+14 || h > 140+16+6 {
+		t.Errorf("height %d, want ~156 (post-fade content present, held-tone tail cropped)", h)
+	}
+}
