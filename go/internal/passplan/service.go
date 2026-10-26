@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chaim12345/sdrstream/go/internal/catalogue"
 	"github.com/chaim12345/sdrstream/go/internal/satellites"
 	"github.com/chaim12345/sdrstream/go/internal/tle"
 	"github.com/chaim12345/sdrstream/go/internal/tracking"
@@ -43,7 +44,20 @@ type Config struct {
 	MinElevation float64
 	Sats         []satellites.Sat // default satellites.All()
 	Logf         func(string, ...interface{})
+	// Observer selects what a pass is computed for and what it contends on:
+	//   ObserverStation (default): the configured Lat/Lon, one shared resource.
+	//   ObserverReceiver: the same receiver satsched would chase (first
+	//   catalogue receiver covering the downlink), pass geometry from that
+	//   receiver's coordinates, resource = receiver URL. Static catalogue
+	//   data only; no receiver is contacted.
+	Observer string
 }
+
+// Observer modes.
+const (
+	ObserverStation  = "station"
+	ObserverReceiver = "receiver"
+)
 
 // Service owns a Planner, rebuilds it from cached elements and persists it.
 // It plans only: it never starts a capture or contacts a receiver.
@@ -61,6 +75,7 @@ type Info struct {
 	Trackers    int       `json:"satellites_with_elements"`
 	Error       string    `json:"error,omitempty"`
 	Strategy    string    `json:"strategy"`
+	Observer    string    `json:"observer"`
 	Station     struct {
 		Lat float64 `json:"lat"`
 		Lon float64 `json:"lon"`
@@ -92,6 +107,10 @@ func NewService(cfg Config) *Service {
 		}
 	}
 	s.info.Strategy = s.P.Strategy
+	s.info.Observer = cfg.Observer
+	if s.info.Observer == "" {
+		s.info.Observer = ObserverStation
+	}
 	s.info.Station.Lat, s.info.Station.Lon = cfg.Lat, cfg.Lon
 	return s
 }
@@ -143,12 +162,21 @@ func (s *Service) Refresh() error {
 		if err != nil || tr == nil {
 			continue
 		}
-		trackers[sat.NoradID] = tr
-		mons = append(mons, Monitored{
+		m := Monitored{
 			ID: fmt.Sprintf("sat-%d", sat.NoradID), Name: sat.Name, NoradID: sat.NoradID,
 			Resource: StationResource, MinElevation: s.cfg.MinElevation,
 			TaskStartElevation: 10, Priority: s.priorityOf(sat.Name, idx), Enabled: true,
-		})
+		}
+		if s.cfg.Observer == ObserverReceiver {
+			rxs := catalogue.ForFrequency(float64(sat.DownlinkHz))
+			if len(rxs) == 0 {
+				continue // satsched skips satellites with no receiver too
+			}
+			m.Resource = rxs[0].URL
+			m.Observer = &LatLon{Lat: rxs[0].Latitude, Lon: rxs[0].Longitude}
+		}
+		trackers[sat.NoradID] = tr
+		mons = append(mons, m)
 	}
 	s.mu.Lock()
 	s.info.LastRefresh = s.P.Now().UTC()

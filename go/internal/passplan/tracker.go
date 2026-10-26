@@ -19,7 +19,8 @@ func (f TrackerFinder) Passes(m Monitored, from time.Time, hours float64) ([]Pas
 	if !ok {
 		return nil, errNoTracker(m.NoradID)
 	}
-	ps, err := tr.FindPasses(f.Lat, f.Lon, from, hours, 0)
+	lat, lon := f.observer(m)
+	ps, err := tr.FindPasses(lat, lon, from, hours, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -36,8 +37,9 @@ func (f TrackerFinder) Crossing(m Monitored, p Pass, el float64) (time.Time, tim
 	if !ok || p.PeakElevation < el {
 		return time.Time{}, time.Time{}, false
 	}
+	lat, lon := f.observer(m)
 	elAt := func(t time.Time) float64 {
-		la, err := tr.LookAngle(t, f.Lat, f.Lon, f.AltKm)
+		la, err := tr.LookAngle(t, lat, lon, f.AltKm)
 		if err != nil {
 			return -90
 		}
@@ -75,4 +77,11 @@ func itoa(n int) string {
 		s = string(rune('0'+n%10)) + s
 	}
 	return s
+}
+
+func (f TrackerFinder) observer(m Monitored) (float64, float64) {
+	if m.Observer != nil {
+		return m.Observer.Lat, m.Observer.Lon
+	}
+	return f.Lat, f.Lon
 }

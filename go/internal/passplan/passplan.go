@@ -65,7 +65,13 @@ type Monitored struct {
 	LookaheadHours     float64 // default 24
 	Priority           int     // sdrstream extension (not upstream): lower number wins ONLY when peak elevations are exactly equal; it never overrides a higher peak
 	Enabled            bool
+	// Observer overrides the finder's default observer for this satellite
+	// (receiver mode: the chosen receiver's coordinates). nil = finder default.
+	Observer *LatLon
 }
+
+// LatLon is a ground position in degrees.
+type LatLon struct{ Lat, Lon float64 }
 
 // Finder supplies pass geometry. Implementations: TrackerFinder (SGP4) or a
 // fake in tests.

@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chaim12345/sdrstream/go/internal/catalogue"
 	"github.com/chaim12345/sdrstream/go/internal/satellites"
+	"github.com/chaim12345/sdrstream/go/internal/tracking"
 )
 
 func testCfg(t *testing.T, load ElementLoader) Config {
@@ -129,5 +131,51 @@ func TestServiceConcurrentRefreshAndReads(t *testing.T) {
 	wg.Wait()
 	if len(s.P.Timeline()) == 0 {
 		t.Fatal("empty after concurrent refresh")
+	}
+}
+
+func TestReceiverModeMatchesSatschedReceiverAndGeometry(t *testing.T) {
+	cfg := testCfg(t, issLoader)
+	cfg.Observer = ObserverReceiver
+	cfg.Sats = []satellites.Sat{{Name: "ISS", NoradID: 25544, Status: "active", DownlinkHz: 145_800_000}}
+	s := NewService(cfg)
+	if err := s.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	rxs := catalogue.ForFrequency(145_800_000)
+	if len(rxs) == 0 {
+		t.Skip("no catalogue receiver for 145.8 MHz")
+	}
+	want := rxs[0] // same pick as satsched.plan(): receivers[0]
+	tl := s.P.Timeline()
+	if len(tl) == 0 {
+		t.Fatal("no observations")
+	}
+	for _, o := range tl {
+		if o.Resource != want.URL {
+			t.Fatalf("resource %q, want satsched's receiver %q", o.Resource, want.URL)
+		}
+	}
+	// Geometry must be computed for the RECEIVER, not the station: compare
+	// with a direct tracker pass search at the receiver coordinates.
+	tr, _ := tracking.FromTLEText(issTLE, "ISS (ZARYA)")
+	direct, err := tr.FindPasses(want.Latitude, want.Longitude, cfg.Now(), 24, 20)
+	if err != nil || len(direct) != len(tl) {
+		t.Fatalf("receiver geometry: direct=%d planned=%d err=%v", len(direct), len(tl), err)
+	}
+	for i, d := range direct {
+		if !d.Rise.Equal(tl[i].AOS) {
+			t.Fatalf("pass %d AOS %v != %v", i, tl[i].AOS, d.Rise)
+		}
+	}
+	if s.InfoJSON().(Info).Observer != ObserverReceiver {
+		t.Fatal("info observer")
+	}
+}
+
+func TestStationModeUnchangedDefault(t *testing.T) {
+	s := NewService(testCfg(t, issLoader))
+	if s.InfoJSON().(Info).Observer != ObserverStation {
+		t.Fatal("default must stay station mode")
 	}
 }
