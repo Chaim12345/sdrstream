@@ -119,7 +119,12 @@ type Config struct {
 
 // Stats are counters for status screens; no content.
 type Stats struct {
-	Sent, Cached, Translated, Skipped, Errors, RateLimited uint64
+	// Sent counts provider calls actually dispatched (budget slot taken, ctx
+	// alive at that moment). A caller that cancels afterwards is still Sent:
+	// the request may have left the machine. Cancelled counts calls that were
+	// never dispatched because the caller's ctx ended first (before or while
+	// waiting for the provider slot); they take no budget and no failure count.
+	Sent, Cached, Translated, Skipped, Errors, RateLimited, Cancelled uint64
 }
 
 // Translator is safe for concurrent use; provider calls are serialized.
@@ -213,21 +218,22 @@ func (t *Translator) Translate(ctx context.Context, kind Kind, text string) Resu
 		r.Cached = true
 		return r
 	}
-	now := t.cfg.Now()
-	if now.Before(t.pausedTil) {
+	if ctx.Err() != nil {
+		t.stats.Cancelled++
+		t.mu.Unlock()
+		return t.result(text, StatusError, "translation cancelled before it was sent")
+	}
+	if t.cfg.Now().Before(t.pausedTil) {
 		t.stats.RateLimited++
 		t.mu.Unlock()
 		return t.result(text, StatusRateLimit, "provider paused after repeated failures; retry later")
 	}
-	if !t.takeSlot(now) {
-		t.stats.RateLimited++
-		t.mu.Unlock()
-		return t.result(text, StatusRateLimit, "local request budget used; retry later")
-	}
-	t.stats.Sent++
 	t.mu.Unlock()
 
-	out, err := t.call(ctx, text)
+	out, dispatched, res, err := t.call(ctx, text)
+	if !dispatched {
+		return res
+	}
 	if err != nil {
 		return t.failed(ctx, text, err)
 	}
@@ -244,12 +250,41 @@ func (t *Translator) Translate(ctx context.Context, kind Kind, text string) Resu
 // errProviderPanic carries no panic payload: it could hold request text or secrets.
 var errProviderPanic = errors.New("translate: provider panicked")
 
-func (t *Translator) call(ctx context.Context, text string) (Output, error) {
+// Order matters: wait for the provider slot (or ctx), then re-check ctx, the
+// pause and the budget under the lock immediately before dispatch, so a
+// cancelled caller never reaches the provider even if the slot is free at the
+// same instant (select picks randomly among ready cases). dispatched is false
+// when nothing was sent; res then holds the labeled outcome.
+func (t *Translator) call(ctx context.Context, text string) (out Output, dispatched bool, res Result, err error) {
 	select {
 	case t.slot <- struct{}{}:
 	case <-ctx.Done():
-		return Output{}, ctx.Err()
+		t.mu.Lock()
+		t.stats.Cancelled++
+		t.mu.Unlock()
+		return Output{}, false, t.result(text, StatusError, "translation cancelled before it was sent"), nil
 	}
+	t.mu.Lock()
+	switch {
+	case ctx.Err() != nil:
+		t.stats.Cancelled++
+		t.mu.Unlock()
+		<-t.slot
+		return Output{}, false, t.result(text, StatusError, "translation cancelled before it was sent"), nil
+	case t.cfg.Now().Before(t.pausedTil):
+		t.stats.RateLimited++
+		t.mu.Unlock()
+		<-t.slot
+		return Output{}, false, t.result(text, StatusRateLimit, "provider paused after repeated failures; retry later"), nil
+	case !t.takeSlot(t.cfg.Now()):
+		t.stats.RateLimited++
+		t.mu.Unlock()
+		<-t.slot
+		return Output{}, false, t.result(text, StatusRateLimit, "local request budget used; retry later"), nil
+	}
+	t.stats.Sent++
+	t.mu.Unlock()
+
 	type answer struct {
 		out Output
 		err error
@@ -262,14 +297,14 @@ func (t *Translator) call(ctx context.Context, text string) (Output, error) {
 				done <- answer{err: errProviderPanic}
 			}
 		}()
-		out, err := t.prov.Translate(ctx, text)
-		done <- answer{out, err}
+		o, e := t.prov.Translate(ctx, text)
+		done <- answer{o, e}
 	}()
 	select {
 	case a := <-done:
-		return a.out, a.err
+		return a.out, true, Result{}, a.err
 	case <-ctx.Done():
-		return Output{}, ctx.Err()
+		return Output{}, true, Result{}, ctx.Err()
 	}
 }
 

@@ -247,3 +247,102 @@ func TestProviderDeadlineCountsCallerCancelDoesNot(t *testing.T) {
 		t.Fatalf("caller cancels paused provider: %+v", r)
 	}
 }
+
+type counting struct {
+	calls   atomic.Int64
+	block   chan struct{} // nil: return at once
+	started chan struct{}
+}
+
+func (*counting) Name() string  { return "gemini" }
+func (*counting) Model() string { return "c" }
+func (c *counting) Translate(context.Context, string) (Output, error) {
+	c.calls.Add(1)
+	if c.started != nil {
+		select {
+		case c.started <- struct{}{}:
+		default:
+		}
+	}
+	if c.block != nil {
+		<-c.block
+	}
+	return Output{Text: "Attention all ships, strong wind forecast tomorrow morning in the gulf", SourceLang: "fr"}, nil
+}
+
+// An already-cancelled caller must never reach the provider or spend budget,
+// even though the provider slot is free (both select cases ready).
+func TestPrecancelledCallerNeverDispatches(t *testing.T) {
+	p := &counting{}
+	tr := on(p, func(c *Config) { c.RequestsPerMinute = 3 })
+	for i := 0; i < 200; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		r := tr.Translate(ctx, KindTranscript, fmt.Sprintf("%s %d", french, i))
+		if r.Status != StatusError || r.Original == "" {
+			t.Fatalf("%d: %+v", i, r)
+		}
+	}
+	st := tr.Stats()
+	if p.calls.Load() != 0 || st.Sent != 0 || st.Cancelled != 200 || st.Errors != 0 {
+		t.Fatalf("calls=%d stats=%+v", p.calls.Load(), st)
+	}
+	// budget untouched: the 3 allowed real calls still go through
+	for i := 0; i < 3; i++ {
+		if r := tr.Translate(context.Background(), KindTranscript, fmt.Sprintf("%s ok %d", french, i)); r.Status == StatusRateLimit {
+			t.Fatalf("budget consumed by cancelled calls: %+v", r)
+		}
+	}
+}
+
+// A caller that cancels while queued behind a busy provider is never
+// dispatched and takes no budget; the in-flight call is the only Sent.
+func TestQueuedCancelNeverDispatches(t *testing.T) {
+	p := &counting{block: make(chan struct{}), started: make(chan struct{}, 1)}
+	tr := on(p, func(c *Config) { c.RequestsPerMinute = 100 })
+	first := make(chan Result, 1)
+	go func() { first <- tr.Translate(context.Background(), KindTranscript, french) }()
+	<-p.started
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+			defer cancel()
+			if r := tr.Translate(ctx, KindTranscript, fmt.Sprintf("%s q%d", french, i)); r.Status != StatusError {
+				t.Errorf("queued: %+v", r)
+			}
+		}(i)
+	}
+	wg.Wait()
+	st := tr.Stats()
+	if p.calls.Load() != 1 || st.Sent != 1 || st.Cancelled != 5 {
+		t.Fatalf("calls=%d stats=%+v", p.calls.Load(), st)
+	}
+	close(p.block)
+	if r := <-first; r.Status != StatusTranslated {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// Cancel after dispatch is a distinct, honest case: it counts as Sent (the
+// request may have left the machine) and as an Error, but not toward the pause.
+func TestCancelAfterDispatchCountsAsSent(t *testing.T) {
+	p := &counting{block: make(chan struct{}), started: make(chan struct{}, 1)}
+	tr := on(p, func(c *Config) { c.CooldownAfterFailures = 1 })
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { <-p.started; cancel() }()
+	r := tr.Translate(ctx, KindTranscript, french)
+	st := tr.Stats()
+	if r.Status != StatusError || st.Sent != 1 || st.Errors != 1 || st.Cancelled != 0 {
+		t.Fatalf("%+v %+v", r, st)
+	}
+	close(p.block) // let the abandoned provider call finish and free its slot
+	for i := 0; len(tr.slot) != 0 && i < 500; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if r2 := tr.Translate(context.Background(), KindTranscript, french+" zz"); r2.Status != StatusTranslated {
+		t.Fatalf("caller cancel paused provider: %+v", r2)
+	}
+}
