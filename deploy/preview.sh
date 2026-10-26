@@ -60,6 +60,9 @@ if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/statu
 fi
 
 echo "preview.sh: guarded server healthy on 127.0.0.1:$PORT (pid $SERVER_PID); starting tunnel"
-cloudflared tunnel --url "http://127.0.0.1:$PORT" >"$CFLOG" 2>&1 &
-echo "preview.sh: cloudflared pid $! - tunnel URL appears in $CFLOG; update the vault item's site"
+# CF_CMD exists so the guard logic is testable without churning a live
+# tunnel; production leaves it at the default.
+CF_CMD="${CF_CMD:-cloudflared tunnel --url http://127.0.0.1:$PORT}"
+$CF_CMD >"$CFLOG" 2>&1 &
+echo "preview.sh: tunnel launcher pid $! - tunnel URL appears in $CFLOG; update the vault item's site"
 wait
