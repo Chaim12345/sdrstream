@@ -422,3 +422,53 @@ Integration facts:
   green and ran the authenticated preview (Activity chips pixel-verified).
 - Preview evidence (IQ snippet, probe notes) lives in the owner's private
   Drive, hash-verified; not in this repo.
+
+## 2026-10-26 addition (evening) - non-phone receiver family runtime + catalog
+
+Recorded at `feat/remote-iq-input` tip `2b07f03`. Preview/backup branch
+`integration/preview-uia-kiwiiq` @ `52b8e6a` (pre-replay-evidence merge;
+replay commits land on the next preview merge).
+
+| Branch | Tip (prefix) | State |
+| --- | --- | --- |
+| `feat/remote-iq-input` | `2b07f03` | Everything below |
+| `integration/preview-uia-kiwiiq` | `52b8e6a` | Live preview build source |
+
+New runtime (offline + cross-compile proven; NOT live-verified - the 308
+receiver-contact ceiling is frozen, so no new client has touched a real
+receiver):
+
+- UberSDR: worker adapter `862cec8` merged (`625acf4`); monitor source +
+  `monitorKinds` + CLI (`4daad1c`); UI-start https-scheme downgrade bug
+  found and fixed with regression tests (`6fce9eb`); embedded legal notice
+  sync (`32b4a77`); catalog chips + monitor dropdown option with guard
+  test (`7ef317c`).
+- Web-888: `iqsrc.DialWeb888` (`5c50df7`) - reuses the kiwi-iq transport +
+  SND parser (dual-grounded KiwiSDR mainline + RaspSDR fork @`6445a00`);
+  owns the fork differences: passive default frequency (server-announced
+  load_cfg init.freq minus freq_offset, kHz; never invented, honest error
+  when unannounced, deadline raced against the blocking read) and float
+  `sample_rate` parsing (rx_sound.cpp:174). Monitor source + kind + CLI +
+  dropdown wired in the same commit.
+- Catalog import no longer fabricates consecutive-failure history:
+  `ImportLedger` upserts verbatim (1 unreachable = one recorded
+  observation, idempotent re-import, no transition events); live probes
+  still increment through `Update` (`43f2180`).
+- Offline replay evidence (`15665b5`, `587863b`, `2b07f03`): upstream's
+  hash-pinned recorded PCM4 stream replays pcmv4 -> complex IQ -> iqdemod
+  (structural assertions only; content unknown); the first 100s of the
+  user's real Oostende NAVTEX capture (testdata, sha256-pinned in the
+  decoder manifest with provenance) replays through NAVTEXDecode
+  reproducing the recorded message text; gate pins message count at the
+  recorded 1700 Hz FSK centre.
+
+Catalog scope honesty: the station catalog carries ONLY the 70 newly
+tested results (Batch C 40 + UberSDR 15 + Web-888 15), not the 308
+historical contacts. Live preview: fail-closed auth re-verified after
+every restart (401 unauth local + tunnel), served via
+`deploy/preview.sh`.
+
+Open gaps: directory sync (gated on reuse/source-policy grounding, not
+started); live end-to-end decode through the new clients (needs an
+owner-approved contact batch); UberSDR monitor/CLI now wired but Android
+APK does not include any of this (APK predates `64db19a`).
