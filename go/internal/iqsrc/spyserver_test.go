@@ -18,7 +18,7 @@ type fakeSpy struct {
 	hello    []byte
 	mu       sync.Mutex
 	settings [][2]uint32
-	stream   chan []byte // raw IQ bodies to send, one message each
+	stream   chan []byte   // raw IQ bodies to send, one message each
 	enabled  chan struct{} // closed when STREAMING_ENABLED=1 is recorded
 	info     DeviceInfo
 	sync     ClientSync
@@ -93,8 +93,8 @@ func (f *fakeSpy) serve() {
 				go func() {
 					for b := range f.stream {
 						m := make([]byte, 20+len(b))
-					putMsg(m[:20], spyMsgUint8IQ|(20<<16), 1, 2, b)
-					copy(m[20:], b)
+						putMsg(m[:20], spyMsgUint8IQ|(20<<16), 1, 2, b)
+						copy(m[20:], b)
 						conn.SetWriteDeadline(time.Now().Add(time.Second))
 						if _, err := conn.Write(m); err != nil {
 							return
@@ -121,8 +121,7 @@ func TestSpyHandshakeAndSettings(t *testing.T) {
 	defer f.close()
 	c, err := DialSpy(context.Background(), SpyConfig{
 		Addr: f.ln.Addr().String(), Frequency: 144800000, SampleRate: 1200000,
-		Gain: 15, DigitalGain: true, AppName: "sdrstream-test",
-	})
+		Gain: 15, DigitalGain: true, AppName: "sdrstream-test", AllowPrivate: true})
 	if err != nil {
 		t.Fatalf("DialSpy: %v", err)
 	}
@@ -169,7 +168,7 @@ func TestSpyHandshakeAndSettings(t *testing.T) {
 func TestSpyReadSamples(t *testing.T) {
 	f := newFakeSpy(t)
 	defer f.close()
-	c, err := DialSpy(context.Background(), SpyConfig{Addr: f.ln.Addr().String(), Frequency: 1000000, SampleRate: 1000000})
+	c, err := DialSpy(context.Background(), SpyConfig{Addr: f.ln.Addr().String(), Frequency: 1000000, SampleRate: 1000000, AllowPrivate: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +199,7 @@ func TestSpyReadSamples(t *testing.T) {
 func TestSpyRetuneAndClose(t *testing.T) {
 	f := newFakeSpy(t)
 	defer f.close()
-	c, err := DialSpy(context.Background(), SpyConfig{Addr: f.ln.Addr().String(), Frequency: 1000000, SampleRate: 1000000})
+	c, err := DialSpy(context.Background(), SpyConfig{Addr: f.ln.Addr().String(), Frequency: 1000000, SampleRate: 1000000, AllowPrivate: true})
 	if err != nil {
 		t.Fatal(err)
 	}

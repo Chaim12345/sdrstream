@@ -13,6 +13,8 @@ import (
 	"math"
 	"net"
 	"sync"
+
+	"github.com/chaim12345/sdrstream/go/internal/common"
 	"time"
 )
 
@@ -45,40 +47,40 @@ const (
 
 // Message types (server -> client), low 16 bits of MessageType.
 const (
-	spyMsgDeviceInfo = 0
-	spyMsgClientSync = 1
-	spyMsgPong       = 2
+	spyMsgDeviceInfo  = 0
+	spyMsgClientSync  = 1
+	spyMsgPong        = 2
 	spyMsgReadSetting = 3
-	spyMsgUint8IQ    = 100
+	spyMsgUint8IQ     = 100
 )
 
 // DeviceInfo mirrors SpyServerDeviceInfo (52 bytes).
 type DeviceInfo struct {
-	DeviceType          uint32
-	DeviceSerial        uint32
-	MaximumSampleRate   uint32
-	MaximumBandwidth    uint32
+	DeviceType           uint32
+	DeviceSerial         uint32
+	MaximumSampleRate    uint32
+	MaximumBandwidth     uint32
 	DecimationStageCount uint32
-	GainStageCount      uint32
-	MaximumGainIndex    uint32
-	MinimumFrequency    uint32
-	MaximumFrequency    uint32
-	Resolution          uint32
-	MinimumIQDecimation uint32
-	ForcedIQFormat      uint32
+	GainStageCount       uint32
+	MaximumGainIndex     uint32
+	MinimumFrequency     uint32
+	MaximumFrequency     uint32
+	Resolution           uint32
+	MinimumIQDecimation  uint32
+	ForcedIQFormat       uint32
 }
 
 // ClientSync mirrors SpyServerClientSync (40 bytes): the shared-device state
 // other clients may also be steering. IQCenterFrequency is the channel center
 // we may retune; DeviceCenterFrequency and Gain are shared with all clients.
 type ClientSync struct {
-	CanControl              uint32
-	Gain                    uint32
-	DeviceCenterFrequency   uint32
-	IQCenterFrequency       uint32
-	FFTCenterFrequency      uint32
-	MinimumIQCenterFrequency uint32
-	MaximumIQCenterFrequency uint32
+	CanControl                uint32
+	Gain                      uint32
+	DeviceCenterFrequency     uint32
+	IQCenterFrequency         uint32
+	FFTCenterFrequency        uint32
+	MinimumIQCenterFrequency  uint32
+	MaximumIQCenterFrequency  uint32
 	MinimumFFTCenterFrequency uint32
 	MaximumFFTCenterFrequency uint32
 }
@@ -94,6 +96,10 @@ type SpyConfig struct {
 	DigitalGain bool   // program IQ_DIGITAL_GAIN like the reference client
 	AppName     string // sent in HELLO; "sdrstream" if empty
 	DialTimeout time.Duration
+	// AllowPrivate permits dialing loopback/private hosts (local receivers,
+	// tailscale, home LAN). When false the dial is SSRF-guarded like the
+	// other monitor sources.
+	AllowPrivate bool
 }
 
 // SpyClient is one SpyServer connection streaming uint8 I/Q.
@@ -121,7 +127,13 @@ func DialSpy(ctx context.Context, cfg SpyConfig) (*SpyClient, error) {
 		to = 10 * time.Second
 	}
 	d := net.Dialer{Timeout: to}
-	conn, err := d.DialContext(ctx, "tcp", cfg.Addr)
+	var conn net.Conn
+	var err error
+	if cfg.AllowPrivate {
+		conn, err = d.DialContext(ctx, "tcp", cfg.Addr)
+	} else {
+		conn, err = common.DialPublic(ctx, &d, "tcp", cfg.Addr)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("iqsrc: dial spyserver %s: %w", cfg.Addr, err)
 	}

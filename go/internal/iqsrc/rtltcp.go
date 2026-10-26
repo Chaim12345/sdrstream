@@ -38,13 +38,13 @@ const (
 
 // Config selects a remote server and the radio parameters to program.
 type Config struct {
-	Addr       string // host:port
-	Frequency  uint32 // Hz
-	SampleRate uint32 // Hz
-	ManualGain bool   // true: program GainTenthsDB; false: auto gain
+	Addr         string // host:port
+	Frequency    uint32 // Hz
+	SampleRate   uint32 // Hz
+	ManualGain   bool   // true: program GainTenthsDB; false: auto gain
 	GainTenthsDB uint32
-	AGC        bool
-	DialTimeout time.Duration // 0 -> 10s
+	AGC          bool
+	DialTimeout  time.Duration // 0 -> 10s
 }
 
 // Client is one rtl_tcp connection. Only the read side is used after Dial

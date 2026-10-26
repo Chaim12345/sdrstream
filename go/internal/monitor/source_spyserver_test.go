@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -146,5 +147,31 @@ func TestSpyModeMap(t *testing.T) {
 	}
 	if _, err := spyMode("wfm"); err == nil {
 		t.Fatal("wfm must be rejected (not implemented)")
+	}
+}
+
+// TestSourceForLocalSpyserver wires the "spyserver" kind through the same
+// factory the UI's monitor-start hook uses.
+func TestSourceForLocalSpyserver(t *testing.T) {
+	f := newFakeSpyServer(t)
+	defer f.close()
+	src, err := SourceForLocal(context.Background(), "spyserver", f.ln.Addr().String(), "")
+	if err != nil {
+		t.Fatalf("SourceForLocal spyserver: %v", err)
+	}
+	defer src.Close()
+	if _, _, _, ok := src.Spectrum(); ok {
+		t.Fatal("spyserver source must report no spectrum (IQ-only stream)")
+	}
+}
+
+// TestSourceForSpyserverRejectsLoopback keeps the SSRF guard on the
+// directory-sourced path: even a reachable loopback server must be refused.
+func TestSourceForSpyserverRejectsLoopback(t *testing.T) {
+	f := newFakeSpyServer(t)
+	defer f.close()
+	_, err := SourceFor(context.Background(), "spyserver", f.ln.Addr().String(), "")
+	if err == nil || !strings.Contains(err.Error(), "non-public") {
+		t.Fatalf("guarded SourceFor did not reject loopback spyserver: %v", err)
 	}
 }

@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -19,13 +20,25 @@ type spySource struct {
 }
 
 // SpyServerSource connects to a SpyServer (host:port). addr may carry a
-// spyserver:// prefix; it is stripped.
+// spyserver:// prefix; it is stripped. The dial permits loopback/private
+// hosts: use this for receivers the user named explicitly.
 func SpyServerSource(ctx context.Context, addr string, frequency uint32, sampleRate uint32, gain uint32) (Source, error) {
+	return spyServerSource(ctx, addr, frequency, sampleRate, gain, true)
+}
+
+// spyServerSource is SpyServerSource with explicit private-host permission;
+// allowPrivate=false applies the SSRF guard used for directory-sourced
+// receivers.
+func spyServerSource(ctx context.Context, addr string, frequency uint32, sampleRate uint32, gain uint32, allowPrivate bool) (Source, error) {
 	addr = strings.TrimPrefix(addr, "spyserver://")
 	addr = strings.TrimPrefix(addr, "sdr://")
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		addr = net.JoinHostPort(addr, "5555") // SpyServer default port
+	}
 	client, err := iqsrc.DialSpy(ctx, iqsrc.SpyConfig{
 		Addr: addr, Frequency: frequency, SampleRate: sampleRate,
 		Gain: gain, DigitalGain: true, AppName: "sdrstream",
+		AllowPrivate: allowPrivate,
 	})
 	if err != nil {
 		return nil, err

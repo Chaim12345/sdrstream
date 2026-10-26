@@ -1928,7 +1928,7 @@ func (s *Server) handleMonitorControl(w http.ResponseWriter, r *http.Request) {
 }
 
 // monitorKinds are the receiver types the UI can start.
-var monitorKinds = map[string]bool{"openwebrx": true, "websdr": true, "kiwi": true, "kiwisdr": true}
+var monitorKinds = map[string]bool{"openwebrx": true, "websdr": true, "kiwi": true, "kiwisdr": true, "spyserver": true}
 
 // handleMonitorStart starts a live monitor from UI-provided receiver
 // details. Construction failures (bad kind, unreachable receiver,
@@ -1987,7 +1987,7 @@ func parseMonitorStartSpec(r *http.Request) (MonitorStartSpec, error) {
 		spec.Kind = "openwebrx"
 	}
 	if !monitorKinds[spec.Kind] {
-		return spec, fmt.Errorf("kind must be openwebrx, websdr or kiwi")
+		return spec, fmt.Errorf("kind must be openwebrx, websdr, kiwi or spyserver")
 	}
 	if strings.HasPrefix(spec.Server, "http://") {
 		spec.Server = strings.TrimPrefix(spec.Server, "http://")

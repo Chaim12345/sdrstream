@@ -392,6 +392,15 @@ func sourceFor(ctx context.Context, kind, server, profile string, allowPrivate b
 		return icecast.NewSource(server), nil
 	case "kiwi", "kiwisdr":
 		return dialKiwi(ctx, server, allowPrivate)
+	case "spyserver":
+		return dialSpyServer(ctx, server, allowPrivate)
 	}
 	return nil, fmt.Errorf("monitor: unknown receiver kind %q", kind)
+}
+
+// dialSpyServer connects to a SpyServer remote-IQ receiver. SpyServers have
+// no profiles and no band scan (IQ-only stream); the monitor listens on the
+// configured channel.
+func dialSpyServer(ctx context.Context, server string, allowPrivate bool) (Source, error) {
+	return spyServerSource(ctx, server, 0, 0, 0, allowPrivate)
 }
