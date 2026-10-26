@@ -112,6 +112,11 @@ func FetchDirectory(ctx context.Context, directoryURL string) ([]Instance, error
 	return parseDirectory(raw)
 }
 
+// ParseDirectory parses the public instance-list payload. Exported so the
+// station catalog can import an operator-fetched directory file offline;
+// fetching itself stays a deliberate manual act (FetchDirectory).
+func ParseDirectory(raw []byte) ([]Instance, error) { return parseDirectory(raw) }
+
 func parseDirectory(raw []byte) ([]Instance, error) {
 	var payload struct {
 		Instances []struct {

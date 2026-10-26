@@ -1523,6 +1523,7 @@ func cmdWeb(args []string) error {
 	scanKiwiDirectory := fs.Bool("scan-kiwi-directory", false, "scan free-slot KiwiSDR entries from cached public directory")
 	probeDirectory := fs.Bool("probe-directory", false, "sweep public receiver directories into a persistent station capability catalog (state dir probe-catalog.json, served at /api/station-catalog.json)")
 	catalogImport := fs.String("catalog-import", "", "import an rxprobe JSONL test ledger into the station catalog at startup (verdicts verbatim; no new receiver contacts)")
+	ubersdrDirImport := fs.String("ubersdr-directory-import", "", "import a manually fetched UberSDR directory JSON file into the station catalog at startup (self-reported listings, NOT probe results; never fetches the network itself)")
 	scanDirectoryRefresh := fs.Duration("scan-directory-refresh", time.Hour, "re-fetch receiver directories this often; 0 disables refresh")
 	scanRecordAll := fs.Bool("scan-record-all", false, "archive audio for every detected activity, including unverified/noise/carrier clips")
 	scanState := fs.String("scan-state", defaultRotationStatePath(), "file that carries HF target / OpenWebRX profile rotation across restarts (empty disables)")
@@ -1693,6 +1694,25 @@ func cmdWeb(args []string) error {
 		}
 		server.SetProbeCatalog(catalog)
 		log.Printf("probe: imported %d verified test record(s) from %s", n, *catalogImport)
+	}
+	if *ubersdrDirImport != "" {
+		raw, err := os.ReadFile(*ubersdrDirImport)
+		if err != nil {
+			return fmt.Errorf("ubersdr-directory-import: %w", err)
+		}
+		st, err := os.Stat(*ubersdrDirImport)
+		if err != nil {
+			return fmt.Errorf("ubersdr-directory-import: stat: %w", err)
+		}
+		n, err := catalog.ImportUberSDRDirectory(raw, st.ModTime().UTC())
+		if err != nil {
+			return fmt.Errorf("ubersdr-directory-import: %w", err)
+		}
+		if err := catalog.Save(catalogPath); err != nil {
+			return fmt.Errorf("ubersdr-directory-import: save: %w", err)
+		}
+		server.SetProbeCatalog(catalog)
+		log.Printf("probe: imported %d self-reported UberSDR directory listing(s) from %s (not probed)", n, *ubersdrDirImport)
 	}
 	if *probeDirectory {
 		probeCacheDir := filepath.Join(os.Getenv("HOME"), ".cache", "sdrstream")
