@@ -1221,7 +1221,7 @@ function renderActivity() {
   if (!full.length) {
     setEmpty(feed, activityItems.length
       ? 'no decode matches the current filters'
-      : 'No gate-passed activity yet. Start the Scan view to check public receivers.');
+      : (latestStatus && latestStatus.preview_no_start ? 'No gate-passed activity yet. This shared preview has receiver start disabled.' : 'No gate-passed activity yet. Start the Scan view to check public receivers.'));
   }
   full.slice(0, limit).forEach(a => feed.appendChild(activityCard(a, false)));
   const more = el('activity-more');

@@ -1440,3 +1440,29 @@ func TestMonitorStartPreviewGateOff(t *testing.T) {
 		t.Fatalf("gate off: got 403, want the normal handler path")
 	}
 }
+
+// The status payload tells the UI when this build refuses monitor start so
+// empty states do not invite an action the preview will refuse.
+func TestStatusPreviewNoStart(t *testing.T) {
+	t.Setenv("SDRSTREAM_PREVIEW_NO_START", "1")
+	s := &Server{}
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, httptest.NewRequest("GET", "/api/status.json", nil))
+	var on map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &on); err != nil {
+		t.Fatal(err)
+	}
+	if on["preview_no_start"] != true {
+		t.Fatalf("status with preview gate: %s", rec.Body.String())
+	}
+	t.Setenv("SDRSTREAM_PREVIEW_NO_START", "")
+	rec2 := httptest.NewRecorder()
+	s.handleStatus(rec2, httptest.NewRequest("GET", "/api/status.json", nil))
+	var off map[string]interface{}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &off); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := off["preview_no_start"]; present {
+		t.Fatalf("status without preview gate must omit the flag: %s", rec2.Body.String())
+	}
+}

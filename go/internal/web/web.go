@@ -111,6 +111,10 @@ type Status struct {
 	// Nil means the check has not completed yet.
 	NetworkOK     *bool  `json:"network_ok,omitempty"`
 	NetworkDetail string `json:"network_detail,omitempty"`
+	// PreviewNoStart tells the UI this build refuses monitor start
+	// (SDRSTREAM_PREVIEW_NO_START), so empty states do not invite the
+	// visitor to start a scan the preview will refuse.
+	PreviewNoStart bool `json:"preview_no_start,omitempty"`
 }
 
 // PassInfo is one predicted pass.
@@ -1096,6 +1100,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt: time.Now(), Captures: captures,
 		Passes: passes, Receivers: len(catalogue.Table),
 		NetworkOK: networkOK, NetworkDetail: networkDetail,
+		PreviewNoStart: os.Getenv("SDRSTREAM_PREVIEW_NO_START") != "",
 	})
 }
 
