@@ -227,13 +227,25 @@ func (t *Translator) Translate(ctx context.Context, kind Kind, text string) Resu
 	t.stats.Sent++
 	t.mu.Unlock()
 
-	t.callMu.Lock()
-	out, err := t.prov.Translate(ctx, text)
-	t.callMu.Unlock()
+	out, err := t.call(ctx, text)
 	if err != nil {
 		return t.failed(text, err)
 	}
 	return t.accept(key, text, out)
+}
+
+// call runs the provider once, serialized. A panic in a provider becomes an
+// error: Translate runs on detached goroutines in the monitor, where an
+// unrecovered panic would end the whole process.
+func (t *Translator) call(ctx context.Context, text string) (out Output, err error) {
+	t.callMu.Lock()
+	defer t.callMu.Unlock()
+	defer func() {
+		if r := recover(); r != nil {
+			out, err = Output{}, fmt.Errorf("translate: provider panicked: %v", r)
+		}
+	}()
+	return t.prov.Translate(ctx, text)
 }
 
 func (t *Translator) count(r Result) Result {
@@ -279,8 +291,13 @@ func (t *Translator) failed(text string, err error) Result {
 		t.stats.RateLimited++
 		return t.result(text, StatusRateLimit, "provider asked to slow down; paused")
 	}
-	t.fails++
 	t.stats.Errors++
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// The caller gave up (shutdown, listen window, its own timeout). That
+		// says nothing about the provider, so it does not count toward a pause.
+		return t.result(text, StatusError, "translation cancelled or timed out")
+	}
+	t.fails++
 	if t.fails >= t.cfg.CooldownAfterFailures {
 		t.pausedTil = now.Add(t.cfg.Cooldown)
 		t.fails = 0
