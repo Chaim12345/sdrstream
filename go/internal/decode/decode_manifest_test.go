@@ -29,7 +29,7 @@ import (
 
 type decoderFixture struct {
 	Name        string  `json:"name"`
-	Kind        string  `json:"kind"` // sstv | wefax
+	Kind        string  `json:"kind"` // sstv | wefax | ft8 | navtex
 	SHA256      string  `json:"sha256"`
 	Provenance  string  `json:"provenance"`
 	ExpectError string  `json:"expect_error,omitempty"` // decode currently fails with this substring
@@ -47,6 +47,11 @@ type decoderFixture struct {
 	// misses, a cause label and the date (see the manifest's jt9_leg block).
 	// A known miss is only tolerated when pinned here; any other miss fails
 	// the test, and an allowlisted line that starts reproducing is logged.
+	// NAVTEX entries pin the decoded message count at the recorded FSK
+	// centre (dial-converted audio centre, e.g. 1700 Hz for a 488.3 kHz
+	// USB dial with mark 1785 / space 1615).
+	Messages       int         `json:"messages,omitempty"`
+	CenterHz       float64     `json:"center_hz,omitempty"`
 	RefFile        string      `json:"ref_file,omitempty"`
 	RefSHA256      string      `json:"ref_sha256,omitempty"`
 	RefMessages    int         `json:"ref_messages,omitempty"`
@@ -168,6 +173,9 @@ func measureFixture(t *testing.T, f decoderFixture) (facts decoderFixture, err e
 		facts.Width, facts.Height = img.Bounds().Dx(), img.Bounds().Dy()
 		facts.SyncSource = rep.SyncSource
 		facts.DriftPPM = rep.DriftPPM
+	case "navtex":
+		facts.Messages = len(NAVTEXDecode(samples, rate, f.CenterHz))
+		facts.CenterHz = f.CenterHz
 	case "ft8":
 		// FT8 corpus entries pin the wav by hash (TestDecoderFixtureHashes)
 		// and the WSJT-X reference decode list by hash + message count; the
@@ -218,6 +226,9 @@ func TestDecoderFixtureGates(t *testing.T) {
 			}
 			if facts.Width != f.Width || facts.Height != f.Height {
 				t.Errorf("image = %dx%d, manifest pins %dx%d", facts.Width, facts.Height, f.Width, f.Height)
+			}
+			if f.Kind == "navtex" && facts.Messages != f.Messages {
+				t.Errorf("navtex messages = %d, manifest pins %d", facts.Messages, f.Messages)
 			}
 			if f.Kind == "wefax" {
 				if facts.SyncSource != f.SyncSource {
