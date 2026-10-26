@@ -6,7 +6,13 @@ emulator failure (no XML, wrong tests, other failures) is NEVER proof.
 """
 import glob, sys, xml.etree.ElementTree as ET
 
-variant, rc = sys.argv[1], int(sys.argv[2])
+if len(sys.argv) != 3 or sys.argv[1] not in ("fixed", "baseline"):
+    print("VERDICT FAIL: usage: keystore_verdict.py fixed|baseline <rc> (unknown variant rejected)"); sys.exit(2)
+try:
+    rc = int(sys.argv[2])
+except ValueError:
+    print("VERDICT FAIL: rc must be an integer"); sys.exit(2)
+variant = sys.argv[1]
 MSG = "put must succeed on a real AndroidKeyStore"
 CLS = "com.chaim12345.sdrstream.SecretStoreInstrumentedTest"
 POL = "com.chaim12345.sdrstream.KeystoreIvPolicyInstrumentedTest"
@@ -29,16 +35,23 @@ for f in files:
         msg = ""
         if bad is not None:
             msg = (bad.get("message") or "") + (bad.text or "")
-        cases[(tc.get("classname"), tc.get("name"))] = ("skipped" if skipped else "fail" if bad is not None else "pass", msg)
+        key = (tc.get("classname"), tc.get("name"))
+        if key in cases:
+            die(f"duplicate testcase (possible overwrite/masking): {key}")
+        cases[key] = ("skipped" if skipped else "fail" if bad is not None else "pass", msg)
 for k, v in sorted(cases.items()):
     print(v[0], k[0].split(".")[-1], k[1])
+EXACT = {(c, n) for c, ns in REQUIRED.items() for n in ns}
+unknown = sorted(set(cases) - EXACT)
+if unknown:
+    die(f"unexpected testcase(s) outside the exact required set: {unknown}")
 for cls, names in REQUIRED.items():
     for n in names:
         if (cls, n) not in cases:
             die(f"required test did not execute: {cls}.{n}")
         if cases[(cls, n)][0] == "skipped":
             die(f"required test skipped: {cls}.{n}")
-extra = [k for k in cases if k[0] not in REQUIRED]
+assert set(cases) == EXACT
 fails = {k for k, v in cases.items() if v[0] == "fail"}
 if variant == "fixed":
     if rc != 0: die(f"gradle rc={rc}")
