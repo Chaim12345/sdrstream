@@ -1098,6 +1098,28 @@ func TestMonitorLifecycleControl(t *testing.T) {
 	if got.Kind != "websdr" {
 		t.Fatalf("kind = %q, want websdr", got.Kind)
 	}
+	// ubersdr keeps its scheme: an https endpoint must reach the dialer as
+	// https (TLS websocket upgrade), never downgraded to plain http; a
+	// bare host gets the http:// default the dialer expects.
+	rec = post(server, "action=start&server=https%3A%2F%2Fairsdr.example%2F&kind=ubersdr")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ubersdr https start: status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if got.Server != "https://airsdr.example" || got.Kind != "ubersdr" {
+		t.Fatalf("ubersdr spec = %+v, want https scheme preserved", got)
+	}
+	rec = post(server, "action=start&server=uber.example%3A8080&kind=ubersdr")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ubersdr bare host: status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if got.Server != "http://uber.example:8080" {
+		t.Fatalf("ubersdr bare host spec = %+v, want http:// default", got)
+	}
+	// Non-ubersdr kinds still strip the scheme for host:port dialers.
+	rec = post(server, "action=start&server=https%3A%2F%2Frx.example%3A8073&kind=kiwi-iq")
+	if rec.Code != http.StatusOK || got.Server != "rx.example:8073" {
+		t.Fatalf("kiwi-iq scheme strip: status = %d spec = %+v", rec.Code, got)
+	}
 	if rec := post(server, "action=stop"); rec.Code != http.StatusOK || stopped != 1 {
 		t.Fatalf("stop: status = %d, stopped = %d", rec.Code, stopped)
 	}
