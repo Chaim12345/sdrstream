@@ -303,6 +303,9 @@ type Server struct {
 	logRing           *LogRing
 	feeds             *feeds.Manager
 	probeCatalog      *probe.Catalog
+	previewMode       bool
+	tleLoad           func(group string, maxAgeHours float64, offline bool, timeout time.Duration) (string, error)
+	tleLoadCatnr      func(noradID int, maxAgeHours float64, offline bool, timeout time.Duration) (string, error)
 	scans             []ScanStatus
 	scanIndex         map[string]int
 	scanStatePath     string
@@ -376,11 +379,82 @@ func CaptureBase(name string) string {
 // so recordings made by satrecord (a separate process) show up live. The
 // gallery uses galleryDir (default: SatNOGS cache/gallery), first loading
 // the manifest cached on disk and then refreshing it in the background.
-func New(capturesDir, galleryDir string) *Server {
+// Option customizes a Server at construction. Options exist for seams
+// tests need - chiefly network sources - so cmd startup tests do not
+// silently perform real fetches.
+type Option func(*Server)
+
+// WithTLELoaders replaces the CelesTrak element-set loaders used for pass
+// prediction (group loader and the per-catalogue-number fallback). Tests
+// inject fixtures; production leaves the defaults (tle.Load / tle.LoadCatnr).
+func WithTLELoaders(load func(group string, maxAgeHours float64, offline bool, timeout time.Duration) (string, error), loadCatnr func(noradID int, maxAgeHours float64, offline bool, timeout time.Duration) (string, error)) Option {
+	return func(s *Server) {
+		if load != nil {
+			s.tleLoad = load
+		}
+		if loadCatnr != nil {
+			s.tleLoadCatnr = loadCatnr
+		}
+	}
+}
+
+// tleLoader returns the group TLE loader, defaulting to the real
+// CelesTrak loader when the Server was built without New (tests that
+// construct &Server{} directly must not nil-panic).
+func (s *Server) tleLoader() func(group string, maxAgeHours float64, offline bool, timeout time.Duration) (string, error) {
+	if s.tleLoad != nil {
+		return s.tleLoad
+	}
+	return tle.Load
+}
+
+// tleCatnrLoader is the per-catalogue-number fallback twin of tleLoader.
+func (s *Server) tleCatnrLoader() func(noradID int, maxAgeHours float64, offline bool, timeout time.Duration) (string, error) {
+	if s.tleLoadCatnr != nil {
+		return s.tleLoadCatnr
+	}
+	return tle.LoadCatnr
+}
+
+// WithPreviewMode marks the server as a shared public preview: receiver
+// start, tuning and scan control are refused regardless of environment
+// variables, so a missing SDRSTREAM_PREVIEW_NO_START cannot re-arm them.
+// Pair it with PreviewStartupCheck in the embedding command so a preview
+// never comes up without a UI password.
+func WithPreviewMode(on bool) Option {
+	return func(s *Server) { s.previewMode = on }
+}
+
+// PreviewStartupCheck refuses to let a shared preview start without a UI
+// password: an omitted SDRSTREAM_UI_PASSWORD must fail the process at
+// boot, not silently serve an open UI. It never logs or returns the
+// password value, only whether it is set.
+func PreviewStartupCheck(preview bool, uiPassword string) error {
+	if preview && uiPassword == "" {
+		return fmt.Errorf("web: -preview requires SDRSTREAM_UI_PASSWORD; refusing to start an unauthenticated shared preview")
+	}
+	return nil
+}
+
+// previewRemoteControlDenied centralizes the preview refusal for mutating
+// remote-control routes. Monitor stop and scan pause/stop stay allowed:
+// they only quiet local work.
+func (s *Server) previewRemoteControlDenied(w http.ResponseWriter) bool {
+	if !s.previewMode {
+		return false
+	}
+	http.Error(w, "preview demo: remote receiver control is disabled on this shared preview", http.StatusForbidden)
+	return true
+}
+
+func New(capturesDir, galleryDir string, opts ...Option) *Server {
 	if galleryDir == "" {
 		galleryDir = filepath.Join(satnogs.CacheDir, "gallery")
 	}
-	s := &Server{capturesDir: capturesDir, galleryDir: galleryDir, scanIndex: make(map[string]int), scanStatePath: scanStateFile()}
+	s := &Server{capturesDir: capturesDir, galleryDir: galleryDir, scanIndex: make(map[string]int), scanStatePath: scanStateFile(), tleLoad: tle.Load, tleLoadCatnr: tle.LoadCatnr}
+	for _, opt := range opts {
+		opt(s)
+	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	if capturesDir != "" {
 		go s.retentionLoop()
@@ -514,7 +588,7 @@ const TLEAttribution = "Orbit data: CelesTrak (celestrak.org), used with attribu
 func (s *Server) loadPasses() {
 	texts := map[string]string{}
 	for _, group := range []string{"amateur", "weather"} {
-		text, err := tle.Load(group, 24, false, 60*time.Second)
+		text, err := s.tleLoader()(group, 24, false, 60*time.Second)
 		if err != nil {
 			log.Printf("web: tle load %s: %v", group, err)
 			continue
@@ -545,7 +619,7 @@ func (s *Server) loadPasses() {
 		if err != nil && sat.NoradID > 0 {
 			// Decommissioned birds drop out of their CelesTrak group but
 			// are still tracked by catalogue number.
-			if single, catErr := tle.LoadCatnr(sat.NoradID, 24, false, 60*time.Second); catErr == nil && single != "" {
+			if single, catErr := s.tleCatnrLoader()(sat.NoradID, 24, false, 60*time.Second); catErr == nil && single != "" {
 				tracker, err = tracking.FromTLEText(single, sat.Name)
 			}
 		}
@@ -1100,7 +1174,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt: time.Now(), Captures: captures,
 		Passes: passes, Receivers: len(catalogue.Table),
 		NetworkOK: networkOK, NetworkDetail: networkDetail,
-		PreviewNoStart: os.Getenv("SDRSTREAM_PREVIEW_NO_START") != "",
+		PreviewNoStart: s.previewMode || os.Getenv("SDRSTREAM_PREVIEW_NO_START") != "",
 	})
 }
 
@@ -1844,6 +1918,12 @@ func (s *Server) handleScanControl(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
+	if s.previewMode && r.FormValue("paused") != "true" {
+		// Unpausing or retuning a sweep makes this server contact receivers:
+		// remote control a shared preview must not offer.
+		s.previewRemoteControlDenied(w)
+		return
+	}
 	s.mu.Lock()
 	if raw := r.FormValue("concurrency"); raw != "" {
 		n, err := strconv.Atoi(raw)
@@ -1949,7 +2029,7 @@ func (s *Server) handleMonitorStart(w http.ResponseWriter, r *http.Request) {
 	// Shared preview builds set SDRSTREAM_PREVIEW_NO_START so a visitor
 	// cannot make the demo engine dial a real receiver. Browsing stays
 	// fully live; only monitor start is refused, with an explicit reason.
-	if os.Getenv("SDRSTREAM_PREVIEW_NO_START") != "" {
+	if s.previewMode || os.Getenv("SDRSTREAM_PREVIEW_NO_START") != "" {
 		http.Error(w, "preview demo: starting a receiver is disabled on this shared preview", http.StatusForbidden)
 		return
 	}
@@ -2322,6 +2402,9 @@ func (s *Server) handleTune(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	if s.previewRemoteControlDenied(w) {
 		return
 	}
 	hz, err := strconv.ParseFloat(r.FormValue("frequency_hz"), 64)
