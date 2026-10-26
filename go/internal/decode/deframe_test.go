@@ -2,7 +2,10 @@ package decode
 
 import (
 	"bytes"
+	"encoding/hex"
 	"math/rand"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -153,15 +156,70 @@ func TestCCSDSDeframe(t *testing.T) {
 	}
 }
 
-func TestTalInvertible(t *testing.T) {
-	seen := map[byte]bool{}
+// TestRSLibfecVectors checks against codewords produced by Phil Karn's
+// libfec (LGPL, github.com/quiet/libfec) encode_rs_8 (conventional basis)
+// and encode_rs_ccsds (dual basis): an independent implementation, run
+// offline; vectors in testdata/rs_ccsds_libfec_vectors.txt. Still software
+// reference vectors, not an over-the-air capture.
+func TestRSLibfecVectors(t *testing.T) {
+	raw, err := os.ReadFile("testdata/rs_ccsds_libfec_vectors.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		f := strings.Fields(line)
+		cw, err := hex.DecodeString(f[1])
+		if err != nil || len(cw) != 255 {
+			t.Fatalf("bad vector %s", f[0])
+		}
+		data := append([]byte{}, cw[:223]...)
+		if strings.HasPrefix(f[0], "dual") {
+			for i := range data {
+				data[i] = dualToConv[data[i]]
+			}
+		}
+		got := RSEncode(data)
+		if strings.HasPrefix(f[0], "dual") {
+			for i := range got {
+				got[i] = convToDual[got[i]]
+			}
+		}
+		if !bytes.Equal(got, cw) {
+			t.Fatalf("%s: encode mismatch vs libfec", f[0])
+		}
+		// Decoder: corrupt 9 bytes, must restore libfec's codeword.
+		bad := append([]byte{}, cw...)
+		for i := 0; i < 9; i++ {
+			bad[i*27] ^= 0xA5
+		}
+		if strings.HasPrefix(f[0], "dual") {
+			for i := range bad {
+				bad[i] = dualToConv[bad[i]]
+			}
+		}
+		if _, err := RSDecode(bad); err != nil {
+			t.Fatalf("%s: %v", f[0], err)
+		}
+		if strings.HasPrefix(f[0], "dual") {
+			for i := range bad {
+				bad[i] = convToDual[bad[i]]
+			}
+		}
+		if !bytes.Equal(bad, cw) {
+			t.Fatalf("%s: decode mismatch", f[0])
+		}
+		n++
+	}
+	if n != 6 {
+		t.Fatalf("vectors %d", n)
+	}
+}
+
+func TestDualBasisInvertible(t *testing.T) {
 	for v := 0; v < 256; v++ {
-		seen[talTab[v]] = true
-		if convToTal[talTab[v]] != byte(v) {
+		if dualToConv[convToDual[v]] != byte(v) {
 			t.Fatal("not invertible")
 		}
-	}
-	if len(seen) != 256 {
-		t.Fatal("tal matrix singular")
 	}
 }

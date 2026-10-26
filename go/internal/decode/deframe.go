@@ -111,12 +111,13 @@ var (
 	gfExp [512]byte
 	gfLog [256]int
 	rsGen []byte // generator polynomial, highest degree first
-	// talToConv maps a dual-basis (Berlekamp) byte to conventional basis.
-	// Source: widely published CCSDS Tal matrix. NOT verified here against
-	// a real dual-basis frame; see RSDecode dualBasis note.
-	talToConv = [8]byte{0x8d, 0xef, 0xec, 0x86, 0xfa, 0x99, 0xaf, 0x7b}
-	convToTal [256]byte
-	talTab    [256]byte
+	// Berlekamp dual-basis Tal matrix (CCSDS 131.0-B). Row table and the
+	// orientation (conventional -> dual) match libfec gen_ccsds_tal.c, and
+	// the dual-basis codeword bytes are checked against libfec's
+	// encode_rs_ccsds output in TestRSLibfecVectors.
+	talRows    = [8]byte{0x8d, 0xef, 0xec, 0x86, 0xfa, 0x99, 0xaf, 0x7b}
+	convToDual [256]byte
+	dualToConv [256]byte
 )
 
 func init() {
@@ -143,16 +144,15 @@ func init() {
 		}
 		rsGen = next
 	}
-	// Tal tables: talTab[tal] = conventional; convToTal is its inverse.
 	for v := 0; v < 256; v++ {
 		var r byte
 		for b := 0; b < 8; b++ {
 			if v&(0x80>>uint(b)) != 0 {
-				r ^= talToConv[b]
+				r ^= talRows[b]
 			}
 		}
-		talTab[v] = r
-		convToTal[r] = byte(v)
+		convToDual[v] = r
+		dualToConv[r] = byte(v)
 	}
 }
 
@@ -368,7 +368,7 @@ func CCSDSDeframe(bits []bool, dataLen, interleave int, dual bool, asmMaxErr int
 		for _, cw := range cws {
 			if dual {
 				for i := range cw {
-					cw[i] = talTab[cw[i]]
+					cw[i] = dualToConv[cw[i]]
 				}
 			}
 			n, err := RSDecode(cw)
@@ -388,7 +388,7 @@ func CCSDSDeframe(bits []bool, dataLen, interleave int, dual bool, asmMaxErr int
 		}
 		if dual {
 			for i := range data {
-				data[i] = convToTal[data[i]]
+				data[i] = convToDual[data[i]]
 			}
 		}
 		fr.Data = data
