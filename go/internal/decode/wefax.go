@@ -46,28 +46,31 @@ const (
 
 // WEFAXReport describes how a WEFAX decode went.
 type WEFAXReport struct {
-	BlackHz         float64 // locked black tone (nominal 1500)
-	WhiteHz         float64 // locked white tone (nominal 2300)
-	PairConfidence  float64 // share of 1000-2800 Hz energy in the locked pair
-	AntiCorrelation float64 // Pearson correlation of the two tone envelopes (FSK: negative)
-	WedgeContrast   float64 // phasing wedge brightness minus line background (0..1)
-	SyncSource      string  // "phasing-wedge" or "line-correlation"
-	PeriodScore     float64 // line-correlation wrap alignment (best/mean column variance)
-	PhasingStartSec float64 // where the phasing block was found
-	PhasingLines    int     // phasing lines used for the clock fit
-	SamplesPerLine  float64 // line period at the anchor line, including clock drift
-	DriftPPM        float64 // mean local drift over the chart: (per/nominal - 1) * 1e6
-	DriftMinPPM     float64 // smallest local drift seen (recorder wander)
-	DriftMaxPPM     float64 // largest local drift seen
-	StartToneSec    float64 // IOC start-tone alternation start, 0 when absent
-	StartToneEndSec float64 // IOC start-tone alternation end
-	StartToneIOC    int     // IOC signalled by the start tone (576/288), 0 when absent
-	ClockVotes      float64 // line pairs that contributed a clock vote
-	KeyingEndSec    float64 // where sustained FSK keying ends, 0 when keying reaches the trace end
-	DeskewCorr      float64 // mean adjacent-row correlation of the render (slant honesty)
-	Lines           int     // rendered lines
-	Width           int
-	Height          int
+	BlackHz              float64 // locked black tone (nominal 1500)
+	WhiteHz              float64 // locked white tone (nominal 2300)
+	PairConfidence       float64 // share of 1000-2800 Hz energy in the locked pair
+	AntiCorrelation      float64 // Pearson correlation of the two tone envelopes (FSK: negative)
+	WedgeContrast        float64 // phasing wedge brightness minus line background (0..1)
+	SyncSource           string  // "phasing-wedge" or "line-correlation"
+	PeriodScore          float64 // line-correlation wrap alignment (best/mean column variance)
+	PhasingStartSec      float64 // where the phasing block was found
+	PhasingLines         int     // phasing lines used for the clock fit
+	SamplesPerLine       float64 // line period at the anchor line, including clock drift
+	DriftPPM             float64 // mean local drift over the chart: (per/nominal - 1) * 1e6
+	DriftMinPPM          float64 // smallest local drift seen (recorder wander)
+	DriftMaxPPM          float64 // largest local drift seen
+	StartToneSec         float64 // IOC start-tone alternation start, 0 when absent
+	StartToneEndSec      float64 // IOC start-tone alternation end
+	StartToneIOC         int     // IOC signalled by the start tone (576/288), 0 when absent
+	ClockVotes           float64 // line pairs that contributed a clock vote
+	KeyingEndSec         float64 // deprecated: zero unless a transmission end is independently established
+	OriginalTraceSec     float64 // full available demod trace duration; no inferred tail is discarded
+	InferredKeyingEndSec float64 // candidate display boundary, not proven image/transmission end
+	TailBoundaryInferred bool    // candidate may exclude legitimate low-modulation image rows
+	DeskewCorr           float64 // mean adjacent-row correlation of the render (slant honesty)
+	Lines                int     // rendered lines
+	Width                int
+	Height               int
 }
 
 var errShortWEFAX = &wefaxError{"recording too short for a fax image"}
@@ -128,16 +131,14 @@ func WEFAXImageDetailed(samples []float64, rate int, linesPerMinute float64, ioc
 		return nil, rep, fmt.Errorf("wefax: line period %.3f s too short for hop grid", lineSec)
 	}
 
-	// A capture often runs past the end of the transmission into
-	// static or a rekeyed carrier. That dead tail is not chart
-	// content: it adds noise rows to the render and its junk line
-	// "votes" poison the drift statistics the verifier gates on.
-	// Crop the trace at the end of sustained FSK keying so the
-	// tracker, the render and the drift report cover only the
-	// actual transmission.
-	if endHop, ok := tr.keyingEndHop(lineHops); ok {
-		tr.truncate(endHop)
-		rep.KeyingEndSec = float64(endHop) * wefaxHopSec
+	// Low modulation cannot distinguish legitimate image rows from an idle
+	// tone or fade. Preserve the full trace for tracking, rendering and
+	// verifier statistics. Expose only an explicitly inferred candidate
+	// range; callers must not treat it as a proven transmission boundary.
+	rep.OriginalTraceSec = float64(len(tr.ratio)) * wefaxHopSec
+	if endHop, inferred := tr.keyingEndHop(lineHops); inferred {
+		rep.InferredKeyingEndSec = float64(endHop) * wefaxHopSec
+		rep.TailBoundaryInferred = true
 	}
 
 	// IOC start tone: the 300/675 Hz alternation before the phasing
@@ -363,18 +364,11 @@ type wefaxTrace struct {
 	pw    []float64 // white tone power per hop
 }
 
-// keyingEndHop finds where FSK keying stops. A keyed window alternates
-// between the two tones, so the brightness ratio sweeps a wide range;
-// after the content ends the transmitter either drops (energy falls to
-// the noise floor) or holds one tone (on DWD 3855, 2026-10-26, the
-// white tone held at full amplitude for 7+ minutes after the chart). A
-// window counts as keyed only when it has BOTH near-transmission
-// energy (15% of the 90th percentile) and a wide ratio range (0.4;
-// measured chart windows sweep 0.84-1.0, a held tone 0.06-0.18). The
-// end is the end of the last keyed window, and it only counts when
-// keying stays absent for at least 5 s after it - short mid-chart
-// fades must not crop the image. ok is false when keying reaches the
-// end of the trace (capture cut mid-transmission).
+// keyingEndHop proposes a boundary after the last high-range FSK window.
+// It cannot distinguish low-modulation image content from idle tone/fade.
+// The returned range is inferred only and MUST NOT discard trace samples
+// or change verifier input. A keyed window needs energy >=15% of p90 and
+// raw-ratio range >=0.4. At least five seconds of low range follow it.
 func (t *wefaxTrace) keyingEndHop(lineHops int) (endHop int, ok bool) {
 	n := len(t.ratio)
 	win := int(1.0 / wefaxHopSec) // 1 s windows
@@ -447,7 +441,9 @@ func (t *wefaxTrace) truncate(endHop int) {
 		return
 	}
 	t.ratio = t.ratio[:endHop]
-	t.raw = t.raw[:endHop]
+	if t.raw != nil {
+		t.raw = t.raw[:endHop]
+	}
 	t.pb = t.pb[:endHop]
 	t.pw = t.pw[:endHop]
 }

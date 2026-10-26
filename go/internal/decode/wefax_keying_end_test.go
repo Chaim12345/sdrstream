@@ -19,13 +19,9 @@ func appendNoise(samples []float64, rate float64, sec float64) []float64 {
 	return samples
 }
 
-// Regression: a capture running past the end of the transmission used
-// to decode the dead tail too - static rows in the image and junk line
-// "votes" that poisoned the drift statistics the verifier gates on (on
-// DWD 3855, 2026-10-26: 900 dead-tail lines pinned the min drift at
-// -2385 ppm and the mean at -898 ppm while the keyed content tracked
-// ~0). The trace must crop at the end of sustained keying.
-func TestWEFAXKeyingEndTruncation(t *testing.T) {
+// A range/energy estimate is advisory only. Even a plausible dead-tail
+// candidate must not remove available rows from tracking or rendering.
+func TestWEFAXKeyingEndInferredPreservesTrace(t *testing.T) {
 	const rate = 8000
 	txSec := 3.0 + float64(60+80)*0.5 // start tone + phasing + image
 	samples := appendNoise(synthWEFAXExactLines(rate, 60, 80, 3), rate, 30)
@@ -33,26 +29,23 @@ func TestWEFAXKeyingEndTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode failed: %v (report %+v)", err, rep)
 	}
-	if rep.KeyingEndSec <= 0 {
-		t.Errorf("KeyingEndSec = %v, want the end of sustained keying (~%.0f s)", rep.KeyingEndSec, txSec)
-	} else if math.Abs(rep.KeyingEndSec-txSec) > 3 {
-		t.Errorf("KeyingEndSec = %.1f s, want within 3 s of the transmission end %.0f s", rep.KeyingEndSec, txSec)
+	if rep.InferredKeyingEndSec <= 0 {
+		t.Errorf("KeyingEndSec = %v, want the end of sustained keying (~%.0f s)", rep.InferredKeyingEndSec, txSec)
+	} else if math.Abs(rep.InferredKeyingEndSec-txSec) > 3 {
+		t.Errorf("KeyingEndSec = %.1f s, want within 3 s of the transmission end %.0f s", rep.InferredKeyingEndSec, txSec)
 	}
 	img, err := png.Decode(bytes.NewReader(pngData))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 140 content lines (60 phasing + 80 image); the 30 s tail is 60
-	// more lines that must NOT render.
-	if h := img.Bounds().Dy(); h > 140+6 {
-		t.Errorf("height %d includes the dead tail (want ~140)", h)
+	// All available rows remain: the candidate boundary is ambiguous.
+	if h := img.Bounds().Dy(); h < 140+50 {
+		t.Errorf("height %d discarded available rows (want full trace ~200)", h)
 	}
-	if rep.DriftMaxPPM-rep.DriftMinPPM > 1500 {
-		t.Errorf("wander span %.0f ppm over the keyed region, want clean (dead-tail votes leaked into the stats?)", rep.DriftMaxPPM-rep.DriftMinPPM)
+	if !rep.TailBoundaryInferred || rep.KeyingEndSec != 0 || rep.OriginalTraceSec < txSec+29 {
+		t.Errorf("ambiguous tail metadata missing: %+v", rep)
 	}
-	if math.Abs(rep.DriftPPM) > 500 {
-		t.Errorf("drift %.0f ppm on clean signal, want ~0", rep.DriftPPM)
-	}
+
 }
 
 // Control: keying that reaches the end of the capture is not a dead
@@ -64,8 +57,8 @@ func TestWEFAXKeyingToTraceEndNoTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode failed: %v (report %+v)", err, rep)
 	}
-	if rep.KeyingEndSec != 0 {
-		t.Errorf("KeyingEndSec = %.1f on a capture ending with the transmission, want 0 (no crop)", rep.KeyingEndSec)
+	if rep.InferredKeyingEndSec != 0 {
+		t.Errorf("KeyingEndSec = %.1f on a capture ending with the transmission, want 0 (no crop)", rep.InferredKeyingEndSec)
 	}
 	img, err := png.Decode(bytes.NewReader(pngData))
 	if err != nil {
@@ -91,9 +84,9 @@ func appendHeldTone(samples []float64, rate float64, sec float64) []float64 {
 	return samples
 }
 
-// A held white tone after the chart is not chart content: the render
-// must stop at the end of keying, not render the tone as white rows.
-func TestWEFAXHeldToneTailTruncation(t *testing.T) {
+// A held white tone cannot be distinguished from legitimate white image
+// content by tone stability alone. Preserve all available rows.
+func TestWEFAXHeldToneInferredPreservesTrace(t *testing.T) {
 	const rate = 8000
 	txSec := 3.0 + float64(60+80)*0.5
 	samples := appendHeldTone(synthWEFAXExactLines(rate, 60, 80, 3), rate, 30)
@@ -101,15 +94,15 @@ func TestWEFAXHeldToneTailTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode failed: %v (report %+v)", err, rep)
 	}
-	if rep.KeyingEndSec <= 0 || math.Abs(rep.KeyingEndSec-txSec) > 3 {
-		t.Errorf("KeyingEndSec = %.1f s, want within 3 s of the keying end %.0f s", rep.KeyingEndSec, txSec)
+	if rep.InferredKeyingEndSec <= 0 || math.Abs(rep.InferredKeyingEndSec-txSec) > 3 {
+		t.Errorf("KeyingEndSec = %.1f s, want within 3 s of the keying end %.0f s", rep.InferredKeyingEndSec, txSec)
 	}
 	img, err := png.Decode(bytes.NewReader(pngData))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h := img.Bounds().Dy(); h > 140+6 {
-		t.Errorf("height %d includes the held-tone tail (want ~140)", h)
+	if h := img.Bounds().Dy(); h < 140+50 {
+		t.Errorf("height %d discarded available rows (want full trace ~200)", h)
 	}
 }
 
@@ -143,8 +136,8 @@ func TestWEFAXMidChartFadeNoTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode failed: %v (report %+v)", err, rep)
 	}
-	if rep.KeyingEndSec != 0 {
-		t.Errorf("KeyingEndSec = %.1f: cropped at the mid-chart fade (keying resumed afterwards)", rep.KeyingEndSec)
+	if rep.InferredKeyingEndSec != 0 {
+		t.Errorf("KeyingEndSec = %.1f: inferred an end at the mid-chart fade (keying resumed afterwards)", rep.InferredKeyingEndSec)
 	}
 	img, err := png.Decode(bytes.NewReader(pngData))
 	if err != nil {
@@ -157,10 +150,9 @@ func TestWEFAXMidChartFadeNoTruncation(t *testing.T) {
 	}
 }
 
-// Negative control: with a mid-chart fade AND a dead tail, the crop
-// lands at the true end of keying, not at the fade, and the content
-// between fade and tail survives.
-func TestWEFAXMidChartFadeTailCropsAtTrueEnd(t *testing.T) {
+// A mid-chart fade and later ambiguous tail retain the complete trace;
+// the advisory boundary is after resumed keying, not at the earlier fade.
+func TestWEFAXMidChartFadeTailInferredPreservesTrace(t *testing.T) {
 	const rate = 8000
 	full := synthWEFAXExactLines(rate, 60, 80, 3)
 	gapped := insertGap(full, rate, 0.5, 3, 60+40, 8)
@@ -170,16 +162,15 @@ func TestWEFAXMidChartFadeTailCropsAtTrueEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode failed: %v (report %+v)", err, rep)
 	}
-	if rep.KeyingEndSec <= 0 || math.Abs(rep.KeyingEndSec-txSec) > 3 {
-		t.Errorf("KeyingEndSec = %.1f s, want within 3 s of the true keying end %.0f s (crop must skip the mid-chart fade)", rep.KeyingEndSec, txSec)
+	if rep.InferredKeyingEndSec <= 0 || math.Abs(rep.InferredKeyingEndSec-txSec) > 3 {
+		t.Errorf("KeyingEndSec = %.1f s, want within 3 s of the true keying end %.0f s (crop must skip the mid-chart fade)", rep.InferredKeyingEndSec, txSec)
 	}
 	img, err := png.Decode(bytes.NewReader(pngData))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The fade sits after line 100; cropping there would give ~100
-	// rows. The true end gives ~140 content + ~16 fade rows.
-	if h := img.Bounds().Dy(); h < 140+14 || h > 140+16+6 {
-		t.Errorf("height %d, want ~156 (post-fade content present, held-tone tail cropped)", h)
+	// The fade and all later rows, including ambiguous tail, survive.
+	if h := img.Bounds().Dy(); h < 140+14+50 {
+		t.Errorf("height %d, want full available trace including ambiguous tail", h)
 	}
 }
