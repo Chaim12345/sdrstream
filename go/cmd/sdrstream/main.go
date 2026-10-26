@@ -1511,6 +1511,7 @@ func cmdWeb(args []string) error {
 	fs := flag.NewFlagSet("web", flag.ExitOnError)
 	host := fs.String("host", "127.0.0.1", "address to bind")
 	hostExtra := fs.String("host-extra", "", "additional address:port to serve the UI on (e.g. the device's Tailscale IP); refused without SDRSTREAM_UI_PASSWORD")
+	preview := fs.Bool("preview", false, "shared public preview mode: refuse startup without SDRSTREAM_UI_PASSWORD and deny receiver start/tune/scan control regardless of environment")
 	port := fs.Int("port", 8000, "port to bind")
 	capturesDir := fs.String("captures-dir", "../captures", "directory of saved WAV captures to list and serve")
 	capturesMaxGB := fs.Float64("captures-max-gb", 0, "prune oldest captures above this size in GiB (0 = no size limit)")
@@ -1613,7 +1614,10 @@ func cmdWeb(args []string) error {
 			return err
 		}
 	}
-	server := web.New(*capturesDir, *galleryDir)
+	if err := web.PreviewStartupCheck(*preview, os.Getenv("SDRSTREAM_UI_PASSWORD")); err != nil {
+		return err
+	}
+	server := web.New(*capturesDir, *galleryDir, web.WithPreviewMode(*preview))
 	if *satFollow != "" {
 		var priority []string
 		if *satFollow != "default" {
