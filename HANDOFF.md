@@ -472,7 +472,41 @@ historical contacts. Live preview: fail-closed auth re-verified after
 every restart (401 unauth local + tunnel), served via
 `deploy/preview.sh`.
 
-Open gaps: directory sync (gated on reuse/source-policy grounding, not
-started); live end-to-end decode through the new clients (needs an
-owner-approved contact batch); UberSDR monitor/CLI now wired but Android
-APK does not include any of this (APK predates `64db19a`).
+Open gaps: directory sync (source-policy grounding done 2026-10-26:
+UberSDR directory is operator opt-in self-publication fetched on demand
+by the upstream client; Web-888 discovery rides kiwisdr.com/sdr.hu
+opt-in registration; NO written reuse/rate policy exists in either
+upstream repo - on-demand manual fetch only, no merged public dataset
+without an explicit grant); live end-to-end decode through the new
+clients (needs an owner-approved contact batch); UberSDR monitor/CLI
+now wired but Android APK does not include any of this (APK predates
+`64db19a`).
+
+## 2026-10-26 addition (night) - fixture containment + preview lifecycle
+
+- Capture-fixture publication contained at `c40f565` (see the commit
+  message and the corrected private provenance held off-repo): the
+  Oostende NAVTEX trim was a Twente public-WebSDR capture mislabeled as
+  the user's own receiver; bytes remain in branch history at `15665b5`
+  pending the user's history decision. A pre-existing Twente FT8 capture
+  (`8428a81`, master, accurately labeled, no capture-publication grant
+  found in user originals) is reported to the owner as the same class of
+  gap; not mutated.
+- Preview lifecycle: rebuilt after a sandbox rebuild from clean `52b8e6a`
+  via `deploy/preview.sh` (twice - Cloudflare invalidated the first new
+  quick tunnel server-side), fail-closed re-verified each time (unauth
+  401, login form + cookie auth; authed API 200). The user then cancelled
+  the preview ("No need for preview", 2026-10-26 13:02 IST); server and
+  tunnel torn down, all quick-tunnel URLs dead. The 70-row receiver
+  catalog ledgers were lost with the sandbox (attachment blobs not
+  retrievable agent-side; message IDs/blob hashes on record with main);
+  the preview ran with an honestly empty catalog, no rows invented.
+- UI QA observations (retained for app QA; neither is proven breakage):
+  the Captures card does not read the `.provenance.md` sidecar (shows
+  "provenance: source not recorded" even when one exists), and its audio
+  element showed duration 0:00 despite 9m30s metadata - playback was
+  never clicked, so audio playability is UNVERIFIED, not broken.
+- Replay evidence status: pcmv4 recorded-stream replay test remains
+  (synthetic/public vectors); the NAVTEX replay test now skips unless a
+  private fixture is supplied via `NAVTEX_REPLAY_WAV` (private asset,
+  not in the repo).
