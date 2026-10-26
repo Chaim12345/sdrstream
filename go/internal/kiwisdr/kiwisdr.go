@@ -453,6 +453,33 @@ func (c *Client) Record(ctx context.Context, duration time.Duration) ([]int16, i
 	}
 }
 
+// ReadFrame performs one raw websocket read with the connection's idle
+// timeout applied and returns the message kind and payload untouched. It
+// exists for IQ-mode consumers (iqsrc) that parse SND frames themselves;
+// callers own tuning, keepalives and reconnects. Not safe for concurrent
+// use with Record.
+func (c *Client) ReadFrame() (int, []byte, error) {
+	if c.ws == nil {
+		return 0, nil, fmt.Errorf("kiwisdr: not connected")
+	}
+	idle := c.opts.IdleTimeout
+	if idle <= 0 {
+		idle = 10 * time.Second
+	}
+	c.ws.SetReadDeadline(time.Now().Add(idle))
+	return c.ws.ReadMessage()
+}
+
+// SendText writes one SET command line. Exported for IQ-mode consumers that
+// drive their own read loop and need keepalives.
+func (c *Client) SendText(line string) error {
+	if c.ws == nil {
+		return fmt.Errorf("kiwisdr: not connected")
+	}
+	_ = c.ws.SetWriteDeadline(time.Now().Add(writeDeadline(c)))
+	return c.ws.WriteMessage(websocket.TextMessage, []byte(line))
+}
+
 // maxRecordReconnects bounds consecutive mid-record reconnects. A server
 // that drops every session right after connect must surface as an error,
 // not keep the receiver slot busy retrying.
