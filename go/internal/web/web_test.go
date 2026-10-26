@@ -192,6 +192,27 @@ func TestBandPlanWired(t *testing.T) {
 	}
 }
 
+// TestCategoryFilterWired pins the Activity category filter: script on the
+// page, evidence/inference split in the script, and app.js applies it.
+func TestCategoryFilterWired(t *testing.T) {
+	if !strings.Contains(indexPage, "/static/categories.js") {
+		t.Fatal("index page does not load categories.js")
+	}
+	cat, err := staticFS.ReadFile("static/categories.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SDRCategory", "basis: 'decoder'", "basis: 'frequency'", "evidence only"} {
+		if !strings.Contains(string(cat), want) {
+			t.Fatalf("categories.js missing %q", want)
+		}
+	}
+	app, _ := staticFS.ReadFile("static/app.js")
+	if !strings.Contains(string(app), "SDRCategory.match(a)") {
+		t.Fatal("filteredActivity does not apply the category filter")
+	}
+}
+
 // TestMapAPI checks the map payload stays well-formed when no TLE source is
 // reachable: receivers still list, satellites degrade to a flag.
 func TestMapAPI(t *testing.T) {

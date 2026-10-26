@@ -1175,6 +1175,7 @@ activityReset.type = 'button'; activityReset.className = 'chip'; activityReset.t
 verdictFilter.after(activityReset);
 activityReset.addEventListener('click', () => {
   activityKind = ''; activityMode = ''; activitySearch = ''; activityWindowSec = 0; activityVerdict = ''; activityLimit = 0;
+  if (window.SDRCategory) window.SDRCategory.reset();
   el('activity-search').value = ''; el('activity-mode').value = ''; el('activity-window').value = ''; verdictFilter.value = '';
   document.querySelectorAll('[data-kind]').forEach(b => b.classList.toggle('on', b.dataset.kind === ''));
   renderActivity();
@@ -1189,6 +1190,7 @@ function filteredActivity() {
   const cutoff = activityWindowSec ? Date.now() - activityWindowSec * 1000 : 0;
   return activityItems.filter(a => {
     if (activityKind && a.kind !== activityKind) return false;
+    if (window.SDRCategory && !window.SDRCategory.match(a)) return false;
     if (activityMode && (a.mode || '') !== activityMode) return false;
     if (activityVerdict && activityGateVerdict(a) !== activityVerdict) return false;
     if (cutoff && !(new Date(a.started).getTime() >= cutoff)) return false;
@@ -1217,6 +1219,7 @@ function renderModeOptions() {
 }
 function renderActivity() {
   renderModeOptions();
+  if (window.SDRCategory) window.SDRCategory.update(activityItems);
   const full = filteredActivity();
   const limit = activityLimit || +settings.pageSize || DEFAULT_SETTINGS.pageSize;
   const feed = el('feed');
@@ -1232,6 +1235,8 @@ function renderActivity() {
   if (!more.hidden) more.textContent = 'show ' + Math.min(limit, full.length - limit) + ' more of ' + full.length;
   const active = [];
   if (activityKind) active.push('kind ' + activityKind);
+  if (window.SDRCategory && window.SDRCategory.state.cat) active.push('category ' + window.SDRCategory.state.cat);
+  if (window.SDRCategory && window.SDRCategory.state.evidenceOnly) active.push('evidence-only categories');
   if (activityMode) active.push('decoder ' + activityMode);
   if (activityWindowSec) active.push('time window');
   if (activitySearch.trim()) active.push('search');
