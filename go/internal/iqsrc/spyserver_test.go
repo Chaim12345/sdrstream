@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -15,6 +16,7 @@ import (
 type fakeSpy struct {
 	ln       net.Listener
 	hello    []byte
+	mu       sync.Mutex
 	settings [][2]uint32
 	stream   chan []byte // raw IQ bodies to send, one message each
 	enabled  chan struct{} // closed when STREAMING_ENABLED=1 is recorded
@@ -82,8 +84,11 @@ func (f *fakeSpy) serve() {
 		body := make([]byte, bs)
 		io.ReadFull(conn, body)
 		if cmd == spyCmdSetSetting && bs == 8 {
+			f.mu.Lock()
 			f.settings = append(f.settings, [2]uint32{binary.LittleEndian.Uint32(body[0:4]), binary.LittleEndian.Uint32(body[4:8])})
-			if f.settings[len(f.settings)-1] == [2]uint32{spySettingStreamingEnabled, 1} {
+			last := f.settings[len(f.settings)-1]
+			f.mu.Unlock()
+			if last == [2]uint32{spySettingStreamingEnabled, 1} {
 				close(f.enabled)
 				go func() {
 					for b := range f.stream {
@@ -102,6 +107,14 @@ func (f *fakeSpy) serve() {
 }
 
 func (f *fakeSpy) close() { close(f.stream); f.ln.Close() }
+
+func (f *fakeSpy) settingsCopy() [][2]uint32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][2]uint32, len(f.settings))
+	copy(out, f.settings)
+	return out
+}
 
 func TestSpyHandshakeAndSettings(t *testing.T) {
 	f := newFakeSpy(t)
@@ -142,12 +155,13 @@ func TestSpyHandshakeAndSettings(t *testing.T) {
 		{spySettingIQDigitalGain, 12}, // RTLSDR: uint32(4*3.01)=12
 		{spySettingStreamingEnabled, 1},
 	}
-	if len(f.settings) != len(want) {
-		t.Fatalf("settings %v", f.settings)
+	got := f.settingsCopy()
+	if len(got) != len(want) {
+		t.Fatalf("settings %v", got)
 	}
 	for i := range want {
-		if f.settings[i] != want[i] {
-			t.Fatalf("setting %d: got %v want %v (all %v)", i, f.settings[i], want[i], f.settings)
+		if got[i] != want[i] {
+			t.Fatalf("setting %d: got %v want %v (all %v)", i, got[i], want[i], got)
 		}
 	}
 }
@@ -193,15 +207,19 @@ func TestSpyRetuneAndClose(t *testing.T) {
 	if err := c.SetFrequency(435000000); err != nil {
 		t.Fatalf("SetFrequency: %v", err)
 	}
-	time.Sleep(20 * time.Millisecond) // let the server goroutine record it
 	found := false
-	for _, s := range f.settings {
-		if s == [2]uint32{spySettingIQFrequency, 435000000} {
-			found = true
+	for i := 0; i < 100 && !found; i++ {
+		for _, s := range f.settingsCopy() {
+			if s == [2]uint32{spySettingIQFrequency, 435000000} {
+				found = true
+			}
+		}
+		if !found {
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
 	if !found {
-		t.Fatalf("retune command not recorded: %v", f.settings)
+		t.Fatalf("retune command not recorded: %v", f.settingsCopy())
 	}
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
