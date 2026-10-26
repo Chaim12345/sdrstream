@@ -20,6 +20,12 @@ type RunFunc func(ctx context.Context, o Observation) error
 // during fn is also recorded as failed with the context error. A running
 // observation is never started twice: Start fails unless it is scheduled.
 func (p *Planner) RunDue(ctx context.Context, lead time.Duration, fn RunFunc) (*Observation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if fn == nil {
+		return nil, fmt.Errorf("observation executor is not configured")
+	}
 	next := p.Next()
 	if next == nil {
 		return nil, nil
@@ -39,6 +45,9 @@ func (p *Planner) RunDue(ctx context.Context, lead time.Duration, fn RunFunc) (*
 			}
 		}()
 		runErr = fn(ctx, *next)
+		if runErr == nil {
+			runErr = ctx.Err()
+		}
 	}()
 	if runErr != nil {
 		_ = p.Finish(next.ID, false, runErr.Error())

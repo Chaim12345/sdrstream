@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -21,6 +22,16 @@ const wireTLE = `ISS
 2 25544  51.6400 120.0000 0004000  60.0000 300.0000 15.50000000400009
 `
 
+// Test construction must not fetch orbital metadata. Planner cache reads below
+// remain real filesystem reads, with synthetic element text.
+func offlinePlannerWeb(t *testing.T) *web.Server {
+	t.Helper()
+	return web.New(t.TempDir(), t.TempDir(), web.WithTLELoaders(
+		func(string, float64, bool, time.Duration) (string, error) { return "", fmt.Errorf("offline test") },
+		func(int, float64, bool, time.Duration) (string, error) { return "", fmt.Errorf("offline test") },
+	))
+}
+
 func getPassplan(t *testing.T, srv *web.Server) map[string]interface{} {
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/api/passplan.json", nil))
@@ -37,10 +48,9 @@ func getPassplan(t *testing.T, srv *web.Server) map[string]interface{} {
 func TestStartPassplanRealCacheAndRestart(t *testing.T) {
 	cacheDir, stateDir := t.TempDir(), t.TempDir()
 	t.Setenv("SDRSTREAM_STATE_DIR", stateDir)
-	// web.New runs the existing pass table load (network, real cache). Build
-	// both servers BEFORE pointing the tle cache at the test dir.
-	srv := web.New(t.TempDir(), t.TempDir())
-	srv2 := web.New(t.TempDir(), t.TempDir())
+	// Both servers use offline metadata loaders. Build before the cache swap.
+	srv := offlinePlannerWeb(t)
+	srv2 := offlinePlannerWeb(t)
 	oldCache := tle.DefaultCacheDir
 	tle.DefaultCacheDir = cacheDir
 	defer func() { tle.DefaultCacheDir = oldCache }()
@@ -87,7 +97,7 @@ func TestStartPassplanRealCacheAndRestart(t *testing.T) {
 
 func TestStartPassplanEmptyCacheHonest(t *testing.T) {
 	t.Setenv("SDRSTREAM_STATE_DIR", t.TempDir())
-	srv := web.New(t.TempDir(), t.TempDir()) // before the cache swap, see above
+	srv := offlinePlannerWeb(t) // before the cache swap, see above
 	oldCache := tle.DefaultCacheDir
 	tle.DefaultCacheDir = t.TempDir()
 	defer func() { tle.DefaultCacheDir = oldCache }()

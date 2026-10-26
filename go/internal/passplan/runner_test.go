@@ -37,9 +37,6 @@ func TestRunDueErrorPanicAndCancel(t *testing.T) {
 	cases := map[string]RunFunc{
 		"error": func(context.Context, Observation) error { return errors.New("boom") },
 		"panic": func(context.Context, Observation) error { panic("kaput") },
-		"cancel": func(ctx context.Context, o Observation) error {
-			return ctx.Err()
-		},
 	}
 	for name, fn := range cases {
 		f := fake{map[int][]Pass{1: {pass(60, 10, 45)}}}
@@ -47,9 +44,6 @@ func TestRunDueErrorPanicAndCancel(t *testing.T) {
 		p.Generate([]Monitored{mon("a", 1, "", 0)})
 		p.Now = func() time.Time { return t0.Add(61 * time.Minute) }
 		ctx, cancel := context.WithCancel(context.Background())
-		if name == "cancel" {
-			cancel()
-		}
 		o, err := p.RunDue(ctx, 0, fn)
 		cancel()
 		tl := p.Timeline()[0]
@@ -66,5 +60,29 @@ func TestRunDueSkipsEndedWindows(t *testing.T) {
 	p.Now = func() time.Time { return t0.Add(3 * time.Hour) } // window long over
 	if o, _ := p.RunDue(context.Background(), time.Hour, func(context.Context, Observation) error { t.Fatal("ran stale"); return nil }); o != nil {
 		t.Fatal("ran stale observation")
+	}
+}
+
+func TestRunDueCancelledBeforeStartNeverCallsExecutor(t *testing.T) {
+	p := newP(fake{map[int][]Pass{1: {pass(60, 10, 45)}}}, "")
+	p.Generate([]Monitored{mon("a", 1, "", 0)})
+	p.Now = func() time.Time { return t0.Add(61 * time.Minute) }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	o, err := p.RunDue(ctx, 0, func(context.Context, Observation) error { called = true; return nil })
+	if o != nil || !errors.Is(err, context.Canceled) || called || p.Timeline()[0].Status != StatusScheduled {
+		t.Fatalf("o=%v err=%v called=%v state=%v", o, err, called, p.Timeline())
+	}
+}
+func TestRunDueExecutorIgnoresCancellationNeverMarksComplete(t *testing.T) {
+	p := newP(fake{map[int][]Pass{1: {pass(60, 10, 45)}}}, "")
+	p.Generate([]Monitored{mon("a", 1, "", 0)})
+	p.Now = func() time.Time { return t0.Add(61 * time.Minute) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := p.RunDue(ctx, 0, func(context.Context, Observation) error { cancel(); return nil })
+	if !errors.Is(err, context.Canceled) || p.Timeline()[0].Status != StatusFailed {
+		t.Fatalf("err=%v state=%v", err, p.Timeline())
 	}
 }
