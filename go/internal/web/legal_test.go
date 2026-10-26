@@ -63,8 +63,9 @@ func TestNewFamilyUIControlsPresent(t *testing.T) {
 			t.Fatalf("index page missing %q", frag)
 		}
 	}
-	// web-888 has no runtime client yet, so it must NOT be a monitor option.
-	if strings.Contains(indexPage, `<option value="web-888">`) {
-		t.Fatal("web-888 offered as a monitor kind with no runtime client")
+	// web-888 became a monitor option only when its runtime client landed;
+	// if the client is ever removed, this option must go with it.
+	if !strings.Contains(indexPage, `<option value="web-888">`) {
+		t.Fatal("web-888 monitor option missing but the runtime client exists")
 	}
 }

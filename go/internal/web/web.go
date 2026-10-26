@@ -2019,7 +2019,7 @@ func (s *Server) handleMonitorControl(w http.ResponseWriter, r *http.Request) {
 }
 
 // monitorKinds are the receiver types the UI can start.
-var monitorKinds = map[string]bool{"openwebrx": true, "websdr": true, "kiwi": true, "kiwisdr": true, "kiwi-iq": true, "spyserver": true, "ubersdr": true}
+var monitorKinds = map[string]bool{"openwebrx": true, "websdr": true, "kiwi": true, "kiwisdr": true, "kiwi-iq": true, "spyserver": true, "ubersdr": true, "web-888": true}
 
 // handleMonitorStart starts a live monitor from UI-provided receiver
 // details. Construction failures (bad kind, unreachable receiver,
@@ -2085,7 +2085,7 @@ func parseMonitorStartSpec(r *http.Request) (MonitorStartSpec, error) {
 		spec.Kind = "openwebrx"
 	}
 	if !monitorKinds[spec.Kind] {
-		return spec, fmt.Errorf("kind must be openwebrx, websdr, kiwi, kiwi-iq, spyserver or ubersdr")
+		return spec, fmt.Errorf("kind must be openwebrx, websdr, kiwi, kiwi-iq, spyserver, ubersdr or web-888")
 	}
 	// ubersdr keeps its scheme: TLS endpoints (wss upgrade over https)
 	// must not be downgraded to plain http. Other kinds dial host:port.
