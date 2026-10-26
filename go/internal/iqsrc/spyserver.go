@@ -54,7 +54,7 @@ const (
 	spyMsgUint8IQ     = 100
 )
 
-// DeviceInfo mirrors SpyServerDeviceInfo (52 bytes).
+// DeviceInfo mirrors SpyServerDeviceInfo (48 bytes, 12 uint32 fields).
 type DeviceInfo struct {
 	DeviceType           uint32
 	DeviceSerial         uint32
@@ -161,7 +161,7 @@ func DialSpy(ctx context.Context, cfg SpyConfig) (*SpyClient, error) {
 		}
 		switch mtype {
 		case spyMsgDeviceInfo:
-			if len(mbody) < 52 {
+			if len(mbody) < 48 {
 				conn.Close()
 				return nil, fmt.Errorf("iqsrc: short DEVICE_INFO (%d bytes)", len(mbody))
 			}

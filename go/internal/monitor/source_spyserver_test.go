@@ -51,7 +51,7 @@ func (f *fakeSpyServer) serve() {
 		copy(m[20:], body)
 		conn.Write(m)
 	}
-	di := make([]byte, 52)
+	di := make([]byte, 48)
 	// MaxSampleRate 7.68M, DecimationStageCount 5, MinimumIQDecimation 0,
 	// MaxGainIndex 21; rest zero-ish.
 	for i, v := range []uint32{3, 1, 7680000, 6000000, 5, 22, 21, 1000, 1800000000, 12, 0, 0} {

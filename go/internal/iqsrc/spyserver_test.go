@@ -62,7 +62,7 @@ func (f *fakeSpy) serve() {
 	f.hello = hello
 	// Send DEVICE_INFO then CLIENT_SYNC.
 	var msg [72]byte
-	di := make([]byte, 52)
+	di := make([]byte, 48)
 	for i, v := range []uint32{f.info.DeviceType, f.info.DeviceSerial, f.info.MaximumSampleRate, f.info.MaximumBandwidth, f.info.DecimationStageCount, f.info.GainStageCount, f.info.MaximumGainIndex, f.info.MinimumFrequency, f.info.MaximumFrequency, f.info.Resolution, f.info.MinimumIQDecimation, f.info.ForcedIQFormat} {
 		binary.LittleEndian.PutUint32(di[4*i:], v)
 	}
