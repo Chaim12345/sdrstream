@@ -354,14 +354,16 @@ type wefaxTrace struct {
 // tones and their brightness ratio, median-3 smoothed.
 func wefaxDemodRatio(samples []float64, rate int, blackHz, whiteHz float64) *wefaxTrace {
 	win := int(wefaxWinSec * float64(rate))
-	hop := int(wefaxHopSec * float64(rate))
 	if win < 8 {
 		win = 8
 	}
-	if hop < 1 {
-		hop = 1
-	}
-	n := (len(samples) - win) / hop
+	// Hops sit at exact 2 ms positions. An integer hop truncates at
+	// rates where 0.002*rate is fractional (7119 Hz -> 14 instead of
+	// 14.238), so each decoded line silently consumed fewer samples
+	// than 0.5 s and the clock walked ~-16.7k ppm; position every hop
+	// by rounding instead and downstream time math stays exact.
+	hopF := wefaxHopSec * float64(rate)
+	n := int(math.Floor(float64(len(samples)-win) / hopF))
 	if n <= 0 {
 		return &wefaxTrace{}
 	}
@@ -372,7 +374,8 @@ func wefaxDemodRatio(samples []float64, rate int, blackHz, whiteHz float64) *wef
 		pw:    make([]float64, n),
 	}
 	for h := 0; h < n; h++ {
-		seg := samples[h*hop : h*hop+win]
+		start := int(math.Round(float64(h) * hopF))
+		seg := samples[start : start+win]
 		pb := goertzel(seg, rate, blackHz)
 		pw := goertzel(seg, rate, whiteHz)
 		t.pb[h], t.pw[h] = pb, pw
