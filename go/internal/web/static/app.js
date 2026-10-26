@@ -2043,6 +2043,23 @@ function initMonitorLifecycle() {
       list.appendChild(opt);
     });
   }).catch(() => { /* directory offline: free text still works */ });
+  // Public SpyServers from the Airspy directory. These are directory
+  // listings as published - not verified reachable - so the label says so.
+  fetchJSON('/api/spyservers.json').then(servers => {
+    const list = el('monitor-stations');
+    if (!list) return;
+    (servers || []).slice(0, 300).forEach(sv => {
+      if (!sv.host || !sv.port) return;
+      const opt = document.createElement('option');
+      opt.value = sv.host + ':' + sv.port;
+      const mhz = f => (f / 1e6).toFixed(0);
+      opt.label = (sv.device_type || 'SpyServer') +
+        (sv.min_frequency ? ' ' + mhz(sv.min_frequency) + '-' + mhz(sv.max_frequency) + ' MHz' : '') +
+        (sv.clients != null && sv.max_clients ? ' ' + sv.clients + '/' + sv.max_clients + ' users' : '') +
+        ' (SpyServer directory)';
+      list.appendChild(opt);
+    });
+  }).catch(() => { /* directory offline: free text still works */ });
 }
 
 function syncMonitorButtons(live) {

@@ -1360,3 +1360,55 @@ func TestAppJsHasNoLegacyMsglogRenderer(t *testing.T) {
 		}
 	}
 }
+
+// TestSpyServersFailureIsNotEmptiness mirrors the stations contract: a
+// directory outage is a 502, not a 200 with an empty list.
+func TestSpyServersFailureIsNotEmptiness(t *testing.T) {
+	server := &Server{fetchSpyServers: func(context.Context) ([]directory.SpyServer, error) {
+		return nil, errors.New("directory offline")
+	}}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest("GET", "/api/spyservers.json", nil))
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", recorder.Code)
+	}
+}
+
+// TestSpyServersServesStaleCache serves the expired list on refresh
+// failure, marked stale.
+func TestSpyServersServesStaleCache(t *testing.T) {
+	server := &Server{
+		spyServers:   []directory.SpyServer{{Host: "8.8.8.8", Port: 5555, DeviceType: "AirspyOne", Online: true}},
+		spyServersAt: time.Now().Add(-2 * time.Hour),
+		fetchSpyServers: func(context.Context) ([]directory.SpyServer, error) {
+			return nil, errors.New("directory offline")
+		},
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest("GET", "/api/spyservers.json", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want the cached list", recorder.Code)
+	}
+	if recorder.Header().Get("X-Stations-Stale") != "true" {
+		t.Fatal("stale cache not marked")
+	}
+	if !strings.Contains(recorder.Body.String(), "8.8.8.8") {
+		t.Fatalf("cached entry missing: %s", recorder.Body.String())
+	}
+}
+
+// TestSpyServersEmptyDirectory: an answering-but-empty directory is a
+// normal empty list.
+func TestSpyServersEmptyDirectory(t *testing.T) {
+	server := &Server{fetchSpyServers: func(context.Context) ([]directory.SpyServer, error) {
+		return []directory.SpyServer{}, nil
+	}}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest("GET", "/api/spyservers.json", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	if got := strings.TrimSpace(recorder.Body.String()); got != "[]" {
+		t.Errorf("body = %q, want an empty list", got)
+	}
+}

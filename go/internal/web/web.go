@@ -308,6 +308,8 @@ type Server struct {
 	scanControlManual bool
 	stations          []directory.Station
 	stationsAt        time.Time
+	spyServers        []directory.SpyServer
+	spyServersAt      time.Time
 	sourcesResults    []sources.Result
 	sourcesAt         time.Time
 	sourcesRunning    bool
@@ -339,6 +341,9 @@ type Server struct {
 	// fetchStations is directory.FetchStations in production and a seam
 	// for the tests, which cannot wait on the public directory.
 	fetchStations func(context.Context) ([]directory.Station, error)
+	// fetchSpyServers is directory.FetchSpyServers in production and a
+	// seam for the tests.
+	fetchSpyServers func(context.Context) ([]directory.SpyServer, error)
 	// fetchObservations is satnogs.Observations in production and a seam
 	// for the tests, which cannot wait on the network API.
 	fetchObservations func(noradID int) ([]satnogs.Observation, error)
@@ -1042,6 +1047,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/live.json", s.handleLive)
 	mux.HandleFunc("/api/tune.json", s.handleTune)
 	mux.HandleFunc("/api/stations.json", s.handleStations)
+	mux.HandleFunc("/api/spyservers.json", s.handleSpyServers)
 	mux.HandleFunc("/api/station-catalog.json", s.handleProbeStations)
 	mux.HandleFunc("/api/map.json", s.handleMap)
 	mux.HandleFunc("/api/tiles/", s.handleTile)
@@ -2416,6 +2422,44 @@ func (s *Server) handleStations(w http.ResponseWriter, r *http.Request) {
 		stations = []directory.Station{}
 	}
 	writeJSON(w, stations)
+}
+
+// handleSpyServers lists the public SpyServers from the Airspy directory.
+// Entries are directory listings as published (public-address filtered),
+// NOT verified-reachable receivers; the UI labels them as such. Same cache
+// and stale-fallback shape as handleStations.
+func (s *Server) handleSpyServers(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	servers := s.spyServers
+	fresh := !s.spyServersAt.IsZero() && time.Since(s.spyServersAt) < time.Hour
+	fetch := s.fetchSpyServers
+	s.mu.Unlock()
+	if fetch == nil {
+		fetch = func(ctx context.Context) ([]directory.SpyServer, error) {
+			return directory.FetchSpyServers(ctx, 30*time.Second)
+		}
+	}
+	if !fresh {
+		fetched, err := fetch(r.Context())
+		if err == nil {
+			s.mu.Lock()
+			s.spyServers = fetched
+			s.spyServersAt = time.Now()
+			servers = fetched
+			s.mu.Unlock()
+		} else {
+			log.Printf("web: spyserver directory: %v", err)
+			if servers == nil {
+				http.Error(w, "spyserver directory unavailable: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+			w.Header().Set("X-Stations-Stale", "true")
+		}
+	}
+	if servers == nil {
+		servers = []directory.SpyServer{}
+	}
+	writeJSON(w, servers)
 }
 
 // handlePasses serves the predicted-pass table with an optional
