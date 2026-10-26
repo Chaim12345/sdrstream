@@ -50,3 +50,20 @@ func TestImportLedgerRejectsMalformed(t *testing.T) {
 		t.Fatal("row without endpoint imported")
 	}
 }
+
+func TestImportKindNewFamilies(t *testing.T) {
+	for in, want := range map[string]string{"UberSDR": "ubersdr", "Web-888": "web-888", "web888": "web-888"} {
+		if got := importKind(in); got != want {
+			t.Fatalf("importKind(%q)=%q want %q", in, got, want)
+		}
+	}
+}
+
+func TestRecordURLPrefersCandidateScheme(t *testing.T) {
+	if got := recordURL(LedgerRow{Endpoint: "x.example:443", URL: "https://x.example"}); got != "https://x.example" {
+		t.Fatalf("got %q", got)
+	}
+	if got := recordURL(LedgerRow{Endpoint: "x.example:8073"}); got != "http://x.example:8073" {
+		t.Fatalf("got %q", got)
+	}
+}

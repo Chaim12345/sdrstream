@@ -12,10 +12,15 @@
   function streamClass(st) {
     if (!st.reachable) return 'silent';
     const v = String(st.verdict || '').toLowerCase();
-    if (v.includes('-decoded') || v.includes('frames-received') || v.includes('samples-received') || v.includes('stream-received')) return 'streaming';
+    // 'stream verified' requires decoded or inherently-playable content.
+    // Container frames that arrived but were NOT decoded
+    // (iq-frames-received) and streams whose format was not decoded
+    // (iq-mode-stream-received-format-undecoded) stay 'answered' - the
+    // verbatim verdict is shown next to the badge, never upgraded.
+    if (v.includes('-decoded') || v.includes('samples-received') || v.includes('audio-frames-received')) return 'streaming';
     return 'answered';
   }
-  const KINDS = { kiwi: 'KiwiSDR', openwebrx: 'OpenWebRX', websdr: 'WebSDR' };
+  const KINDS = { kiwi: 'KiwiSDR', openwebrx: 'OpenWebRX', websdr: 'WebSDR', spyserver: 'SpyServer', 'kiwi-iq': 'KiwiSDR IQ', ubersdr: 'UberSDR', 'web-888': 'Web-888' };
   const BANDS = [
     ['LF', 30e3, 300e3], ['MF', 300e3, 3e6], ['HF', 3e6, 30e6],
     ['VHF', 30e6, 300e6], ['UHF', 300e6, 3e9]
