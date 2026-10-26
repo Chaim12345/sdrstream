@@ -161,23 +161,38 @@ func DialSpy(ctx context.Context, cfg SpyConfig) (*SpyClient, error) {
 		}
 		switch mtype {
 		case spyMsgDeviceInfo:
-			if len(mbody) < 48 {
+			// Older servers trail the reference struct (48 bytes / 12
+			// fields today); parse the fields that arrived, leave the
+			// rest zero. 32 bytes covers through MinimumFrequency, the
+			// smallest shape still useful.
+			if len(mbody) < 32 {
 				conn.Close()
 				return nil, fmt.Errorf("iqsrc: short DEVICE_INFO (%d bytes)", len(mbody))
 			}
 			var di DeviceInfo
-			for i, fp := range []*uint32{&di.DeviceType, &di.DeviceSerial, &di.MaximumSampleRate, &di.MaximumBandwidth, &di.DecimationStageCount, &di.GainStageCount, &di.MaximumGainIndex, &di.MinimumFrequency, &di.MaximumFrequency, &di.Resolution, &di.MinimumIQDecimation, &di.ForcedIQFormat} {
+			fields := []*uint32{&di.DeviceType, &di.DeviceSerial, &di.MaximumSampleRate, &di.MaximumBandwidth, &di.DecimationStageCount, &di.GainStageCount, &di.MaximumGainIndex, &di.MinimumFrequency, &di.MaximumFrequency, &di.Resolution, &di.MinimumIQDecimation, &di.ForcedIQFormat}
+			for i, fp := range fields {
+				if 4*i+4 > len(mbody) {
+					break
+				}
 				*fp = binary.LittleEndian.Uint32(mbody[4*i:])
 			}
 			c.Info = di
 			haveInfo = true
 		case spyMsgClientSync:
-			if len(mbody) < 40 {
+			// Same trailing-extension tolerance: 40 bytes / 10 fields
+			// today, older servers observed at 36. 20 bytes covers
+			// through FFTCenterFrequency.
+			if len(mbody) < 20 {
 				conn.Close()
 				return nil, fmt.Errorf("iqsrc: short CLIENT_SYNC (%d bytes)", len(mbody))
 			}
 			var cs ClientSync
-			for i, fp := range []*uint32{&cs.CanControl, &cs.Gain, &cs.DeviceCenterFrequency, &cs.IQCenterFrequency, &cs.FFTCenterFrequency, &cs.MinimumIQCenterFrequency, &cs.MaximumIQCenterFrequency, &cs.MinimumFFTCenterFrequency, &cs.MaximumFFTCenterFrequency} {
+			fields := []*uint32{&cs.CanControl, &cs.Gain, &cs.DeviceCenterFrequency, &cs.IQCenterFrequency, &cs.FFTCenterFrequency, &cs.MinimumIQCenterFrequency, &cs.MaximumIQCenterFrequency, &cs.MinimumFFTCenterFrequency, &cs.MaximumFFTCenterFrequency}
+			for i, fp := range fields {
+				if 4*i+4 > len(mbody) {
+					break
+				}
 				*fp = binary.LittleEndian.Uint32(mbody[4*i:])
 			}
 			c.Sync = cs

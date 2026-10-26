@@ -22,6 +22,9 @@ type fakeSpy struct {
 	enabled  chan struct{} // closed when STREAMING_ENABLED=1 is recorded
 	info     DeviceInfo
 	sync     ClientSync
+	// syncBodyLen shrinks the CLIENT_SYNC body to simulate older servers;
+	// 0 means the full 40-byte current shape.
+	syncBodyLen int
 }
 
 func newFakeSpy(t *testing.T) *fakeSpy {
@@ -68,7 +71,11 @@ func (f *fakeSpy) serve() {
 	}
 	putMsg(msg[:20], spyMsgDeviceInfo, 0, 0, di)
 	conn.Write(append(msg[:20], di...))
-	cs := make([]byte, 40)
+	bodyLen := f.syncBodyLen
+	if bodyLen == 0 {
+		bodyLen = 40
+	}
+	cs := make([]byte, bodyLen)
 	for i, v := range []uint32{f.sync.CanControl, f.sync.Gain, f.sync.DeviceCenterFrequency, f.sync.IQCenterFrequency, f.sync.FFTCenterFrequency, f.sync.MinimumIQCenterFrequency, f.sync.MaximumIQCenterFrequency, f.sync.MinimumFFTCenterFrequency, f.sync.MaximumFFTCenterFrequency} {
 		binary.LittleEndian.PutUint32(cs[4*i:], v)
 	}
@@ -225,5 +232,26 @@ func TestSpyRetuneAndClose(t *testing.T) {
 	}
 	if err := c.SetFrequency(1); err == nil {
 		t.Fatal("SetFrequency after Close succeeded")
+	}
+}
+
+// TestSpyHandshakeToleratesOlderServerShapes pins what live public servers
+// actually send: 48-byte DEVICE_INFO is current, but older servers answer
+// with a 36-byte CLIENT_SYNC (9 fields). The handshake must accept the
+// trailing-extension shape and leave missing fields zero.
+func TestSpyHandshakeToleratesOlderServerShapes(t *testing.T) {
+	f := newFakeSpy(t)
+	defer f.close()
+	f.syncBodyLen = 36
+	c, err := DialSpy(context.Background(), SpyConfig{Addr: f.ln.Addr().String(), Frequency: 1000000, SampleRate: 1000000, AllowPrivate: true})
+	if err != nil {
+		t.Fatalf("DialSpy against older 36-byte CLIENT_SYNC server: %v", err)
+	}
+	defer c.Close()
+	if c.Sync.MaximumFFTCenterFrequency != 0 {
+		t.Fatalf("missing trailing field should be zero, got %d", c.Sync.MaximumFFTCenterFrequency)
+	}
+	if c.Sync.CanControl == 0 && c.Sync.IQCenterFrequency == 0 {
+		t.Fatal("present fields not parsed")
 	}
 }
